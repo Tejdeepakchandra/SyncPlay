@@ -1,5 +1,11 @@
+/* ======================================
+   🎬 PREMIUM CINEMATIC UPGRADE
+   ====================================== */
+
+/* Import premium fonts */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono&display=swap');
 
+/* Tailwind directives */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
