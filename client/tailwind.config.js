@@ -1,118 +1,111 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: 'class',
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
+  darkMode: ["class"],
+  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  prefix: "",
   theme: {
+    container: {
+      center: true,
+      padding: "2rem",
+      screens: {
+        "2xl": "1400px",
+      },
+    },
     extend: {
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['Space Grotesk', 'Inter', 'sans-serif'],
+      },
       colors: {
-        // 🎬 Cinematic Dark Foundation
-        background: {
-          DEFAULT: '#0A0C14',
-          card: '#12141C',
-          elevated: '#1A1D28',
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
         },
-        
-        // 🎨 Premium Accents
-        movie: {
-          DEFAULT: '#3B82F6',
-          light: '#60A5FA',
-          dark: '#2563EB',
-          glow: 'rgba(59,130,246,0.5)',
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
         },
-        music: {
-          DEFAULT: '#10B981',
-          light: '#34D399',
-          dark: '#059669',
-          glow: 'rgba(16,185,129,0.5)',
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
         },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+        glass: {
+          DEFAULT: "hsl(var(--glass))",
+          border: "hsl(var(--glass-border))",
+        },
+        // Friends gold color
         friends: {
-          DEFAULT: '#F59E0B',
-          light: '#FBBF24',
-          dark: '#D97706',
-          glow: 'rgba(245,158,11,0.5)',
-        },
-        
-        // 📝 Text
-        text: {
-          primary: '#FFFFFF',
-          secondary: '#94A3B8',
-          tertiary: '#64748B',
-        },
-        
-        // 🔲 Borders
-        border: {
-          DEFAULT: '#2D3748',
-          subtle: '#1E293B',
+          DEFAULT: "#D4AF37", // Gold color
+          light: "#FBBF24",
+          dark: "#B8860B",
         },
       },
-      
-      // 🖼️ Background Gradients
       backgroundImage: {
-        'movie-gradient': 'linear-gradient(135deg, #3B82F6 0%, #2563EB 100%)',
-        'music-gradient': 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
-        'friends-gradient': 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
-        'cinematic': 'radial-gradient(circle at 50% 0%, rgba(59,130,246,0.1) 0%, transparent 70%), radial-gradient(circle at 100% 100%, rgba(16,185,129,0.1) 0%, transparent 70%)',
+        'gradient-movie': 'linear-gradient(135deg, #3B82F6 0%, #2563EB 100%)',
+        'gradient-music': 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+        'gradient-friends': 'linear-gradient(135deg, #D4AF37 0%, #FBBF24 100%)', // Gold gradient
       },
-      
-      // ✨ Animations
-      animation: {
-        // Navbar
-        'navbar-hide': 'navbarHide 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards',
-        'navbar-show': 'navbarShow 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards',
-        'page-blink': 'pageBlink 0.3s ease-in-out',
-        
-        // Hover
-        'glow-pulse': 'glowPulse 2s ease-in-out infinite',
-        'float-slow': 'float 6s ease-in-out infinite',
-        
-        // Mobile
-        'slide-up': 'slideUp 0.3s ease-out',
-        'fade-in': 'fadeIn 0.3s ease-out',
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
       },
-      
       keyframes: {
-        navbarHide: {
-          '0%': { transform: 'translateY(0)', opacity: 1 },
-          '100%': { transform: 'translateY(-100%)', opacity: 0 },
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
         },
-        navbarShow: {
-          '0%': { transform: 'translateY(-100%)', opacity: 0 },
-          '100%': { transform: 'translateY(0)', opacity: 1 },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
         },
-        pageBlink: {
-          '0%': { filter: 'brightness(1)' },
-          '25%': { filter: 'brightness(1.3)' },
-          '50%': { filter: 'brightness(1)' },
-          '75%': { filter: 'brightness(1.2)' },
-          '100%': { filter: 'brightness(1)' },
+        "float": {
+          "0%, 100%": { transform: "translateY(0px)" },
+          "50%": { transform: "translateY(-10px)" },
         },
-        glowPulse: {
-          '0%, 100%': { boxShadow: '0 0 0 0 rgba(59,130,246,0)' },
-          '50%': { boxShadow: '0 0 20px 4px rgba(59,130,246,0.3)' },
+        'pulse-glow': {
+          '0%, 100%': { opacity: 0.6, transform: 'scale(1)' },
+          '50%': { opacity: 1, transform: 'scale(1.2)' },
         },
-        float: {
-          '0%, 100%': { transform: 'translateY(0)' },
-          '50%': { transform: 'translateY(-10px)' },
+        "slide-up": {
+          from: { opacity: "0", transform: "translateY(30px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
         },
-        slideUp: {
-          '0%': { transform: 'translateY(20px)', opacity: 0 },
-          '100%': { transform: 'translateY(0)', opacity: 1 },
-        },
-        fadeIn: {
-          '0%': { opacity: 0 },
-          '100%': { opacity: 1 },
+        'gold-pulse': {
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(212,175,55,0)' },
+          '50%': { boxShadow: '0 0 20px 5px rgba(212,175,55,0.3)' },
         },
       },
-      
-      // 📏 Spacing
-      spacing: {
-        'navbar': '4rem',
-        'navbar-mobile': '3.5rem',
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
+        "float": "float 6s ease-in-out infinite",
+        "pulse-glow": "pulse-glow 2s ease-in-out infinite",
+        "slide-up": "slide-up 0.6s ease-out",
+        "gold-pulse": "gold-pulse 2s ease-in-out infinite",
       },
     },
   },
-  plugins: [],
-}
+  plugins: [require("tailwindcss-animate")],
+};

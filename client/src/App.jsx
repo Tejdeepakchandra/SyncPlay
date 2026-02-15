@@ -1,23 +1,32 @@
-import { BrowserRouter } from 'react-router-dom'
-import { ClerkProvider } from '@clerk/clerk-react'
-import { ThemeProvider } from './context/ThemeContext'
-import { AppRouter } from './router/AppRouter'
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter } from "react-router-dom";
+import { AppRouter } from "./router/AppRouter";
 
-const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
-
-// Optional: Add debug to verify key is loaded
-console.log('Clerk Key loaded:', clerkPubKey ? '✅ Present' : '❌ Missing')
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: 1,
+      staleTime: 5 * 60 * 1000,
+    },
+  },
+});
 
 function App() {
   return (
-    <ClerkProvider publishableKey={clerkPubKey}>
-      <BrowserRouter>
-        <ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner position="top-right" closeButton />
+        <BrowserRouter>
           <AppRouter />
-        </ThemeProvider>
-      </BrowserRouter>
-    </ClerkProvider>
-  )
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
 }
 
-export default App
+export default App;

@@ -1,222 +1,245 @@
-import { useState, useEffect } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
-import { cn } from '@/lib/utils'
-import { useNavbarAnimation } from '@/hooks/useNavbarAnimation'
-import { navItems } from '@/config/navigation'
+import { useState, useEffect } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Film, Music, Users, Bell, User, Menu, X } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useNavbarAnimation } from "@/hooks/useNavbarAnimation";
 
-export function Navbar() {
-  const location = useLocation()
-  const navigate = useNavigate()
-  const [scrolled, setScrolled] = useState(false)
-  const { isVisible, isAnimating, currentTheme, navigateWithAnimation } = useNavbarAnimation()
-  
-  // Handle scroll
+const navLinks = [
+  { to: "/movies", label: "Movies", icon: Film, theme: "movie" },
+  { to: "/music", label: "Music", icon: Music, theme: "music" },
+  { to: "/friends", label: "Friends", icon: Users, theme: "friends" },
+];
+
+export default function Navbar() {
+  const [scrolled, setScrolled] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { isVisible, currentTheme, navigateWithAnimation } = useNavbarAnimation();
+
   useEffect(() => {
-    const handleScroll = () => setScrolled(window.scrollY > 20)
-    window.addEventListener('scroll', handleScroll)
-    return () => window.removeEventListener('scroll', handleScroll)
-  }, [])
+    const onScroll = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
-  // Handle navigation with animation
-  const handleNavigation = (path, theme) => {
-    if (path === location.pathname) return
-    
-    navigateWithAnimation(theme)
-    
-    // Navigate after animation starts
-    setTimeout(() => {
-      navigate(path)
-    }, 400)
-  }
+  const handleNavigation = (to) => (e) => {
+    e.preventDefault();
+    setMobileOpen(false);
+    navigateWithAnimation(navigate, to);
+  };
 
-  // Theme styles
-  const themeStyles = {
-    movie: {
-      border: 'border-movie/30',
-      bg: 'bg-movie/5',
-      text: 'text-movie',
-      glow: 'hover:shadow-[0_0_20px_rgba(59,130,246,0.3)]',
-    },
-    music: {
-      border: 'border-music/30',
-      bg: 'bg-music/5',
-      text: 'text-music',
-      glow: 'hover:shadow-[0_0_20px_rgba(16,185,129,0.3)]',
-    },
-    friends: {
-      border: 'border-friends/30',
-      bg: 'bg-friends/5',
-      text: 'text-friends',
-      glow: 'hover:shadow-[0_0_20px_rgba(245,158,11,0.3)]',
-    },
-    default: {
-      border: 'border-border',
-      bg: 'bg-background-card',
-      text: 'text-text-primary',
-      glow: 'hover:shadow-lg',
-    },
-  }
+  // Theme colors mapping
+ const themeColors = {
+  movie: {
+    text: "text-primary",
+    bg: "bg-primary/10",
+    border: "border-primary/20",
+    gradient: "gradient-movie",
+    logoHover: "group-hover:text-primary",
+    logoColor: "text-primary",
+    glow: "glow-movie",
+    hoverGlow: "hover-glow-movie",
+  },
+  music: {
+    text: "text-secondary",
+    bg: "bg-secondary/10",
+    border: "border-secondary/20",
+    gradient: "gradient-music",
+    logoHover: "group-hover:text-secondary",
+    logoColor: "text-secondary",
+    glow: "glow-music",
+    hoverGlow: "hover-glow-music",
+  },
+  friends: {
+    text: "text-friends",
+    bg: "bg-friends/10",
+    border: "border-friends/20",
+    gradient: "gradient-friends",
+    logoHover: "group-hover:text-friends",
+    logoColor: "text-friends",
+    glow: "glow-friends",
+    hoverGlow: "hover-glow-friends",
+  },
+  default: {
+    text: "text-primary",
+    bg: "bg-primary/10",
+    border: "border-primary/20",
+    gradient: "gradient-movie",
+    logoHover: "group-hover:text-primary",
+    logoColor: "text-foreground",
+    glow: "glow-movie",
+    hoverGlow: "hover-glow-movie",
+  },
+};
 
-  const currentStyle = themeStyles[currentTheme] || themeStyles.default
+  const theme = themeColors[currentTheme] || themeColors.default;
+
+  // Get logo gradient based on current theme
+  // Get logo gradient based on current theme
+const getLogoGradient = () => {
+  if (currentTheme === 'music') return 'gradient-music';
+  if (currentTheme === 'movie') return 'gradient-movie';
+  if (currentTheme === 'friends') return 'gradient-friends';
+  return 'gradient-movie'; // Default for landing page
+};
+
+
+
+// Get logo hover color based on current theme
+const getLogoHover = () => {
+  if (currentTheme === 'music') return 'group-hover:text-secondary';
+  if (currentTheme === 'friends') return 'group-hover:text-friends';
+  if (currentTheme === 'movie') return 'group-hover:text-primary';
+  return 'group-hover:text-primary'; // Default for landing page
+};
 
   return (
-    <>
-      {/* Page Blink Style */}
-      <style>{`
-        .page-blink {
-          animation: pageBlink 0.3s ease-in-out;
-        }
-      `}</style>
+    <AnimatePresence mode="wait">
+      {isVisible && (
+        <motion.header
+          key="navbar"
+          initial={{ y: -100 }}
+          animate={{ y: 0 }}
+          exit={{ y: -100 }}
+          transition={{ duration: 0.15, ease: "easeInOut" }}
+          className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
+            scrolled ? "glass-nav shadow-lg" : "bg-transparent"
+          }`}
+        >
+          <div className="container mx-auto flex items-center justify-between h-16 px-4 lg:px-8">
+            {/* Logo */}
+            <Link 
+              to="/" 
+              onClick={handleNavigation("/")}
+              className="flex items-center gap-2 group"
+            >
+              <motion.div
+                whileHover={{ rotate: 360, scale: 1.1 }}
+                transition={{ duration: 0.5 }}
+                className={`w-8 h-8 rounded-lg ${getLogoGradient()} flex items-center justify-center`}
+              >
+                <span className="text-primary-foreground font-bold text-sm">▶</span>
+              </motion.div>
+              <span className={`font-display font-bold text-xl text-foreground transition-colors ${getLogoHover()}`}>
+                SyncPlay
+              </span>
+            </Link>
 
-      <AnimatePresence mode="wait">
-        {isVisible && (
-          <motion.header
-            key="navbar"
-            initial={{ y: -100 }}
-            animate={{ y: 0 }}
-            exit={{ y: -100 }}
-            transition={{ 
-              duration: 0.8,
-              ease: [0.4, 0, 0.2, 1],
-            }}
-            className={cn(
-              'fixed top-0 left-0 right-0 z-50',
-              'transition-all duration-300',
-              scrolled ? 'glass-dark' : 'bg-transparent',
-              isAnimating && 'pointer-events-none'
-            )}
-          >
-            <div className="max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8">
-              <div className="flex items-center justify-between h-16 md:h-20">
-                {/* Left - SyncPlay Logo */}
-                <Link 
-                  to="/" 
-                  onClick={() => handleNavigation('/', 'default')}
-                  className="group relative"
-                >
-                  <motion.div 
-                    className="flex items-center space-x-2"
-                    whileHover={{ scale: 1.02 }}
-                    transition={{ duration: 0.2 }}
+            {/* Desktop Nav */}
+            <nav className="hidden md:flex items-center gap-1">
+              {navLinks.map((link) => {
+                const active = location.pathname === link.to;
+                const linkTheme = themeColors[link.theme];
+                
+                return (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    onClick={handleNavigation(link.to)}
                   >
-                    <img 
-                      src="/logos/syncplay-logo.png" 
-                      alt="SyncPlay" 
-                      className="h-8 w-auto opacity-90 group-hover:opacity-100 transition-all duration-300"
-                      onError={(e) => {
-                        e.target.style.display = 'none'
-                        e.target.nextSibling.style.display = 'block'
-                      }}
-                    />
-                    <span className="hidden text-2xl font-bold bg-gradient-to-r from-movie to-music bg-clip-text text-transparent">
-                      SyncPlay
-                    </span>
-                  </motion.div>
-                </Link>
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+                        active
+                          ? `${linkTheme.text} ${linkTheme.bg}`
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                      }`}
+                    >
+                      <link.icon className="w-4 h-4" />
+                      {link.label}
+                    </motion.div>
+                  </Link>
+                );
+              })}
+            </nav>
 
-                {/* Center - Navigation Items */}
-                <nav className="hidden md:flex items-center space-x-1">
-                  {navItems.map((item) => {
-                    const isActive = location.pathname === item.path
+            {/* Right side */}
+            <div className="hidden md:flex items-center gap-2">
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors relative"
+              >
+                <Bell className="w-5 h-5" />
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-pulse" />
+              </motion.button>
+              
+              <Link to="/signin" onClick={handleNavigation("/signin")}>
+                <motion.div
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-foreground bg-muted hover:bg-muted/80 transition-colors"
+                >
+                  <User className="w-4 h-4" />
+                  Sign In
+                </motion.div>
+              </Link>
+            </div>
+
+            {/* Mobile menu button */}
+            <button
+              className="md:hidden p-2 text-foreground"
+              onClick={() => setMobileOpen(!mobileOpen)}
+            >
+              {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
+
+          {/* Mobile menu */}
+          <AnimatePresence>
+            {mobileOpen && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.3 }}
+                className="md:hidden glass-nav border-t border-border overflow-hidden"
+              >
+                <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
+                  {navLinks.map((link) => {
+                    const active = location.pathname === link.to;
+                    const linkTheme = themeColors[link.theme];
                     
                     return (
-                      <motion.button
-                        key={item.path}
-                        onClick={() => handleNavigation(item.path, item.theme)}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        className={cn(
-                          'relative px-5 py-2 rounded-2xl',
-                          'transition-all duration-300',
-                          'flex items-center space-x-2',
-                          'border border-transparent',
-                          isActive ? [
-                            currentStyle.border,
-                            currentStyle.bg,
-                            currentStyle.text,
-                          ] : [
-                            'text-text-tertiary',
-                            'hover:text-text-primary',
-                            'hover:border-border/50',
-                            'hover:bg-background-card/50',
-                            currentStyle.glow,
-                          ]
-                        )}
+                      <Link
+                        key={link.to}
+                        to={link.to}
+                        onClick={handleNavigation(link.to)}
                       >
-                        {/* Icon */}
-                        <span className="text-xl">{item.icon}</span>
-                        
-                        {/* Label */}
-                        <span className="text-sm font-medium">{item.label}</span>
-
-                        {/* Active Indicator */}
-                        {isActive && (
-                          <motion.div
-                            layoutId="activeNavIndicator"
-                            className={cn(
-                              'absolute -bottom-0.5 left-1/2 transform -translate-x-1/2',
-                              'w-1 h-1 rounded-full',
-                              `bg-${item.theme}`
-                            )}
-                            transition={{ duration: 0.3 }}
-                          />
-                        )}
-                      </motion.button>
-                    )
+                        <motion.div
+                          whileHover={{ x: 5 }}
+                          className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                            active
+                              ? `${linkTheme.text} ${linkTheme.bg}`
+                              : "text-foreground hover:bg-muted/50"
+                          }`}
+                        >
+                          <link.icon className="w-5 h-5" />
+                          {link.label}
+                        </motion.div>
+                      </Link>
+                    );
                   })}
-                </nav>
-
-                {/* Right - Bell + Profile */}
-                <div className="flex items-center space-x-3">
-                  {/* Notification Bell */}
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className={cn(
-                      'relative p-2.5 rounded-xl',
-                      'transition-all duration-300',
-                      'text-text-tertiary hover:text-text-primary',
-                      'border border-transparent hover:border-border/50',
-                      'hover:bg-background-card/50',
-                      currentStyle.glow
-                    )}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
-                        d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" 
-                      />
-                    </svg>
-                    
-                    {/* Notification Badge */}
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-error rounded-full" />
-                  </motion.button>
-
-                  {/* Profile / Sign In */}
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className={cn(
-                      'w-9 h-9 rounded-xl',
-                      'transition-all duration-300',
-                      'border border-transparent',
-                      'bg-gradient-to-br from-movie to-music',
-                      'hover:shadow-[0_0_20px_rgba(59,130,246,0.3)]',
-                      'flex items-center justify-center'
-                    )}
-                  >
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
-                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" 
-                      />
-                    </svg>
-                  </motion.button>
+                  <Link to="/signin" onClick={() => {
+                    setMobileOpen(false);
+                    handleNavigation("/signin")();
+                  }}>
+                    <motion.div
+                      whileHover={{ x: 5 }}
+                      className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium hover:bg-primary/5 transition-colors"
+                    >
+                      <User className="w-5 h-5" />
+                      Sign In
+                    </motion.div>
+                  </Link>
                 </div>
-              </div>
-            </div>
-          </motion.header>
-        )}
-      </AnimatePresence>
-    </>
-  )
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.header>
+      )}
+    </AnimatePresence>
+  );
 }

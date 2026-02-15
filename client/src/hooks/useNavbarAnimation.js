@@ -1,42 +1,68 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 export function useNavbarAnimation() {
   const [isVisible, setIsVisible] = useState(true)
-  const [isAnimating, setIsAnimating] = useState(false)
   const [currentTheme, setCurrentTheme] = useState('default')
   const location = useLocation()
+  const navigationTimerRef = useRef(null)
+  const isNavigatingRef = useRef(false)
 
-  const navigateWithAnimation = useCallback((newTheme) => {
-    setIsAnimating(true)
+  // Cleanup function
+  const cleanup = () => {
+    if (navigationTimerRef.current) {
+      clearTimeout(navigationTimerRef.current)
+      navigationTimerRef.current = null
+    }
+  }
+
+  const navigateWithAnimation = (navigate, to) => {
+    // Don't navigate if already on that page or already navigating
+    if (location.pathname === to || isNavigatingRef.current) return
+
+    // Cleanup any pending navigation
+    cleanup()
+    
+    // Set navigating flag
+    isNavigatingRef.current = true
+
+    // Hide navbar
     setIsVisible(false)
-    setCurrentTheme(newTheme)
 
-    // Wait for navbar to hide
-    setTimeout(() => {
-      // Page blink effect
-      document.body.classList.add('page-blink')
+    // Wait for navbar to hide, then navigate
+    navigationTimerRef.current = setTimeout(() => {
+      // Force navigation
+      navigate(to)
       
-      setTimeout(() => {
-        document.body.classList.remove('page-blink')
-        
-        // Show navbar with new theme
+      // Show navbar after navigation (guaranteed delay)
+      navigationTimerRef.current = setTimeout(() => {
         setIsVisible(true)
-        
-        setTimeout(() => {
-          setIsAnimating(false)
-        }, 800) // Match navbar show animation
-      }, 300) // Blink duration
-    }, 800) // Match navbar hide animation
-  }, [])
+        isNavigatingRef.current = false
+        navigationTimerRef.current = null
+      }, 150) // Increased delay to ensure page load
+    }, 150)
+  }
 
   // Determine theme from path
   useEffect(() => {
-    if (location.pathname.includes('/movie')) setCurrentTheme('movie')
-    else if (location.pathname.includes('/music')) setCurrentTheme('music')
-    else if (location.pathname.includes('/friends')) setCurrentTheme('friends')
-    else setCurrentTheme('default')
-  }, [location])
+    if (location.pathname.includes('/movies')) {
+      setCurrentTheme('movie')
+    } else if (location.pathname.includes('/music')) {
+      setCurrentTheme('music')
+    } else if (location.pathname.includes('/friends')) {
+      setCurrentTheme('friends')
+    } else {
+      setCurrentTheme('default')
+    }
+    
+    // Log for debugging
+    console.log('Theme updated:', location.pathname, currentTheme)
+  }, [location.pathname]) // Use pathname instead of whole location
 
-  return { isVisible, isAnimating, currentTheme, navigateWithAnimation }
+  // Cleanup on unmount
+  useEffect(() => {
+    return cleanup
+  }, [])
+
+  return { isVisible, currentTheme, navigateWithAnimation }
 }
