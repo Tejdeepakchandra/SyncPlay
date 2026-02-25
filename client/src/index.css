@@ -1,0 +1,155 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 25% 6%;
+    --foreground: 210 20% 95%;
+    --card: 222 20% 10%;
+    --card-foreground: 210 20% 95%;
+    --popover: 222 20% 10%;
+    --popover-foreground: 210 20% 95%;
+    --primary: 195 100% 50%;
+    --primary-foreground: 222 25% 6%;
+    --secondary: 155 80% 45%;
+    --secondary-foreground: 222 25% 6%;
+    --muted: 222 15% 15%;
+    --muted-foreground: 215 15% 55%;
+    --accent: 270 60% 60%;
+    --accent-foreground: 210 20% 95%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 15% 18%;
+    --input: 222 15% 18%;
+    --ring: 195 100% 50%;
+    --radius: 0.75rem;
+
+    /* SyncPlay custom tokens */
+    --glow-movie: 195 100% 50%;
+    --glow-music: 155 80% 45%;
+    --glow-friends: 45 100% 50%; /* Gold */
+    --glass: 222 20% 12%;
+    --glass-border: 222 15% 22%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-glass/60 backdrop-blur-xl border border-glass-border rounded-2xl;
+  }
+
+  .glass-nav {
+    @apply backdrop-blur-2xl bg-background/70 border-b border-glass-border;
+  }
+
+  .glow-movie {
+    box-shadow: 0 0 40px -10px hsl(var(--glow-movie) / 0.4),
+                0 0 80px -20px hsl(var(--glow-movie) / 0.2);
+  }
+
+  .glow-music {
+    box-shadow: 0 0 40px -10px hsl(var(--glow-music) / 0.4),
+                0 0 80px -20px hsl(var(--glow-music) / 0.2);
+  }
+
+  .glow-friends {
+    box-shadow: 0 0 40px -10px hsl(var(--glow-friends) / 0.4),
+                0 0 80px -20px hsl(var(--glow-friends) / 0.2);
+  }
+
+  .glow-movie-text {
+    text-shadow: 0 0 20px hsl(var(--glow-movie) / 0.5);
+  }
+
+  .glow-music-text {
+    text-shadow: 0 0 20px hsl(var(--glow-music) / 0.5);
+  }
+
+  .glow-friends-text {
+    text-shadow: 0 0 20px hsl(var(--glow-friends) / 0.5);
+  }
+
+  .gradient-movie {
+    @apply bg-gradient-to-r from-primary to-[hsl(210,100%,60%)];
+  }
+
+  .gradient-music {
+    @apply bg-gradient-to-r from-secondary to-[hsl(170,80%,50%)];
+  }
+  
+  .gradient-friends {
+    @apply bg-gradient-to-r from-friends to-friends-light;
+  }
+
+  .hover-lift {
+    @apply transition-all duration-300 hover:-translate-y-1 hover:shadow-xl;
+  }
+
+  .hover-glow-movie {
+    @apply transition-all duration-300 hover:shadow-[0_0_30px_rgba(0,195,255,0.3)];
+  }
+
+  .hover-glow-music {
+    @apply transition-all duration-300 hover:shadow-[0_0_30px_rgba(16,185,129,0.3)];
+  }
+
+  .hover-glow-friends {
+    @apply transition-all duration-300 hover:shadow-[0_0_30px_rgba(212,175,55,0.3)];
+  }
+}
+
+@layer utilities {
+  .text-gradient-movie {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-[hsl(210,100%,65%)];
+  }
+
+  .text-gradient-music {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-secondary to-[hsl(170,80%,55%)];
+  }
+
+  .text-gradient-friends {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-friends to-friends-light;
+  }
+
+  .animate-float-slow {
+    animation: float 8s ease-in-out infinite;
+  }
+
+  .animate-float-medium {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  .animate-float-fast {
+    animation: float 4s ease-in-out infinite;
+  }
+
+  .animate-gold-pulse {
+    animation: gold-pulse 2s ease-in-out infinite;
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-15px); }
+}
+
+@keyframes gold-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
