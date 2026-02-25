@@ -9,30 +9,22 @@ const pgPool = new Pool({
     },
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 15000, // Increased timeout for direct connection
     statement_timeout: 30000,
     idle_in_transaction_session_timeout: 30000
 })
 
-pgPool.connect((err,client,release)=>{
-    if(err){
-        console.log("Supabase PostgreSQL connection error:", err.message);
-        // Try again after a delay
-        setTimeout(() => {
-            pgPool.query('SELECT NOW()', (queryErr) => {
-                if(queryErr) {
-                    console.log("PostgreSQL retry failed:", queryErr.message);
-                } else {
-                    console.log("Supabase PostgreSQL connected successfully on retry");
-                }
-            });
-        }, 2000);
-    }
-    else{
-        console.log("Supabase PostgreSQL connected successfully");
-        release();
-    }
-})
+// Non-blocking connection check (doesn't block server startup)
+setTimeout(() => {
+    pgPool.query('SELECT NOW()', (err, result) => {
+        if(err){
+            console.log("⚠️  PostgreSQL connection check failed:", err.message);
+        }
+        else{
+            console.log("✅ PostgreSQL connected successfully");
+        }
+    });
+}, 1000);
 
 pgPool.on('error', (err)=>{
     console.log("Supabase PostgreSQL error:", err.message);

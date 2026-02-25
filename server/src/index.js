@@ -37,7 +37,6 @@ app.use(express.urlencoded({ extended: true }));
 // Connect to databases
 connectDB();
 redisClient.connect().catch(err => console.error("Redis connection error:", err));
-pgPool.connect().catch(err => console.error("PostgreSQL connection error:", err));
 
 app.get("/api/health", async (req, res) => {
   let pgStatus = 'disconnected';
