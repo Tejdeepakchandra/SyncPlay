@@ -1,9 +1,0 @@
-{
-  "css.lint.unknownAtRules": "ignore",
-  "eslint.rules.customizations": [
-    { "rule": "**/motion", "severity": "off" }
-  ],
-  "[css]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode"
-  }
-}
