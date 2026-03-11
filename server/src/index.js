@@ -26,6 +26,7 @@ const server = http.createServer(app);
 
 startPresenceCleanup();
 
+
 // SOCKET.IO SETUP
 
 const io = new Server(server, {
@@ -73,8 +74,11 @@ redisClient.connect().catch(err => {
 // ROUTES
 
 const roomRoutes = require('./routes/roomRoutes');
+const momentRoutes = require('./routes/momentRoutes');
 
 app.use('/api/rooms', roomRoutes);
+
+app.use('/api/moments', momentRoutes);
 
 
 // HEALTH CHECK ENDPOINT

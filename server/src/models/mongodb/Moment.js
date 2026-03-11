@@ -1,9 +1,7 @@
 const mongoose = require('mongoose');
 
 /**
- * Moment Model
- * Stores key moments, reactions, bookmarks
- * Used for highlights and recap generation
+ * Moment Model — Captures key moments in watch parties
  */
 const momentSchema = new mongoose.Schema({
   roomId: {
@@ -12,77 +10,181 @@ const momentSchema = new mongoose.Schema({
     required: true,
     index: true
   },
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+  roomCode: {
+    type: String,
+    required: true,
+    index: true
   },
-  username: String,
   
-  // Moment data
+  // Moment timing
   timestamp: {
-    type: Number, // Seconds in video
-    required: true
+    type: Number,
+    required: true,
+    min: 0
   },
+  duration: {
+    type: Number,
+    default: 60,
+    min: 10,
+    max: 120
+  },
+  
+  // Moment type
   type: {
     type: String,
     enum: [
-      'reaction',      // Quick emoji reaction
-      'comment',       // Text comment
-      'bookmark',      // User bookmark
-      'reaction_spike', // Multiple reactions in short time
-      'comment_cluster', // Multiple comments
-      'ai_highlight',   // Auto-detected highlight
-      'group_photo'     // Captured group moment
+      'reaction_spike',
+      'comment_cluster',
+      'bookmark',
+      'ai_highlight',
+      'manual'
     ],
-    required: true
+    required: true,
+    index: true
   },
   
-  // Content based on type
-  content: {
-    reaction: String,     // Emoji for reactions
-    text: String,         // For comments
-    intensity: Number,    // 0-1 for spikes/highlights
-    count: Number         // Number of reactions in spike
-  },
-  
-  // Participants involved (for spikes/clusters)
-  participants: [{
-    userId: mongoose.Schema.Types.ObjectId,
-    username: String
-  }],
-  
-  // Metadata
-  metadata: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
-  },
-  
-  // For highlights
-  isHighlight: {
-    type: Boolean,
-    default: false
-  },
-  highlightScore: {
+  // Intensity score (0-1)
+  intensity: {
     type: Number,
     min: 0,
     max: 1,
-    default: 0
+    default: 0.5
   },
   
-  // Expiry (moments expire after 7 days)
+  // Media source info
+  mediaSource: {
+    type: {
+      type: String,
+      enum: ['youtube', 'vimeo', 'local', 'screen', 'unknown'],
+      default: 'unknown'
+    },
+    url: String,
+    title: String,
+    thumbnail: String,
+    duration: Number
+  },
+  
+  // Captured video data
+  capturedVideo: {
+    url: String,
+    thumbnailUrl: String,
+    webmUrl: String,
+    mp4Url: String,
+    duration: Number,
+    size: Number,
+    format: String,
+    width: Number,
+    height: Number
+  },
+  
+  // Participants involved
+  participants: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    username: String,
+    displayName: String,
+    avatar: String,
+    reactionCount: {
+      type: Number,
+      default: 0
+    }
+  }],
+  
+  // Reactions data
+  reactions: [{
+    userId: mongoose.Schema.Types.ObjectId,
+    username: String,
+    reaction: String,
+    timestamp: Date,
+    videoTimestamp: Number
+  }],
+  
+  // Comments during this moment
+  comments: [{
+    userId: mongoose.Schema.Types.ObjectId,
+    username: String,
+    text: String,
+    timestamp: Date,
+    videoTimestamp: Number
+  }],
+  
+  // Statistics
+  stats: {
+    reactionCount: { type: Number, default: 0 },
+    uniqueReactors: { type: Number, default: 0 },
+    commentCount: { type: Number, default: 0 },
+    viewCount: { type: Number, default: 0 },
+    shareCount: { type: Number, default: 0 },
+    saveCount: { type: Number, default: 0 }
+  },
+  
+  // Story integration
+  storyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Story'
+  },
+  
+  // Sharing URLs
+  shareUrls: {
+    instagram: String,
+    whatsapp: String,
+    twitter: String,
+    facebook: String,
+    direct: String
+  },
+  
+  // Status
+  status: {
+    type: String,
+    enum: ['detected', 'capturing', 'processing', 'ready', 'failed'],
+    default: 'detected',
+    index: true
+  },
+  
+  // Error message if failed
+  errorMessage: String,
+  
+  // Capture job ID
+  captureJobId: String,
+  
+  // Expiry (moments expire after 30 days)
   expiresAt: {
     type: Date,
-    default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    index: { expires: 0 } // TTL index
+    default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    index: { expires: 0 }
   }
 }, {
   timestamps: true
 });
 
-// Indexes
+// COMPOSITE INDEXES for fast queries
+momentSchema.index({ roomCode: 1, type: 1, timestamp: 1 });
 momentSchema.index({ roomId: 1, timestamp: 1 });
-momentSchema.index({ isHighlight: 1 });
-momentSchema.index({ 'participants.userId': 1 });
+momentSchema.index({ type: 1, createdAt: -1 });
+momentSchema.index({ 'stats.viewCount': -1 });
+momentSchema.index({ createdAt: -1 });
+
+// Virtual for moment age
+momentSchema.virtual('age').get(function() {
+  return Date.now() - this.createdAt;
+});
+
+// Method to check if moment is still valid
+momentSchema.methods.isValid = function() {
+  return this.expiresAt > new Date();
+};
+
+// Static method to find top moments in a room
+momentSchema.statics.findTopMoments = function(roomId, limit = 10) {
+  return this.find({ 
+    roomId,
+    status: 'ready',
+    'capturedVideo.url': { $exists: true }
+  })
+  .sort({ intensity: -1, 'stats.viewCount': -1 })
+  .limit(limit);
+};
 
 module.exports = mongoose.model('Moment', momentSchema);
