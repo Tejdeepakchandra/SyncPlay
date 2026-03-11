@@ -4,6 +4,7 @@ const syncHandlers = require('./handlers/syncHandlers');
 const presenceHandlers = require('./handlers/presenceHandlers');
 const roomService = require('../services/roomService');
 const presenceService = require('../services/presenceService');
+const momentHandlers = require('./socket/handlers/momentHandlers');
 
 
  // Setup all socket handlers
@@ -19,6 +20,7 @@ const setupSocketHandlers = (io) => {
     roomHandlers(socket, io);
     syncHandlers(socket, io);
     presenceHandlers(socket, io);
+    momentHandlers(socket, io);
 
     // Auto-leave room and cleanup on disconnect — FIXED
     socket.on('disconnect', async () => {
