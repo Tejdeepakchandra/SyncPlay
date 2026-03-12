@@ -1,13 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Film, Music, Users, Bell, User, Menu, X } from "lucide-react";
+import { Film, Music, Users, User, Menu, X, MessageSquare, LogIn, LogOut } from "lucide-react";
+import NotificationDropdown from "@/components/NotificationDropdown";
 import { motion, AnimatePresence } from "framer-motion";
-import { useNavbarAnimation } from "@/hooks/useNavbarAnimation";
+import { useAuth } from "@/hooks/useAuth";
 
 const navLinks = [
-  { to: "/movies", label: "Movies", icon: Film, theme: "movie" },
-  { to: "/music", label: "Music", icon: Music, theme: "music" },
-  { to: "/friends", label: "Friends", icon: Users, theme: "friends" },
+  { to: "/movies", label: "Movies", icon: Film },
+  { to: "/music", label: "Music", icon: Music },
+  { to: "/friends", label: "Friends", icon: Users },
 ];
 
 export default function Navbar() {
@@ -15,242 +16,150 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { isVisible, currentTheme, navigateWithAnimation } = useNavbarAnimation();
-
-  const rafRef = useRef(null);
-  const handleScroll = useCallback(() => {
-    if (rafRef.current) return;
-    rafRef.current = requestAnimationFrame(() => {
-      setScrolled(window.scrollY > 20);
-      rafRef.current = null;
-    });
-  }, []);
+  const notifRef = useRef(null);
+  const { user, profile, signOut } = useAuth();
 
   useEffect(() => {
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", handleScroll);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [handleScroll]);
-
-  const handleNavigation = (to) => (e) => {
-    e.preventDefault();
-    setMobileOpen(false);
-    navigateWithAnimation(navigate, to);
-  };
-
-  // Theme colors mapping
- const themeColors = {
-  movie: {
-    text: "text-primary",
-    bg: "bg-primary/10",
-    border: "border-primary/20",
-    gradient: "gradient-movie",
-    logoHover: "group-hover:text-primary",
-    logoColor: "text-primary",
-    glow: "glow-movie",
-    hoverGlow: "hover-glow-movie",
-  },
-  music: {
-    text: "text-secondary",
-    bg: "bg-secondary/10",
-    border: "border-secondary/20",
-    gradient: "gradient-music",
-    logoHover: "group-hover:text-secondary",
-    logoColor: "text-secondary",
-    glow: "glow-music",
-    hoverGlow: "hover-glow-music",
-  },
-  friends: {
-    text: "text-friends",
-    bg: "bg-friends/10",
-    border: "border-friends/20",
-    gradient: "gradient-friends",
-    logoHover: "group-hover:text-friends",
-    logoColor: "text-friends",
-    glow: "glow-friends",
-    hoverGlow: "hover-glow-friends",
-  },
-  default: {
-    text: "text-primary",
-    bg: "bg-primary/10",
-    border: "border-primary/20",
-    gradient: "gradient-movie",
-    logoHover: "group-hover:text-primary",
-    logoColor: "text-foreground",
-    glow: "glow-movie",
-    hoverGlow: "hover-glow-movie",
-  },
-};
-
-  const _theme = themeColors[currentTheme] || themeColors.default;
-
-  // Get logo gradient based on current theme
-  // Get logo gradient based on current theme
-const getLogoGradient = () => {
-  if (currentTheme === 'music') return 'gradient-music';
-  if (currentTheme === 'movie') return 'gradient-movie';
-  if (currentTheme === 'friends') return 'gradient-friends';
-  return 'gradient-movie'; // Default for landing page
-};
-
-
-
-// Get logo hover color based on current theme
-const getLogoHover = () => {
-  if (currentTheme === 'music') return 'group-hover:text-secondary';
-  if (currentTheme === 'friends') return 'group-hover:text-friends';
-  if (currentTheme === 'movie') return 'group-hover:text-primary';
-  return 'group-hover:text-primary'; // Default for landing page
-};
+    const onScroll = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   return (
-    <AnimatePresence mode="wait">
-      {isVisible && (
-        <motion.header
-          key="navbar"
-          initial={{ y: -100 }}
-          animate={{ y: 0 }}
-          exit={{ y: -100 }}
-          transition={{ duration: 0.15, ease: "easeInOut" }}
-          className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
-            scrolled ? "glass-nav shadow-lg" : "bg-transparent"
-          }`}
-        >
-          <div className="container mx-auto flex items-center justify-between h-16 px-4 lg:px-8">
-            {/* Logo */}
-            <Link 
-              to="/" 
-              onClick={handleNavigation("/")}
-              className="flex items-center gap-2 group"
-            >
-              <motion.div
-                whileHover={{ scale: 1.1 }}
-                transition={{ duration: 0.2 }}
-                className={`w-8 h-8 rounded-lg ${getLogoGradient()} flex items-center justify-center`}
+    <header
+      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
+        scrolled ? "glass-nav shadow-lg" : "bg-transparent"
+      }`}
+    >
+      <div className="container mx-auto flex items-center justify-between h-16 px-4 lg:px-8">
+        {/* Logo */}
+        <Link to="/" className="flex items-center gap-2 group">
+          <div className="w-8 h-8 rounded-lg gradient-movie flex items-center justify-center">
+            <span className="text-primary-foreground font-bold text-sm">▶</span>
+          </div>
+          <span className="font-display font-bold text-xl text-foreground group-hover:text-primary transition-colors">
+            SyncPlay
+          </span>
+        </Link>
+
+        {/* Desktop Nav */}
+        <nav className="hidden md:flex items-center gap-1">
+          {navLinks.map((link) => {
+            const active = location.pathname === link.to;
+            return (
+              <Link
+                key={link.to}
+                to={link.to}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
+                  active
+                    ? "text-primary bg-primary/10"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
               >
-                <span className="text-primary-foreground font-bold text-sm">▶</span>
-              </motion.div>
-              <span className={`font-display font-bold text-xl text-foreground transition-colors ${getLogoHover()}`}>
-                SyncPlay
-              </span>
-            </Link>
+                <link.icon className="w-4 h-4" />
+                {link.label}
+              </Link>
+            );
+          })}
+        </nav>
 
-            {/* Desktop Nav */}
-            <nav className="hidden md:flex items-center gap-1">
-              {navLinks.map((link) => {
-                const active = location.pathname === link.to;
-                const linkTheme = themeColors[link.theme];
-                
-                return (
-                  <Link
-                    key={link.to}
-                    to={link.to}
-                    onClick={handleNavigation(link.to)}
-                  >
-                    <motion.div
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
-                        active
-                          ? `${linkTheme.text} ${linkTheme.bg}`
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                      }`}
-                    >
-                      <link.icon className="w-4 h-4" />
-                      {link.label}
-                    </motion.div>
-                  </Link>
-                );
-              })}
-            </nav>
-
-            {/* Right side */}
-            <div className="hidden md:flex items-center gap-2">
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
+        {/* Right side – desktop */}
+        <div className="hidden md:flex items-center gap-2">
+          {user && (
+            <>
+              <button
+                onClick={() => navigate("/messages")}
                 className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors relative"
               >
-                <Bell className="w-5 h-5" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-pulse" />
-              </motion.button>
-              
-              <Link to="/signin" onClick={handleNavigation("/signin")}>
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-foreground bg-muted hover:bg-muted/80 transition-colors"
-                >
-                  <User className="w-4 h-4" />
-                  Sign In
-                </motion.div>
-              </Link>
-            </div>
+                <MessageSquare className="w-5 h-5" />
+              </button>
 
-            {/* Mobile menu button */}
-            <button
-              className="md:hidden p-2 text-foreground"
-              onClick={() => setMobileOpen(!mobileOpen)}
-            >
-              {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </button>
-          </div>
+              <div className="relative" ref={notifRef}>
+                <NotificationDropdown variant="desktop" />
+              </div>
+            </>
+          )}
 
-          {/* Mobile menu */}
-          <AnimatePresence>
-            {mobileOpen && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.3 }}
-                className="md:hidden glass-nav border-t border-border overflow-hidden"
+          {user ? (
+            <div className="flex items-center gap-2">
+              <Link
+                to="/profile"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-foreground bg-muted hover:bg-muted/80 transition-colors"
               >
-                <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
-                  {navLinks.map((link) => {
-                    const active = location.pathname === link.to;
-                    const linkTheme = themeColors[link.theme];
-                    
-                    return (
-                      <Link
-                        key={link.to}
-                        to={link.to}
-                        onClick={handleNavigation(link.to)}
-                      >
-                        <motion.div
-                          whileHover={{ x: 5 }}
-                          className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                            active
-                              ? `${linkTheme.text} ${linkTheme.bg}`
-                              : "text-foreground hover:bg-muted/50"
-                          }`}
-                        >
-                          <link.icon className="w-5 h-5" />
-                          {link.label}
-                        </motion.div>
-                      </Link>
-                    );
-                  })}
-                  <Link to="/signin" onClick={() => {
-                    setMobileOpen(false);
-                    handleNavigation("/signin")();
-                  }}>
-                    <motion.div
-                      whileHover={{ x: 5 }}
-                      className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium hover:bg-primary/5 transition-colors"
-                    >
-                      <User className="w-5 h-5" />
-                      Sign In
-                    </motion.div>
+                <span className="text-base">{profile?.avatar_emoji || "🧑"}</span>
+                {profile?.display_name || "Profile"}
+              </Link>
+              <button
+                onClick={async () => { await signOut(); navigate("/"); }}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <Link
+              to="/signin"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium gradient-movie text-primary-foreground"
+            >
+              <LogIn className="w-4 h-4" />
+              Sign In
+            </Link>
+          )}
+        </div>
+
+        {/* Mobile menu button */}
+        <button className="md:hidden p-2 text-foreground" onClick={() => setMobileOpen(!mobileOpen)}>
+          {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {/* Mobile menu */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="md:hidden glass-nav border-t border-border overflow-hidden"
+          >
+            <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
+              {navLinks.map((link) => (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  onClick={() => setMobileOpen(false)}
+                  className="flex items-center gap-3 px-4 py-3 rounded-lg text-foreground hover:bg-muted/50 transition-colors"
+                >
+                  <link.icon className="w-5 h-5" />
+                  {link.label}
+                </Link>
+              ))}
+              {user ? (
+                <>
+                  <Link to="/messages" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-foreground hover:bg-muted/50 transition-colors">
+                    <MessageSquare className="w-5 h-5" />
+                    Messages
                   </Link>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.header>
-      )}
-    </AnimatePresence>
+                  <Link to="/profile" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium">
+                    <User className="w-5 h-5" />
+                    Profile
+                  </Link>
+                  <button onClick={async () => { await signOut(); setMobileOpen(false); navigate("/"); }} className="flex items-center gap-3 px-4 py-3 rounded-lg text-destructive hover:bg-muted/50 transition-colors">
+                    <LogOut className="w-5 h-5" />
+                    Sign Out
+                  </button>
+                </>
+              ) : (
+                <Link to="/signin" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium">
+                  <LogIn className="w-5 h-5" />
+                  Sign In
+                </Link>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </header>
   );
 }

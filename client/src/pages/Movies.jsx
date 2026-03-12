@@ -7,8 +7,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
-import Navbar from "@/components/navigation/Navbar";
-import MobileNav from "@/components/navigation/MobileNav";
+
 import CreateRoomDialog from "@/components/CreateRoomDialog";
 import JoinRoomDialog from "@/components/JoinRoomDialog";
 import { useAuth } from "@/hooks/useAuth";
@@ -87,9 +86,8 @@ const Movies = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-background pb-16 md:pb-0">
-      <Navbar />
-      <main className="pt-20 pb-12">
+    <>
+      <main className="pb-12">
         <div className="container mx-auto px-4 lg:px-8">
 
           {/* Hero Section */}
@@ -536,10 +534,9 @@ const Movies = () => {
           </motion.div>
         </div>
       </main>
-      <MobileNav />
       <CreateRoomDialog open={createOpen} onClose={() => setCreateOpen(false)} type="movie" />
       <JoinRoomDialog open={joinOpen} onClose={() => setJoinOpen(false)} />
-    </div>
+    </>
   );
 };
 
