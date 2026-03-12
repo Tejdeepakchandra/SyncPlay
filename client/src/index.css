@@ -55,7 +55,7 @@
   }
 
   .glass-nav {
-    @apply backdrop-blur-2xl bg-background/70 border-b border-glass-border;
+    @apply backdrop-blur-md bg-background/80 border-b border-glass-border;
   }
 
   .glow-movie {

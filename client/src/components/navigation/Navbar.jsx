@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Film, Music, Users, Bell, User, Menu, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -17,11 +17,22 @@ export default function Navbar() {
   const navigate = useNavigate();
   const { isVisible, currentTheme, navigateWithAnimation } = useNavbarAnimation();
 
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", onScroll);
-    return () => window.removeEventListener("scroll", onScroll);
+  const rafRef = useRef(null);
+  const handleScroll = useCallback(() => {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      setScrolled(window.scrollY > 20);
+      rafRef.current = null;
+    });
   }, []);
+
+  useEffect(() => {
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [handleScroll]);
 
   const handleNavigation = (to) => (e) => {
     e.preventDefault();
@@ -115,8 +126,8 @@ const getLogoHover = () => {
               className="flex items-center gap-2 group"
             >
               <motion.div
-                whileHover={{ rotate: 360, scale: 1.1 }}
-                transition={{ duration: 0.5 }}
+                whileHover={{ scale: 1.1 }}
+                transition={{ duration: 0.2 }}
                 className={`w-8 h-8 rounded-lg ${getLogoGradient()} flex items-center justify-center`}
               >
                 <span className="text-primary-foreground font-bold text-sm">▶</span>
