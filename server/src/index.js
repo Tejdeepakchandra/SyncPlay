@@ -6,6 +6,8 @@ const helmet = require('helmet');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 
+// Load environment variables BEFORE any config that reads process.env
+dotenv.config();
 
 // CONFIGURATION & DATABASES
 
@@ -16,9 +18,6 @@ const { setupSocketHandlers } = require('./socket');
 const { authMiddleware } = require('./middleware/auth');
 const { rateLimiter } = require('./middleware/rateLimiter');
 const { startPresenceCleanup } = require('./jobs/presenceCleanup');
-
-// Load environment variables
-dotenv.config();
 
 // Initialize Express
 const app = express();

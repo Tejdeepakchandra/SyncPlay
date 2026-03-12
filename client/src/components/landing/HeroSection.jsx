@@ -4,6 +4,13 @@ import { Film, Music, Play, Users, MessageCircle, Smile } from "lucide-react";
 import { leftReveal, rightReveal, floatEmoji, buttonHover } from "@/lib/landingAnimations";
 import heroImage from "@/assets/hero-image.jpg";
 
+// Pre-computed random positions to avoid impure Math.random in render
+const particlePositions = Array.from({ length: 10 }, (_, i) => ({
+  left: (17 + i * 8.3) % 100,
+  top: (23 + i * 7.1) % 100,
+  duration: 4 + (i % 5) * 0.8,
+}));
+
 export default function HeroSection() {
   return (
     <section className="relative min-h-screen flex items-center overflow-hidden pt-16">
@@ -19,20 +26,20 @@ export default function HeroSection() {
       </div>
 
       {/* Floating particles - Optimized */}
-      {[...Array(10)].map((_, i) => (
+      {particlePositions.map((p, i) => (
         <motion.div
           key={i}
           className="absolute w-1 h-1 rounded-full bg-primary/40"
           style={{
-            left: `${Math.random() * 100}%`,
-            top: `${Math.random() * 100}%`,
+            left: `${p.left}%`,
+            top: `${p.top}%`,
           }}
           animate={{
             y: [0, -40, 0],
             opacity: [0.2, 0.6, 0.2],
           }}
           transition={{
-            duration: 4 + Math.random() * 4,
+            duration: p.duration,
             repeat: Infinity,
             ease: "easeInOut",
             delay: i * 0.2,

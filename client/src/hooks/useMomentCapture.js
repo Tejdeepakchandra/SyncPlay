@@ -9,6 +9,12 @@ export const useMomentCapture = (roomId, roomCode) => {
   const captureTimeout = useRef(null);
   const socket = useSocket();
 
+  // Show notification for detected moment
+  const showMomentNotification = useCallback((moment) => {
+    // You can integrate with your toast/notification system
+    console.log('\u2728 New moment detected!', moment);
+  }, []);
+
   // Listen for moment detection
   useEffect(() => {
     if (!socket) return;
@@ -137,22 +143,28 @@ export const useMomentCapture = (roomId, roomCode) => {
     } catch (error) {
       console.error('Load moments error:', error);
     }
-  }, [roomCode]);
-
-  /**
-   * Show notification for detected moment
-   */
-  const showMomentNotification = (moment) => {
-    // You can integrate with your toast/notification system
-    console.log('✨ New moment detected!', moment);
-  };
+  }, [socket, roomCode, showMomentNotification]);
 
   // Load moments on mount
   useEffect(() => {
-    if (roomCode) {
-      loadMoments();
-    }
-  }, [roomCode, loadMoments]);
+    if (!roomCode) return;
+    let cancelled = false;
+    
+    const fetchMoments = async () => {
+      try {
+        const response = await fetch(`/api/moments/room/${encodeURIComponent(roomCode)}`);
+        const data = await response.json();
+        if (!cancelled && data.success) {
+          setMoments(data.data);
+        }
+      } catch (error) {
+        console.error('Load moments error:', error);
+      }
+    };
+    
+    fetchMoments();
+    return () => { cancelled = true; };
+  }, [roomCode]);
 
   return {
     moments,

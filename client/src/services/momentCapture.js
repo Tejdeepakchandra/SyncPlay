@@ -261,7 +261,7 @@ class MomentCaptureService {
    * Start recording with compression
    */
   async startRecording(stream, momentData) {
-    const { momentId, captureJobId } = momentData;
+    const { momentId: _momentId, captureJobId: _captureJobId } = momentData;
     
     // Check supported MIME types
     const mimeTypes = [
@@ -329,7 +329,7 @@ class MomentCaptureService {
   /**
    * Stop capture
    */
-  async stopCapture(momentId) {
+  async stopCapture() {
     this.isRecording = false;
     
     for (const [id, recorder] of this.mediaRecorders) {
@@ -382,7 +382,7 @@ class MomentCaptureService {
   /**
    * Get participant stream (from WebRTC)
    */
-  async getParticipantStream(userId) {
+  async getParticipantStream() {
     // This would be connected to your WebRTC service
     return null;
   }

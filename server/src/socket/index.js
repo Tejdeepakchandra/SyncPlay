@@ -4,7 +4,7 @@ const syncHandlers = require('./handlers/syncHandlers');
 const presenceHandlers = require('./handlers/presenceHandlers');
 const roomService = require('../services/roomService');
 const presenceService = require('../services/presenceService');
-const momentHandlers = require('./socket/handlers/momentHandlers');
+const momentHandlers = require('./handlers/momentHandlers');
 
 
  // Setup all socket handlers

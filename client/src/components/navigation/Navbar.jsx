@@ -73,7 +73,7 @@ export default function Navbar() {
   },
 };
 
-  const theme = themeColors[currentTheme] || themeColors.default;
+  const _theme = themeColors[currentTheme] || themeColors.default;
 
   // Get logo gradient based on current theme
   // Get logo gradient based on current theme

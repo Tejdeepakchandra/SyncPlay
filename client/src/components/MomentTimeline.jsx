@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export const MomentTimeline = ({ 
@@ -6,7 +6,6 @@ export const MomentTimeline = ({
   currentTime,
   moments = [],
   onMomentClick,
-  onMomentHover,
   className = ''
 }) => {
   const [hoveredMoment, setHoveredMoment] = useState(null);

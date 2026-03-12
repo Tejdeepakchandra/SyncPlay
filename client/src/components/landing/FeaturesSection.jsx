@@ -66,7 +66,7 @@ export default function FeaturesSection() {
           viewport={{ once: true, amount: 0.3 }}
           className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6"
         >
-          {features.map((feature, i) => (
+          {features.map((feature) => (
             <motion.div
               key={feature.title}
               variants={cardItem}

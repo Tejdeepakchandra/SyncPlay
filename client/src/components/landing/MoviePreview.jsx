@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Play, Users, MessageCircle, Maximize, Volume2 } from "lucide-react";
-import { leftReveal, rightReveal, staggerContainer, bulletItem, cardHover } from "@/lib/landingAnimations";
+import { leftReveal, rightReveal, staggerContainer, bulletItem } from "@/lib/landingAnimations";
 
 export default function MoviePreview() {
   const bulletPoints = [

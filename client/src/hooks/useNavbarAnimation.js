@@ -3,7 +3,6 @@ import { useLocation } from 'react-router-dom'
 
 export function useNavbarAnimation() {
   const [isVisible, setIsVisible] = useState(true)
-  const [currentTheme, setCurrentTheme] = useState('default')
   const location = useLocation()
   const navigationTimerRef = useRef(null)
   const isNavigatingRef = useRef(false)
@@ -43,21 +42,13 @@ export function useNavbarAnimation() {
     }, 150)
   }
 
-  // Determine theme from path
-  useEffect(() => {
-    if (location.pathname.includes('/movies')) {
-      setCurrentTheme('movie')
-    } else if (location.pathname.includes('/music')) {
-      setCurrentTheme('music')
-    } else if (location.pathname.includes('/friends')) {
-      setCurrentTheme('friends')
-    } else {
-      setCurrentTheme('default')
-    }
-    
-    // Log for debugging
-    console.log('Theme updated:', location.pathname, currentTheme)
-  }, [location.pathname]) // Use pathname instead of whole location
+  // Derive theme from path
+  const currentTheme = (() => {
+    if (location.pathname.includes('/movies')) return 'movie'
+    if (location.pathname.includes('/music')) return 'music'
+    if (location.pathname.includes('/friends')) return 'friends'
+    return 'default'
+  })()
 
   // Cleanup on unmount
   useEffect(() => {
