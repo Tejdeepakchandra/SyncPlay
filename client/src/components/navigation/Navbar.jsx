@@ -17,7 +17,7 @@ export default function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
   const notifRef = useRef(null);
-  const { user, profile, signOut } = useAuth();
+  const { user, clerkUser, isAuthenticated, signOut } = useAuth();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
@@ -65,7 +65,7 @@ export default function Navbar() {
 
         {/* Right side – desktop */}
         <div className="hidden md:flex items-center gap-2">
-          {user && (
+          {isAuthenticated && (
             <>
               <button
                 onClick={() => navigate("/messages")}
@@ -80,14 +80,14 @@ export default function Navbar() {
             </>
           )}
 
-          {user ? (
+          {isAuthenticated ? (
             <div className="flex items-center gap-2">
               <Link
                 to="/profile"
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-foreground bg-muted hover:bg-muted/80 transition-colors"
               >
-                <span className="text-base">{profile?.avatar_emoji || "🧑"}</span>
-                {profile?.display_name || "Profile"}
+                <span className="text-base">🧑</span>
+                {user?.name || clerkUser?.fullName || "Profile"}
               </Link>
               <button
                 onClick={async () => { await signOut(); navigate("/"); }}
@@ -99,8 +99,8 @@ export default function Navbar() {
             </div>
           ) : (
             <Link
-              to="/signin"
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium gradient-movie text-primary-foreground"
+              to="/sign-in"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium gradient-movie text-primary-foreground hover:opacity-90 transition-opacity"
             >
               <LogIn className="w-4 h-4" />
               Sign In
@@ -135,7 +135,7 @@ export default function Navbar() {
                   {link.label}
                 </Link>
               ))}
-              {user ? (
+              {isAuthenticated ? (
                 <>
                   <Link to="/messages" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-foreground hover:bg-muted/50 transition-colors">
                     <MessageSquare className="w-5 h-5" />
@@ -151,7 +151,7 @@ export default function Navbar() {
                   </button>
                 </>
               ) : (
-                <Link to="/signin" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium">
+                <Link to="/sign-in" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium">
                   <LogIn className="w-5 h-5" />
                   Sign In
                 </Link>

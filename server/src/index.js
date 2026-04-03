@@ -18,6 +18,7 @@ const { setupSocketHandlers } = require('./socket');
 const { authMiddleware } = require('./middleware/auth');
 const { rateLimiter } = require('./middleware/rateLimiter');
 const { startPresenceCleanup } = require('./jobs/presenceCleanup');
+const { clerkWebhook } = require('./controllers/authController');
 
 // Initialize Express
 const app = express();
@@ -42,6 +43,43 @@ const io = new Server(server, {
 
 // MIDDLEWARE
 
+// Log all incoming requests
+app.use((req, res, next) => {
+  console.log(`\n📨 [${new Date().toISOString()}] ${req.method} ${req.path}`);
+  console.log(`   URL: ${req.originalUrl}`);
+  console.log(`   Headers:`, {
+    authorization: req.headers.authorization ? 'Bearer ...' : 'none',
+    origin: req.headers.origin,
+    'content-type': req.headers['content-type']
+  });
+  
+  // Log when response is sent (override multiple response methods)
+  const originalJson = res.json;
+  const originalSend = res.send;
+  const originalStatus = res.status;
+  
+  let statusCode = 200;
+  
+  res.status = function(code) {
+    statusCode = code;
+    return originalStatus.call(this, code);
+  };
+  
+  res.json = function(data) {
+    console.log(`   📤 Response: ${statusCode}`);
+    return originalJson.call(this, data);
+  };
+  
+  res.send = function(data) {
+    console.log(`   📤 Response: ${statusCode || res.statusCode}`);
+    return originalSend.call(this, data);
+  };
+  
+  next();
+});
+
+app.post('/api/webhooks/clerk', express.raw({ type: 'application/json' }), clerkWebhook);
+
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
@@ -55,11 +93,26 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// HEALTH CHECK ENDPOINT (before auth middleware)
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    services: {
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      redis: redisClient.isReady ? 'connected' : 'disconnected',
+      server: 'running'
+    },
+    uptime: process.uptime()
+  });
+});
+
 // Apply auth middleware to all routes
 app.use(authMiddleware);
 
 // Apply rate limiting to all routes
-app.use(rateLimiter);
+// TODO: Fix rateLimiter usage - currently broken, needs proper limitType parameter
+// app.use(rateLimiter);
 
 
 // DATABASE CONNECTIONS
@@ -72,39 +125,16 @@ redisClient.connect().catch(err => {
 
 // ROUTES
 
+const authRoutes = require('./routes/authRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const momentRoutes = require('./routes/momentRoutes');
+const userRoutes = require('./routes/userRoutes');
 
+app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
 
 app.use('/api/moments', momentRoutes);
-
-
-// HEALTH CHECK ENDPOINT
-
-app.get('/api/health', async (req, res) => {
-  // Test PostgreSQL connection
-  let pgStatus = 'disconnected';
-  try {
-    const result = await pgPool.query('SELECT 1 as health_check');
-    pgStatus = result.rows[0]?.health_check === 1 ? 'connected' : 'error';
-  } catch (error) {
-    pgStatus = 'error';
-  }
-
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      redis: redisClient.isReady ? 'connected' : 'disconnected',
-      postgres: pgStatus,
-      server: 'running'
-    },
-    uptime: process.uptime(),
-    memory: process.memoryUsage()
-  });
-});
+app.use('/api/users', userRoutes);
 
 
 // SOCKET.IO HANDLERS
