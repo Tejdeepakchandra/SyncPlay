@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { ClerkProvider } from "@clerk/clerk-react";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { useAuthSync } from "@/hooks/useAuthSync";
 import { AppRouter } from "./router/AppRouter";
 
 const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -21,30 +22,46 @@ const queryClient = new QueryClient({
 
 function AppInner() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner position="top-right" closeButton />
-        <BrowserRouter>
-          <AppRouter />
-        </BrowserRouter>
-      </TooltipProvider>
-    </QueryClientProvider>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner position="top-right" closeButton />
+      <BrowserRouter>
+        <AppRouter />
+      </BrowserRouter>
+    </TooltipProvider>
   );
+}
+
+/** Runs inside ClerkProvider to bridge auth with backend */
+function AuthSyncBridge({ children }) {
+  useAuthSync();
+  return children;
 }
 
 function App() {
   // When no Clerk key is configured, render without Clerk/Auth
   if (!CLERK_KEY) {
-    return <AppInner />;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <AppInner />
+      </QueryClientProvider>
+    );
   }
 
   return (
-    <ClerkProvider publishableKey={CLERK_KEY}>
-      <AuthProvider>
-        <AppInner />
-      </AuthProvider>
-    </ClerkProvider>
+    <QueryClientProvider client={queryClient}>
+      <ClerkProvider
+        publishableKey={CLERK_KEY}
+        signInUrl="/sign-in"
+        signUpUrl="/sign-up"
+      >
+        <AuthProvider>
+          <AuthSyncBridge>
+            <AppInner />
+          </AuthSyncBridge>
+        </AuthProvider>
+      </ClerkProvider>
+    </QueryClientProvider>
   );
 }
 
