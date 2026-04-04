@@ -14,7 +14,8 @@ const setupSocketHandlers = (io) => {
   io.use(authenticateSocket);
 
   io.on('connection', (socket) => {
-    console.log(`🔌 Socket connected: ${socket.id} (User: ${socket.userId})`);
+    const userDisplay = socket.isGuest ? `guest (${socket.userId.substring(0, 8)})` : socket.username || socket.userId;
+    console.log(`🔌 Socket connected: ${socket.id} → ${userDisplay}`);
 
     // Initialize all handlers
     roomHandlers(socket, io);
