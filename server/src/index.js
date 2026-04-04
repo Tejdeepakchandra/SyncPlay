@@ -43,37 +43,17 @@ const io = new Server(server, {
 
 // MIDDLEWARE
 
-// Log all incoming requests
+// Log incoming requests (REDUCED - only errors and important events)
 app.use((req, res, next) => {
-  console.log(`\n📨 [${new Date().toISOString()}] ${req.method} ${req.path}`);
-  console.log(`   URL: ${req.originalUrl}`);
-  console.log(`   Headers:`, {
-    authorization: req.headers.authorization ? 'Bearer ...' : 'none',
-    origin: req.headers.origin,
-    'content-type': req.headers['content-type']
-  });
-  
-  // Log when response is sent (override multiple response methods)
-  const originalJson = res.json;
-  const originalSend = res.send;
-  const originalStatus = res.status;
-  
-  let statusCode = 200;
-  
-  res.status = function(code) {
-    statusCode = code;
-    return originalStatus.call(this, code);
-  };
-  
-  res.json = function(data) {
-    console.log(`   📤 Response: ${statusCode}`);
-    return originalJson.call(this, data);
-  };
-  
-  res.send = function(data) {
-    console.log(`   📤 Response: ${statusCode || res.statusCode}`);
-    return originalSend.call(this, data);
-  };
+  // Only log non-health-check requests
+  if (req.path !== '/api/health') {
+    const timestamp = new Date().toISOString();
+    const method = req.method;
+    const path = req.path;
+    const isAuth = req.headers.authorization ? '🔐' : '🔓';
+    
+    console.log(`${timestamp} ${isAuth} ${method.padEnd(6)} ${path}`);
+  }
   
   next();
 });

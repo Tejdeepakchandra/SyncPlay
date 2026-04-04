@@ -9,10 +9,6 @@ const User = require('../models/mongodb/User');
  */
 router.post('/sync', async (req, res) => {
   try {
-    console.log('🔄 POST /auth/sync called');
-    console.log('   clerkId:', req.userId);
-    console.log('   body:', { email: req.body.email, username: req.body.username });
-    
     if (req.isGuest) {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
@@ -29,48 +25,52 @@ router.post('/sync', async (req, res) => {
       .replace(/[^a-z0-9_-]/g, '')
       .substring(0, 30) || 'user';
 
-    console.log('   Upserting with:', { clerkId, email, username: safeUsername });
+    // ✅ FIX: Use find first to avoid email conflict during update
+    // MongoDB throws ConflictingUpdateOperators when updating unique-indexed fields with $set + $setOnInsert
+    const existingUser = await User.findOne({ clerkId });
 
-    const user = await User.findOneAndUpdate(
-      { clerkId },
-      {
-        $set: {
-          email: email?.toLowerCase(),
-          username: safeUsername,
-          displayName: displayName || safeUsername || 'User',
-          avatar: imageUrl || 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
-          lastActive: new Date(),
-          isOnline: true,
-        },
-        $setOnInsert: {
-          clerkId,
-          email: email?.toLowerCase() || `user-${clerkId}@syncplay.local`,
-          username: safeUsername,
-          displayName: displayName || safeUsername || 'User',
-          avatar: imageUrl || 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
-          preferences: {
-            theme: 'dark',
-            notifications: { email: true, push: true, storyRemainders: true },
-            autoStory: false,
+    let user;
+    if (existingUser) {
+      // User exists: only update non-conflicting fields
+      user = await User.findOneAndUpdate(
+        { clerkId },
+        {
+          $set: {
+            displayName: displayName || existingUser.displayName || 'User',
+            avatar: imageUrl || existingUser.avatar,
+            lastActive: new Date(),
+            isOnline: true,
           },
-          stats: {
-            roomsCreated: 0,
-            roomsJoined: 0,
-            watchTimeMinutes: 0,
-            friendsCount: 0,
-            momentCreated: 0,
-            storiesCreated: 0,
-          },
-          friends: [],
-          createdAt: new Date(),
         },
-      },
-      { upsert: true, returnDocument: 'after' } // Use returnDocument instead of deprecated new
-    );
+        { returnDocument: 'after' }
+      );
+    } else {
+      // New user: create with all fields (no $setOnInsert conflict)
+      user = await User.create({
+        clerkId,
+        email: email?.toLowerCase() || `user-${clerkId}@syncplay.local`,
+        username: safeUsername,
+        displayName: displayName || safeUsername || 'User',
+        avatar: imageUrl || 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
+        preferences: {
+          theme: 'dark',
+          notifications: { email: true, push: true, storyRemainders: true },
+          autoStory: false,
+        },
+        stats: {
+          roomsCreated: 0,
+          roomsJoined: 0,
+          watchTimeMinutes: 0,
+          friendsCount: 0,
+          momentCreated: 0,
+          storiesCreated: 0,
+        },
+        friends: [],
+        createdAt: new Date(),
+      });
+    }
 
-    console.log('✅ User synced:', user._id);
-
-    res.json({
+    return res.json({
       success: true,
       user: {
         id: user._id,
@@ -80,12 +80,10 @@ router.post('/sync', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Auth sync error:', error.message);
-    console.error('   Full error:', error);
+    console.error('❌ /api/auth/sync error:', error.message);
     
     // Handle duplicate key errors (race condition: two tabs sync simultaneously)
-    if (error.code === 11000) {
-      console.log('   Handling duplicate key - returning existing user');
+    if (error.code === 11000 || error.code === 40) {
       const existing = await User.findOne({ clerkId: req.userId });
       if (existing) {
         return res.json({
@@ -100,8 +98,7 @@ router.post('/sync', async (req, res) => {
       }
     }
     
-    res.status(500).json({ success: false, message: 'Failed to sync user', error: error.message });
-    res.status(500).json({ success: false, message: 'Failed to sync user' });
+    return res.status(500).json({ success: false, message: 'Failed to sync user', error: error.message });
   }
 });
 
