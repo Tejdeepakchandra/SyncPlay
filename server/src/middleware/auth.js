@@ -20,6 +20,7 @@ const generateGuestId = (req) => {
  * Falls back to guest mode for unauthenticated requests
  */
 const authMiddleware = async (req, res, next) => {
+  const startTime = Date.now();
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
@@ -30,7 +31,7 @@ const authMiddleware = async (req, res, next) => {
       return next();
     }
 
-    // Decode and verify the JWT token from Clerk
+    // Decode and verify the JWT token from Clerk (synchronous, no DB call)
     const decoded = jwt.decode(token, { complete: true });
     
     if (!decoded || !decoded.payload.sub) {
@@ -42,38 +43,18 @@ const authMiddleware = async (req, res, next) => {
 
     const clerkUserId = decoded.payload.sub;
     
-    // Try to find user in database with timeout
-    let user;
-    try {
-      user = await Promise.race([
-        User.findOne({ clerkId: clerkUserId }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Database query timeout')), 5000)
-        )
-      ]);
-    } catch (dbErr) {
-      user = null;
-    }
+    // DON'T QUERY DATABASE IN AUTH MIDDLEWARE - CAUSES TIMEOUTS
+    // Just set the user ID from Clerk token
+    req.userId = clerkUserId;
+    req.clerkId = clerkUserId;
+    req.isGuest = false;
+    req.userRole = 'user';
+    req.userPending = true; // Flag for pending user creation via webhook
     
-    if (user) {
-      req.userId = user._id.toString();
-      req.clerkId = clerkUserId;
-      req.isGuest = false;
-      req.userRole = 'user';
-      
-      // Update last active (async, don't await)
-      User.findByIdAndUpdate(user._id, { lastActive: new Date(), isOnline: true }).catch(() => {});
-    } else {
-      // User has valid Clerk token but NOT in our DB yet
-      // This is normal after OAuth signin - webhook will create user soon
-      req.userId = clerkUserId;
-      req.clerkId = clerkUserId;
-      req.isGuest = false;
-      req.userRole = 'user';
-      req.userPending = true; // Flag for pending user creation
-    }
+    console.log(`[AUTH] ✅ Token verified (${Date.now() - startTime}ms): ${clerkUserId.substring(0, 8)}...`);
+    next();
   } catch (error) {
-    console.error('❌ Auth middleware error:', error);
+    console.error(`[AUTH] ❌ Error (${Date.now() - startTime}ms):`, error.message);
     req.userId = generateGuestId(req);
     req.isGuest = true;
     req.userRole = 'guest';

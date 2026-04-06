@@ -28,6 +28,9 @@ import RoomAccessGate from "@/components/RoomAccessGate";
 import HostControlsPanel from "@/components/HostControlsPanel";
 import RoomInfoBar from "@/components/RoomInfoBar";
 import YouTubeSearchTab from "@/components/YouTubeSearchTab";
+import GuestNameDialog from "@/components/GuestNameDialog";
+import WaitingAreaDialog from "@/components/WaitingAreaDialog";
+import JoinRequestNotification from "@/components/JoinRequestNotification";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -36,16 +39,29 @@ const reactionEmojis = ["🔥", "😂", "👏", "❤️", "😱", "🎬"];
 
 const MovieRoom = () => {
   const navigate = useNavigate();
-  const { roomId } = useParams();
+  const { roomCode } = useParams();
   const { user, profile } = useAuth();
   const [isMobile] = useState(false);
 
   // Room data from backend
-  const { room, participants: dbParticipants, isHost, accessStatus } = useRoom(roomId);
-  const { messages, sendMessage } = useRoomChat(roomId);
+  const { 
+    room, 
+    participants: dbParticipants, 
+    isHost, 
+    accessStatus,
+    joinStatus,
+    joinRequests,
+    waitingUsers,
+    joinAsGuest,
+    acceptJoinRequest,
+    rejectJoinRequest
+  } = useRoom(roomCode);
+  const { messages, sendMessage } = useRoomChat(roomCode);
   const addMoment = useMomentsStore((s) => s.addMoment);
 
   // Local state
+  const [guestNameSubmitted, setGuestNameSubmitted] = useState(false);
+  const [isJoiningAsGuest, setIsJoiningAsGuest] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -131,7 +147,7 @@ const MovieRoom = () => {
 
   // Sync engine
   const roomSync = useRoomSync({
-    roomId,
+    roomCode,
     isHost,
     isCoHost: userRole === "co-host",
     onMediaChange: (media) => {
@@ -186,11 +202,11 @@ const MovieRoom = () => {
 
   // WebRTC mesh for video chat
   const otherParticipantIds = (dbParticipants || [])
-    .filter(p => p.user_id !== user?.id)
-    .map(p => p.user_id);
+    .filter(p => p.userId !== user?.id)
+    .map(p => p.userId);
 
   const meshStreams = useWebRTCMesh({
-    roomId,
+    roomCode,
     participantIds: otherParticipantIds,
     localStream: webrtc.stream,
     enabled: showVideoChat,
@@ -208,7 +224,7 @@ const MovieRoom = () => {
         addMoment({
           type: "activity-card",
           activityType: "movie",
-          title: `Movie Room ${roomId}`,
+          title: `Movie Room ${roomCode}`,
           detail: `Watched with ${participants.length} people`,
           emoji: "🎬",
           stats: [
@@ -220,45 +236,46 @@ const MovieRoom = () => {
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addMoment, roomId]);
+  }, [addMoment, roomCode]);
 
   // Build participants list
   useEffect(() => {
     const list = [];
     if (profile) {
       list.push({
-        name: profile.display_name + (isHost ? " (Host)" : ""),
+        name: profile.display_name, // Don't append " (Host)" - it will show in role badge
         emoji: profile.avatar_emoji || "😎",
         speaking: false,
-        role: isHost ? "host" : (dbParticipants?.find(p => p.user_id === user?.id)?.role || "guest"),
+        role: isHost ? "host" : "participant",
         audioEnabled: webrtc.audioEnabled,
         videoEnabled: webrtc.videoEnabled,
         chatEnabled: true,
         username: profile.username || "",
         isOnline: true,
-        odlUserId: user?.id,
+        userId: user?.id,
       });
     }
 
-    if (dbParticipants) {
+    if (dbParticipants && dbParticipants.length > 0) {
       dbParticipants.forEach(p => {
-        if (p.user_id === user?.id) return;
-        const prof = p.profile || p.profiles;
-        const hasRemote = meshStreams.remoteStreams.has(p.user_id);
-        const remoteStream = meshStreams.remoteStreams.get(p.user_id);
+        // Skip if this is the current user (already added above)
+        if (p.userId === user?.id) return;
+        
+        const hasRemote = meshStreams.remoteStreams.has(p.userId);
+        const remoteStream = meshStreams.remoteStreams.get(p.userId);
         const remoteHasVideo = remoteStream ? remoteStream.getVideoTracks().some(t => t.enabled) : false;
 
         list.push({
-          name: prof?.display_name || "User",
-          emoji: prof?.avatar_emoji || "🧑",
+          name: p.displayName || "User",
+          emoji: "🧑",
           speaking: false,
           role: p.role || "guest",
           audioEnabled: hasRemote ? (remoteStream?.getAudioTracks().some(t => t.enabled) ?? true) : true,
           videoEnabled: hasRemote ? remoteHasVideo : false,
           chatEnabled: true,
-          username: prof?.username || "",
-          isOnline: prof?.is_online ?? true,
-          odlUserId: p.user_id,
+          username: p.username || "",
+          isOnline: true,
+          userId: p.userId,
         });
       });
     }
@@ -469,12 +486,81 @@ const MovieRoom = () => {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Handle guest name submission
+  const handleGuestNameSubmit = async (guestName) => {
+    setIsJoiningAsGuest(true);
+    try {
+      const result = await joinAsGuest(guestName);
+      setGuestNameSubmitted(true);
+      
+      if (result.status === "waiting_for_approval") {
+        toast.info("Your join request has been sent to the host");
+      } else if (result.status === "joined") {
+        toast.success("You've joined the room!");
+      }
+    } catch (error) {
+      toast.error(error.message || "Failed to join room");
+    } finally {
+      setIsJoiningAsGuest(false);
+    }
+  };
+
+  // Show access gate if not granted
   if (accessStatus !== "granted") {
     return <RoomAccessGate status={accessStatus} roomType="movie" />;
   }
 
+  // Show guest name dialog if not authenticated and not yet submitted
+  if (!user && !guestNameSubmitted && !joinStatus && !isHost) {
+    return (
+      <GuestNameDialog
+        roomName={room?.name}
+        onJoinAsGuest={handleGuestNameSubmit}
+        onSignIn={() => navigate("/auth")}
+        isLoading={isJoiningAsGuest}
+      />
+    );
+  }
+
+  // Show waiting area if join request is pending (guests only)
+  if (joinStatus === "waiting_for_approval") {
+    return (
+      <WaitingAreaDialog
+        roomName={room?.name}
+        guestName={user?.username || "Guest"}
+        onCancel={() => {
+          setGuestNameSubmitted(false);
+          navigate("/movies");
+        }}
+        roomType="movie"
+      />
+    );
+  }
+
+  // For authenticated users, they auto-join, so wait for joinStatus
+  // For hosts, just check if isHost is true
+  if (isHost) {
+    // Host is ready - they auto-joined
+  } else if (user && joinStatus !== "joined") {
+    // Authenticated user hasn't finished joining yet
+    return <RoomAccessGate status="loading" roomType="movie" />;
+  } else if (!user && !joinStatus) {
+    // Guest hasn't submitted name yet (handled above)
+    return <RoomAccessGate status="loading" roomType="movie" />;
+  }
+
   return (
     <div ref={containerRef} className={`h-screen bg-background flex flex-col transition-colors duration-700 overflow-hidden ${lightsOff ? "!bg-black" : ""}`}>
+      {/* Join Request Notifications for Host */}
+      {isHost && joinRequests.length > 0 && (
+        <JoinRequestNotification
+          joinRequests={joinRequests}
+          onAccept={acceptJoinRequest}
+          onReject={rejectJoinRequest}
+          isHost={isHost}
+        />
+      )}
+
       {/* Hidden file input */}
       <input ref={fileInputRef} type="file" accept="video/*" className="hidden" onChange={handleFileSelected} />
 
@@ -514,7 +600,7 @@ const MovieRoom = () => {
                 <h1 className="font-display text-sm font-semibold text-foreground">{room?.name || "Movie Room"}</h1>
                 <div className="flex items-center gap-2">
                   <p className="text-xs text-muted-foreground">
-                    {participants.length} watching · Room {roomId?.slice(0, 6)}
+                    {participants.length} watching · Room {roomCode?.slice(0, 6)}
                   </p>
                   <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
                     syncStatus === "synced" ? "bg-secondary/20 text-secondary" : "bg-accent/20 text-accent"
@@ -527,7 +613,16 @@ const MovieRoom = () => {
             </div>
 
             <div className="flex items-center gap-1 relative">
-              <RoomInfoBar roomId={roomId} roomType="movie" host={room?.host_id === user?.id ? "You (Host)" : participants.find(p => p.role === "host")?.name || "Host"} participantCount={participants.length} />
+              {/* Get host name from first participant (which is always the host) */}
+              {participants.length > 0 && (
+                <RoomInfoBar 
+                  roomId={roomCode} 
+                  roomType="movie" 
+                  host={participants.find(p => p.role === "host")?.name || participants[0]?.name || "Host"} 
+                  participantCount={participants.length} 
+                  isHost={isHost} 
+                />
+              )}
               <Button size="icon" variant="ghost" onClick={() => setLightsOff(true)} className="text-muted-foreground" title="Lights off">
                 <Moon className="w-4 h-4" />
               </Button>

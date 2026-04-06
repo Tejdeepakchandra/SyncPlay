@@ -2,6 +2,8 @@ const { authenticateSocket } = require('./middleware/auth');
 const roomHandlers = require('./handlers/roomHandlers');
 const syncHandlers = require('./handlers/syncHandlers');
 const presenceHandlers = require('./handlers/presenceHandlers');
+const chatHandlers = require('./handlers/chatHandlers');
+const webrtcHandlers = require('./handlers/webrtcHandlers');
 const roomService = require('../services/roomService');
 const presenceService = require('../services/presenceService');
 const momentHandlers = require('./handlers/momentHandlers');
@@ -17,10 +19,19 @@ const setupSocketHandlers = (io) => {
     const userDisplay = socket.isGuest ? `guest (${socket.userId.substring(0, 8)})` : socket.username || socket.userId;
     console.log(`🔌 Socket connected: ${socket.id} → ${userDisplay}`);
 
+    // Send socket.userId back to client so they know their assigned user ID
+    socket.emit('socket:identify', {
+      userId: socket.userId,
+      isGuest: socket.isGuest,
+      userRole: socket.userRole
+    });
+
     // Initialize all handlers
     roomHandlers(socket, io);
     syncHandlers(socket, io);
     presenceHandlers(socket, io);
+    chatHandlers(socket, io);
+    webrtcHandlers(socket, io);
     momentHandlers(socket, io);
 
     // Auto-leave room and cleanup on disconnect — FIXED

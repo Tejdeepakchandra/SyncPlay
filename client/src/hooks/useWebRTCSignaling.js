@@ -1,11 +1,11 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { socket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 
 /**
  * WebRTC Signaling Hook (Star Topology)
  * Host broadcasts screen share to all participants
- * Uses Supabase Realtime for signaling
+ * Uses Socket.IO for signaling
  */
 
 const ICE_SERVERS = {
@@ -18,9 +18,8 @@ const ICE_SERVERS = {
   ],
 };
 
-export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
+export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
   const { user } = useAuth();
-  const channelRef = useRef(null);
   const peersRef = useRef(new Map());
   const localStreamRef = useRef(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -32,10 +31,10 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
     participantIdsRef.current = participantIds;
   }, [isHost, participantIds]);
 
-  // Send signal
+  // Send signal via Socket.IO
   const sendSignal = useCallback((payload) => {
-    channelRef.current?.send({ type: "broadcast", event: "webrtc", payload });
-  }, []);
+    socket.emit("webrtc:signal", { roomCode, ...payload });
+  }, [roomCode]);
 
   // Create peer for participant (host side)
   const createPeerForParticipant = useCallback((peerId, stream) => {
@@ -48,11 +47,11 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
     // ICE candidates
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        sendSignal({
-          signal: "ice",
-          candidate: e.candidate.toJSON(),
-          from: user.id,
+        socket.emit("webrtc:ice-candidate", {
+          roomCode,
           to: peerId,
+          from: user.id,
+          candidate: e.candidate.toJSON(),
         });
       }
     };
@@ -62,11 +61,11 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        sendSignal({
-          signal: "offer",
-          sdp: pc.localDescription,
-          from: user.id,
+        socket.emit("webrtc:offer", {
+          roomCode,
           to: peerId,
+          from: user.id,
+          sdp: pc.localDescription,
         });
       } catch (err) {
         console.error("[WebRTC] Negotiation error:", err);
@@ -74,7 +73,7 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
     };
 
     return pc;
-  }, [user, sendSignal]);
+  }, [roomCode, user.id]);
 
   // Create peer for host (participant side)
   const createPeerForHost = useCallback((hostId) => {
@@ -95,17 +94,17 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
     // ICE candidates
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        sendSignal({
-          signal: "ice",
-          candidate: e.candidate.toJSON(),
-          from: user.id,
+        socket.emit("webrtc:ice-candidate", {
+          roomCode,
           to: hostId,
+          from: user.id,
+          candidate: e.candidate.toJSON(),
         });
       }
     };
 
     return pc;
-  }, [user, sendSignal]);
+  }, [roomCode, user.id]);
 
   const closeAllPeers = useCallback(() => {
     peersRef.current.forEach((pc) => pc.close());
@@ -113,114 +112,101 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
     setRemoteStream(null);
   }, []);
 
-  // Setup Supabase channel
+  // Setup Socket.IO listeners
   useEffect(() => {
-    if (!roomId || !user?.id) return;
+    if (!roomCode || !user?.id) return;
 
-    const channel = supabase.channel(`rtc-signal-${roomId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const myId = user.id;
 
-    channel
-      .on("broadcast", { event: "webrtc" }, async ({ payload }) => {
-        const myId = user.id;
+    const handleRequestStream = async ({ from }) => {
+      if (!isHostRef.current || !localStreamRef.current) return;
 
-        switch (payload.signal) {
-          case "request_stream": {
-            if (!isHostRef.current || !localStreamRef.current) break;
+      const pc = createPeerForParticipant(from, localStreamRef.current);
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit("webrtc:offer", {
+          roomCode,
+          to: from,
+          from: myId,
+          sdp: pc.localDescription,
+        });
+      } catch (err) {
+        console.error("[WebRTC] Offer creation failed:", err);
+      }
+    };
 
-            const pc = createPeerForParticipant(payload.from, localStreamRef.current);
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              sendSignal({
-                signal: "offer",
-                sdp: pc.localDescription,
-                from: myId,
-                to: payload.from,
-              });
-            } catch (err) {
-              console.error("[WebRTC] Offer creation failed:", err);
-            }
-            break;
-          }
+    const handleOffer = async ({ from, sdp }) => {
+      let pc = peersRef.current.get(from);
+      if (!pc) pc = createPeerForHost(from);
 
-          case "offer": {
-            if (payload.to !== myId) break;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("webrtc:answer", {
+          roomCode,
+          to: from,
+          from: myId,
+          sdp: pc.localDescription,
+        });
+      } catch (err) {
+        console.error("[WebRTC] Answer creation failed:", err);
+      }
+    };
 
-            let pc = peersRef.current.get(payload.from);
-            if (!pc) pc = createPeerForHost(payload.from);
-
-            try {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              sendSignal({
-                signal: "answer",
-                sdp: pc.localDescription,
-                from: myId,
-                to: payload.from,
-              });
-            } catch (err) {
-              console.error("[WebRTC] Answer creation failed:", err);
-            }
-            break;
-          }
-
-          case "answer": {
-            if (payload.to !== myId) break;
-
-            const pc = peersRef.current.get(payload.from);
-            if (pc) {
-              try {
-                await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              } catch (err) {
-                console.error("[WebRTC] Set remote description failed:", err);
-              }
-            }
-            break;
-          }
-
-          case "ice": {
-            if (payload.to !== myId) break;
-
-            const pc = peersRef.current.get(payload.from);
-            if (pc) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-              } catch {
-                // Ignore - may arrive before remote description
-              }
-            }
-            break;
-          }
-
-          case "stream_stopped": {
-            const pc = peersRef.current.get(payload.from);
-            if (pc) {
-              pc.close();
-              peersRef.current.delete(payload.from);
-            }
-            setRemoteStream(null);
-            break;
-          }
+    const handleAnswer = async ({ from, sdp }) => {
+      const pc = peersRef.current.get(from);
+      if (pc) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } catch (err) {
+          console.error("[WebRTC] Set remote description failed:", err);
         }
-      })
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          if (!isHostRef.current) {
-            sendSignal({ signal: "request_stream", from: user.id });
-          }
-        }
-      });
+      }
+    };
 
-    channelRef.current = channel;
+    const handleIceCandidate = async ({ from, candidate }) => {
+      const pc = peersRef.current.get(from);
+      if (pc) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch {
+          // Ignore - may arrive before remote description
+        }
+      }
+    };
+
+    const handleStreamStopped = ({ from }) => {
+      const pc = peersRef.current.get(from);
+      if (pc) {
+        pc.close();
+        peersRef.current.delete(from);
+      }
+      setRemoteStream(null);
+    };
+
+    // Register listeners
+    socket.on("webrtc:request-stream", handleRequestStream);
+    socket.on("webrtc:offer", handleOffer);
+    socket.on("webrtc:answer", handleAnswer);
+    socket.on("webrtc:ice-candidate", handleIceCandidate);
+    socket.on("webrtc:stream-stopped", handleStreamStopped);
+
+    // If not host, request stream on connection
+    if (!isHostRef.current) {
+      socket.emit("webrtc:request-stream", { roomCode, from: myId });
+    }
 
     return () => {
       closeAllPeers();
-      supabase.removeChannel(channel);
+      socket.off("webrtc:request-stream", handleRequestStream);
+      socket.off("webrtc:offer", handleOffer);
+      socket.off("webrtc:answer", handleAnswer);
+      socket.off("webrtc:ice-candidate", handleIceCandidate);
+      socket.off("webrtc:stream-stopped", handleStreamStopped);
     };
-  }, [roomId, user?.id, createPeerForParticipant, createPeerForHost, sendSignal, closeAllPeers]);
+  }, [roomCode, user?.id, createPeerForParticipant, createPeerForHost, closeAllPeers]);
 
   // Host: start broadcasting
   const startBroadcastStream = useCallback((stream) => {
@@ -235,9 +221,9 @@ export const useWebRTCSignaling = ({ roomId, isHost, participantIds }) => {
   // Host: stop broadcasting
   const stopBroadcastStream = useCallback(() => {
     localStreamRef.current = null;
-    sendSignal({ signal: "stream_stopped", from: user.id });
+    socket.emit("webrtc:stream-stopped", { roomCode, from: user.id });
     closeAllPeers();
-  }, [user, sendSignal, closeAllPeers]);
+  }, [roomCode, user.id, closeAllPeers]);
 
   return {
     remoteStream,

@@ -6,6 +6,35 @@ let socketInstance = null;
 let connectionInitiated = false; // ✅ Track if connect() was called
 
 /**
+ * Generate a unique guest ID for this browser window/tab
+ * Each tab gets a unique ID, even from the same IP
+ * Stored in sessionStorage so it persists for the tab's lifetime
+ */
+function generateUniqueGuestId() {
+  const storageKey = 'syncplay_guest_id';
+  
+  // Check if we already have a guest ID for this session
+  let guestId = sessionStorage.getItem(storageKey);
+  
+  if (!guestId) {
+    // Generate new unique ID: random 12-char hex string
+    const randomBytes = new Uint8Array(6);
+    crypto.getRandomValues(randomBytes);
+    const randomHex = Array.from(randomBytes)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    
+    guestId = `guest-${randomHex}`;
+    sessionStorage.setItem(storageKey, guestId);
+    console.log(`🔐 Generated new guest ID: ${guestId}`);
+  } else {
+    console.log(`🔐 Using existing guest ID: ${guestId}`);
+  }
+  
+  return guestId;
+}
+
+/**
  * Get the shared Socket.IO client instance (singleton).
  * Connects lazily on first call.
  */
@@ -59,8 +88,10 @@ export function connectSocket(token) {
     socket.auth = { token };
     console.log('🔌 Initiating authenticated socket connection...');
   } else {
-    socket.auth = {}; // Empty auth = guest mode
-    console.log('🔌 Initiating guest socket connection...');
+    // For guest mode, include unique guest ID
+    const guestId = generateUniqueGuestId();
+    socket.auth = { guestId }; // Send unique guest ID to server
+    console.log('🔌 Initiating guest socket connection with guestId:', guestId);
   }
   
   connectionInitiated = true;
@@ -81,3 +112,24 @@ export function disconnectSocket() {
     connectionInitiated = false; // Reset flag even if not connected
   }
 }
+
+/**
+ * Singleton export for easy access
+ * Use: import { socket } from "@/services/socket"
+ */
+export const socket = {
+  emit: (...args) => getSocket().emit(...args),
+  on: (...args) => getSocket().on(...args),
+  off: (...args) => getSocket().off(...args),
+  connect: () => connectSocket(),
+  disconnect: () => disconnectSocket(),
+  get connected() {
+    return getSocket().connected;
+  },
+  get userId() {
+    return getSocket().userId;
+  },
+  get isGuest() {
+    return getSocket().isGuest;
+  },
+};

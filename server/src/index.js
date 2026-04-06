@@ -95,14 +95,6 @@ app.use(authMiddleware);
 // app.use(rateLimiter);
 
 
-// DATABASE CONNECTIONS
-
-connectDB();
-redisClient.connect().catch(err => {
-  console.error('❌ Redis connection failed:', err.message);
-});
-
-
 // ROUTES
 
 const authRoutes = require('./routes/authRoutes');
@@ -112,7 +104,6 @@ const userRoutes = require('./routes/userRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
-
 app.use('/api/moments', momentRoutes);
 app.use('/api/users', userRoutes);
 
@@ -125,14 +116,21 @@ setupSocketHandlers(io);
 // ERROR HANDLING
 
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.stack);
+  console.error('❌ Error:', err.message || err);
   
-  // Log to PostgreSQL
-  pgPool.query(
-    `INSERT INTO error_logs (error, path, method, user_id, timestamp) 
-     VALUES ($1, $2, $3, $4, NOW())`,
-    [err.message, req.path, req.method, req.userId || 'anonymous']
-  ).catch(e => console.error('Failed to log error:', e));
+  // Try to log to PostgreSQL (but don't fail if table doesn't exist)
+  if (pgPool && process.env.NODE_ENV === 'production') {
+    pgPool.query(
+      `INSERT INTO error_logs (error, path, method, user_id, timestamp) 
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [err.message || 'Unknown error', req.path, req.method, req.userId || 'anonymous']
+    ).catch(e => {
+      // Silently fail - table might not exist in development
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[INFO] PostgreSQL logging skipped (table may not exist)');
+      }
+    });
+  }
 
   res.status(err.status || 500).json({
     success: false,
@@ -150,16 +148,46 @@ app.use((req, res) => {
 });
 
 
-// START SERVER
+// START SERVER - Wait for databases to connect first
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log('\n=================================');
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-  console.log('=================================\n');
-});
+
+async function startServer() {
+  try {
+    // Verify environment variables
+    if (!process.env.MONGODB_URI) {
+      throw new Error('MONGODB_URI environment variable not set');
+    }
+
+    // Connect to MongoDB
+    console.log('⏳ Connecting to MongoDB...');
+    await connectDB();
+    console.log('✅ MongoDB connected');
+    
+    // Connect to Redis (optional, will continue if fails)
+    console.log('⏳ Connecting to Redis...');
+    try {
+      await redisClient.connect();
+      console.log('✅ Redis connected');
+    } catch (redisErr) {
+      console.warn('⚠️ Redis connection failed (optional):', redisErr.message);
+    }
+    
+    // Now start listening
+    server.listen(PORT, () => {
+      console.log('\n=================================');
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📡 WebSocket server ready`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+      console.log('=================================\n');
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {

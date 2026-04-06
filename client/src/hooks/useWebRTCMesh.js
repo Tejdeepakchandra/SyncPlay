@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { socket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 
 /**
@@ -18,17 +18,14 @@ const ICE_SERVERS = {
   ],
 };
 
-export const useWebRTCMesh = ({ roomId, participantIds, localStream, enabled }) => {
+export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled }) => {
   const { user } = useAuth();
-  const channelRef = useRef(null);
   const peersRef = useRef(new Map());
   const [remoteStreams, setRemoteStreams] = useState(new Map());
   const localStreamRef = useRef(null);
   const participantIdsRef = useRef(participantIds);
   const enabledRef = useRef(enabled);
   const userIdRef = useRef(user?.id);
-  const subscribedRef = useRef(false);
-  const messageQueueRef = useRef([]);
 
   useEffect(() => {
     localStreamRef.current = localStream;
@@ -36,31 +33,6 @@ export const useWebRTCMesh = ({ roomId, participantIds, localStream, enabled }) 
     enabledRef.current = enabled;
     userIdRef.current = user?.id;
   }, [localStream, participantIds, enabled, user?.id]);
-
-  // Helper to send signals with queuing
-  const sendSignal = useCallback((payload) => {
-    const channel = channelRef.current;
-    if (!channel) return;
-
-    if (subscribedRef.current) {
-      channel.send({ type: "broadcast", event: "webrtc-mesh", payload });
-    } else {
-      messageQueueRef.current.push(payload);
-    }
-  }, []);
-
-  // Flush queued messages after subscription
-  const flushQueue = useCallback(() => {
-    const channel = channelRef.current;
-    if (!channel || !subscribedRef.current) return;
-
-    const queue = messageQueueRef.current;
-    messageQueueRef.current = [];
-
-    queue.forEach((payload) => {
-      channel.send({ type: "broadcast", event: "webrtc-mesh", payload });
-    });
-  }, []);
 
   // Stream management
   const addRemoteStream = (peerId, stream) => {
@@ -116,11 +88,11 @@ export const useWebRTCMesh = ({ roomId, participantIds, localStream, enabled }) 
     // Handle ICE candidates
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        sendSignal({
-          signal: "mesh_ice",
-          candidate: e.candidate.toJSON(),
-          from: myId,
+        socket.emit("webrtc-mesh:ice-candidate", {
+          roomCode,
           to: peerId,
+          from: myId,
+          candidate: e.candidate.toJSON(),
         });
       }
     };
@@ -134,7 +106,7 @@ export const useWebRTCMesh = ({ roomId, participantIds, localStream, enabled }) 
     };
 
     return pc;
-  }, [sendSignal]);
+  }, [roomCode]);
 
   // Create and send offer
   const createAndSendOffer = useCallback(async (peerId) => {
@@ -149,183 +121,134 @@ export const useWebRTCMesh = ({ roomId, participantIds, localStream, enabled }) 
       await pc.setLocalDescription(offer);
 
       if (pc.localDescription) {
-        sendSignal({
-          signal: "mesh_offer",
-          sdp: pc.localDescription,
-          from: myId,
+        socket.emit("webrtc-mesh:offer", {
+          roomCode,
           to: peerId,
+          from: myId,
+          sdp: pc.localDescription,
         });
       }
     } catch (err) {
       console.error("[WebRTC Mesh] Offer error:", err);
     }
-  }, [createPeer, sendSignal]);
+  }, [roomCode, createPeer]);
 
-  // Setup Supabase channel
+  // Setup Socket.IO listeners
   useEffect(() => {
-    if (!roomId || !user?.id || !enabled) return;
+    if (!roomCode || !user?.id || !enabled) return;
 
-    subscribedRef.current = false;
-    messageQueueRef.current = [];
+    const myId = user.id;
 
-    const channel = supabase.channel(`rtc-mesh-${roomId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const handleMeshJoin = ({ from }) => {
+      if (!localStreamRef.current || from === myId) return;
 
-    channel
-      .on("broadcast", { event: "webrtc-mesh" }, async ({ payload }) => {
-        if (!enabledRef.current) return;
+      if (shouldInitiate(myId, from)) {
+        createAndSendOffer(from);
+      }
+    };
 
-        const myId = user.id;
+    const handleMeshOffer = async ({ from, sdp }) => {
+      if (!enabledRef.current) return;
 
-        switch (payload.signal) {
-          case "mesh_join": {
-            if (!localStreamRef.current || payload.from === myId) break;
+      const pc = createPeer(from);
+      if (!pc || pc.signalingState !== "stable") return;
 
-            if (shouldInitiate(myId, payload.from)) {
-              await createAndSendOffer(payload.from);
-            }
-            break;
-          }
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
-          case "mesh_offer": {
-            if (payload.to !== myId) break;
-
-            const pc = createPeer(payload.from);
-            if (!pc || pc.signalingState !== "stable") break;
-
-            try {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-
-              if (pc.localDescription) {
-                sendSignal({
-                  signal: "mesh_answer",
-                  sdp: pc.localDescription,
-                  from: myId,
-                  to: payload.from,
-                });
-              }
-            } catch (err) {
-              console.error("[WebRTC Mesh] Answer error:", err);
-            }
-            break;
-          }
-
-          case "mesh_answer": {
-            if (payload.to !== myId) break;
-
-            const pc = peersRef.current.get(payload.from);
-            if (!pc || pc.signalingState !== "have-local-offer") break;
-
-            try {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-            } catch (err) {
-              console.error("[WebRTC Mesh] Set remote description error:", err);
-            }
-            break;
-          }
-
-          case "mesh_ice": {
-            if (payload.to !== myId) break;
-
-            const pc = peersRef.current.get(payload.from);
-            if (!pc) break;
-
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-            } catch {
-              // Ignore - may arrive before remote description
-            }
-            break;
-          }
-
-          case "mesh_leave": {
-            const pc = peersRef.current.get(payload.from);
-            if (pc) {
-              pc.close();
-              peersRef.current.delete(payload.from);
-            }
-            removeRemoteStream(payload.from);
-            break;
-          }
+        if (pc.localDescription) {
+          socket.emit("webrtc-mesh:answer", {
+            roomCode,
+            to: from,
+            from: myId,
+            sdp: pc.localDescription,
+          });
         }
-      })
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          subscribedRef.current = true;
-          flushQueue();
+      } catch (err) {
+        console.error("[WebRTC Mesh] Answer error:", err);
+      }
+    };
 
-          // Announce presence
-          if (localStreamRef.current) {
-            sendSignal({ signal: "mesh_join", from: user.id });
-          }
-        }
-      });
+    const handleMeshAnswer = async ({ from, sdp }) => {
+      if (!enabledRef.current) return;
 
-    channelRef.current = channel;
+      const pc = peersRef.current.get(from);
+      if (!pc || pc.signalingState !== "have-local-offer") return;
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      } catch (err) {
+        console.error("[WebRTC Mesh] Set remote description error:", err);
+      }
+    };
+
+    const handleMeshIceCandidate = async ({ from, candidate }) => {
+      if (!enabledRef.current) return;
+
+      const pc = peersRef.current.get(from);
+      if (!pc) return;
+
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        // Ignore - may arrive before remote description
+      }
+    };
+
+    // Register listeners
+    socket.on("webrtc-mesh:join", handleMeshJoin);
+    socket.on("webrtc-mesh:offer", handleMeshOffer);
+    socket.on("webrtc-mesh:answer", handleMeshAnswer);
+    socket.on("webrtc-mesh:ice-candidate", handleMeshIceCandidate);
+
+    // Announce join to mesh
+    socket.emit("webrtc-mesh:join", { roomCode, from: myId });
 
     return () => {
-      if (subscribedRef.current && channelRef.current) {
-        channelRef.current.send({
-          type: "broadcast",
-          event: "webrtc-mesh",
-          payload: { signal: "mesh_leave", from: user.id },
-        });
-      }
-
-      subscribedRef.current = false;
-      messageQueueRef.current = [];
       closeAllPeers();
-      supabase.removeChannel(channel);
+      socket.off("webrtc-mesh:join", handleMeshJoin);
+      socket.off("webrtc-mesh:offer", handleMeshOffer);
+      socket.off("webrtc-mesh:answer", handleMeshAnswer);
+      socket.off("webrtc-mesh:ice-candidate", handleMeshIceCandidate);
     };
-  }, [roomId, user?.id, enabled, createPeer, createAndSendOffer, sendSignal, flushQueue, closeAllPeers]);
-
-  // Announce when local stream appears
-  useEffect(() => {
-    if (!enabled || !localStream || !user?.id) return;
-
-    sendSignal({ signal: "mesh_join", from: user.id });
-
-    participantIdsRef.current.forEach((pid) => {
-      if (pid === user.id) return;
-      if (shouldInitiate(user.id, pid)) {
-        createAndSendOffer(pid);
-      }
-    });
-  }, [localStream, enabled, user?.id, sendSignal, createAndSendOffer]);
+  }, [roomCode, user?.id, enabled, createPeer, createAndSendOffer, closeAllPeers]);
 
   // Update tracks when local stream changes
   useEffect(() => {
-    if (!localStream || !enabled) return;
+    if (!enabled || !localStreamRef.current) return;
 
-    peersRef.current.forEach((pc) => {
-      const senders = pc.getSenders();
+    const previousTracks = new Set();
+    const currentTracks = new Set(localStreamRef.current.getTracks());
 
-      localStream.getTracks().forEach((track) => {
-        const sender = senders.find((s) => s.track?.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track).catch(() => {});
-        } else {
-          pc.addTrack(track, localStream);
-        }
-      });
+    // Find removed tracks
+    previousTracks.forEach((prevTrack) => {
+      if (!currentTracks.has(prevTrack)) {
+        peersRef.current.forEach((pc) => {
+          const senders = pc.getSenders();
+          const sender = senders.find((s) => s.track === prevTrack);
+          if (sender) pc.removeTrack(sender);
+        });
+      }
     });
-  }, [localStream, enabled]);
 
-  // Cleanup when disabled
-  useEffect(() => {
-    if (!enabled && user?.id) {
-      sendSignal({ signal: "mesh_leave", from: user.id });
-      // Close peers imperatively without triggering cascading setState
-      peersRef.current.forEach((pc) => pc.close());
-      peersRef.current.clear();
-    }
-  }, [enabled, user?.id, sendSignal]);
+    // Find added tracks and update peers
+    currentTracks.forEach((track) => {
+      if (!previousTracks.has(track)) {
+        peersRef.current.forEach((pc) => {
+          const hasSender = pc
+            .getSenders()
+            .some((s) => s.track?.kind === track.kind);
+          if (!hasSender) {
+            pc.addTrack(track, localStreamRef.current);
+          }
+        });
+      }
+    });
+  }, [enabled, localStream]);
 
-  // Derive effective streams — when disabled, always return empty map
-  const effectiveRemoteStreams = enabled ? remoteStreams : new Map();
-
-  return { remoteStreams: effectiveRemoteStreams, closeAllPeers };
+  return {
+    remoteStreams,
+  };
 };

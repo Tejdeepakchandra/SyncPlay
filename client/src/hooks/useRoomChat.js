@@ -1,62 +1,70 @@
-import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/hooks/useAuth";
+import { useState, useEffect, useCallback } from "react";
+import { socket } from "@/services/socket";
 
-export const useRoomChat = (roomId) => {
-  const { user } = useAuth();
+export const useRoomChat = (roomCode) => {
   const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [typingUsers, setTypingUsers] = useState({});
 
+  // Fetch initial messages on room join
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomCode || !socket.connected) return;
 
-    // Fetch existing messages
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("chat_messages")
-        .select("*, profile:profiles(display_name, avatar_emoji)")
-        .eq("room_id", roomId)
-        .order("created_at", { ascending: true })
-        .limit(200);
+    setIsLoading(true);
+    socket.emit("chat:get-history", { roomCode, limit: 50 }, (response) => {
+      if (response.success) {
+        setMessages(response.messages);
+      }
+      setIsLoading(false);
+    });
 
-      if (data) setMessages(data);
+    // Listen for new messages
+    const handleNewMessage = (messageData) => {
+      setMessages((prev) => [...prev, messageData]);
     };
 
-    fetchMessages();
-
-    // Subscribe to new messages
-    const channel = supabase
-      .channel(`chat-${roomId}`)
-      .on("postgres_changes", {
-        event: "INSERT",
-        schema: "public",
-        table: "chat_messages",
-        filter: `room_id=eq.${roomId}`,
-      }, async (payload) => {
-        const { data } = await supabase
-          .from("chat_messages")
-          .select("*, profile:profiles(display_name, avatar_emoji)")
-          .eq("id", payload.new.id)
-          .single();
-
-        if (data) {
-          setMessages(prev => [...prev, data]);
+    // Listen for typing indicators
+    const handleTypingIndicator = (data) => {
+      setTypingUsers((prev) => {
+        const updated = { ...prev };
+        if (data.isTyping) {
+          updated[data.userId] = data.displayName;
+        } else {
+          delete updated[data.userId];
         }
-      })
-      .subscribe();
+        return updated;
+      });
+    };
+
+    socket.on("chat:message-new", handleNewMessage);
+    socket.on("chat:typing-indicator", handleTypingIndicator);
 
     return () => {
-      supabase.removeChannel(channel);
+      socket.off("chat:message-new", handleNewMessage);
+      socket.off("chat:typing-indicator", handleTypingIndicator);
     };
-  }, [roomId]);
+  }, [roomCode]);
 
-  const sendMessage = async (text) => {
-    if (!user || !text.trim()) return;
-    await supabase.from("chat_messages").insert({
-      room_id: roomId,
-      user_id: user.id,
-      text: text.trim(),
+  const sendMessage = useCallback((text) => {
+    if (!roomCode || !text.trim()) return;
+
+    socket.emit("chat:send", { roomCode, text }, (response) => {
+      if (!response.success) {
+        console.error("Failed to send message:", response.error);
+      }
     });
-  };
+  }, [roomCode]);
 
-  return { messages, sendMessage };
+  const sendTypingIndicator = useCallback((isTyping) => {
+    if (!roomCode) return;
+    socket.emit("chat:typing", { roomCode, isTyping });
+  }, [roomCode]);
+
+  return {
+    messages,
+    isLoading,
+    typingUsers,
+    sendMessage,
+    sendTypingIndicator,
+  };
 };

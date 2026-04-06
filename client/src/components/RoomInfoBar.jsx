@@ -5,14 +5,14 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 
-const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1 }) => {
+const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = false }) => {
   const [showPanel, setShowPanel] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { profile } = useAuth();
+  const { user, profile } = useAuth();
 
   const roomCode = roomId.replace(/^(room-|music-)/, "").toUpperCase();
   const roomLink = `${window.location.origin}${roomType === "music" ? "/music/room/" : "/room/"}${roomId}`;
-  const displayHost = host || profile?.display_name || "Unknown";
+  const displayHost = isHost ? `${profile?.username || user?.username || "You"} (Host)` : (host || "Host");
 
   const handleCopy = () => {
     navigator.clipboard.writeText(roomLink);

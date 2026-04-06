@@ -12,25 +12,28 @@ class RoomService {
  
   async createRoom(roomData, hostId) {
     try {
-      // Get host user details
-      const host = await User.findById(hostId);
-      if (!host) {
-        throw new Error('Host user not found');
-      }
-
+      const startTime = Date.now();
+      console.log(`[ROOM-SERVICE] 🔄 Creating room for user ${hostId.substring(0, 8)}...`);
+      
+      // Create room immediately - don't wait for user to exist in DB
+      // User creation happens async via Clerk webhook
+      
       // Generate unique room code
+      console.log(`[ROOM-SERVICE] 📝 Generating room code...`);
       const roomCode = await Room.generateRoomCode();
+      console.log(`[ROOM-SERVICE] ✓ Room code: ${roomCode}`);
 
-      // Create room
+      // Create room with minimal participant info
+      console.log(`[ROOM-SERVICE] 💾 Saving room to MongoDB...`);
       const room = new Room({
         roomCode,
         name: roomData.name,
         type: roomData.type,
         description: roomData.description || '',
         hostId,
+        maxParticipants: roomData.settings?.maxParticipants || 20,
         settings: {
           privacy: roomData.settings?.privacy || PRIVACY_LEVELS.PUBLIC,
-          maxParticipants: roomData.settings?.maxParticipants || 20,
           requireApproval: roomData.settings?.requireApproval || false,
           allowGuests: roomData.settings?.allowGuests !== false,
           allowChat: roomData.settings?.allowChat !== false,
@@ -41,24 +44,26 @@ class RoomService {
         },
         participants: [{
           userId: hostId,
-          username: host.username,
-          displayName: host.displayName,
-          avatar: host.avatar,
+          username: `user_${hostId.slice(-6)}`, // Temp name, will update via webhook
+          displayName: 'Host', // Will be updated when host joins
+          avatar: 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
           role: 'host',
           permissions: this.getHostPermissions()
         }]
       });
 
       await room.save();
+      console.log(`[ROOM-SERVICE] ✓ Room saved (${Date.now() - startTime}ms)`);
 
       // Store in Redis for quick access
+      console.log(`[ROOM-SERVICE] 📤 Caching in Redis...`);
       const redisKey = createRedisKey(REDIS_KEYS.ROOM, roomCode);
       await redisClient.set(redisKey, JSON.stringify({
         id: room._id.toString(),
         roomCode,
         name: room.name,
         type: room.type,
-        hostId: room.hostId.toString(),
+        hostId: room.hostId,  // Already a string, no .toString() needed
         status: room.status,
         participantCount: 1,
         version: room.version,
@@ -68,15 +73,16 @@ class RoomService {
       });
 
       // Track in Redis for presence
-      await redisClient.sAdd(createRedisKey(REDIS_KEYS.ROOM_USERS, roomCode), hostId.toString());
+      await redisClient.sAdd(createRedisKey(REDIS_KEYS.ROOM_USERS, roomCode), hostId);
       
       // Room metadata for atomic operations
       await redisClient.hSet(createRedisKey(REDIS_KEYS.ROOM_METADATA, roomCode), {
         participant_count: '1',
-        max_participants: room.settings.maxParticipants.toString(),
+        max_participants: room.maxParticipants.toString(),
         last_activity: Date.now().toString()
       });
 
+      console.log(`[ROOM-SERVICE] ✅ Room created successfully (${Date.now() - startTime}ms)`);
       return room;
 
     } catch (error) {
@@ -105,9 +111,8 @@ class RoomService {
       }
 
       // Fallback to MongoDB
-      const room = await Room.findOne({ roomCode })
-        .populate('participants.userId', 'username displayName avatar')
-        .populate('hostId', 'username displayName avatar');
+      const room = await Room.findOne({ roomCode });
+        // Can't populate because userIds are now Clerk strings, not MongoDB ObjectIds
 
       if (room) {
         // Cache in Redis
@@ -116,7 +121,7 @@ class RoomService {
           roomCode: room.roomCode,
           name: room.name,
           type: room.type,
-          hostId: room.hostId.toString(),
+          hostId: room.hostId,  // Already a string
           status: room.status,
           participantCount: room.participants.length,
           version: room.version,
@@ -137,20 +142,88 @@ class RoomService {
   
    //Join a room with atomic operation
    
-  async joinRoom(roomCode, userId, asGuest = false) {
+  async joinRoom(roomCode, userId, guestName = null) {
     try {
       const room = await Room.findOne({ roomCode });
       if (!room) throw new Error('Room not found');
 
-      // PRIVACY ENFORCEMENT
-      if (room.settings.privacy === PRIVACY_LEVELS.PRIVATE && asGuest) {
-        throw new Error('Private rooms require login');
+      const isGuest = userId.startsWith('guest-');
+      const isHost = room.hostId === userId;  // Check if this is the host
+      const isAlreadyParticipant = room.participants.some(p => p.userId === userId);  // Check if already approved
+      const isInvited = room.invitedUsers?.some(inv => 
+        inv.userId === userId || (isGuest && inv.email === userId)
+      );
+
+      console.log(`[ROOM-SERVICE] 🔍 Join analysis for ${userId}:`, {
+        isHost,
+        isAlreadyParticipant,
+        isInvited,
+        privacy: room.settings.privacy,
+        participantIds: room.participants.map(p => p.userId)
+      });
+
+      // HOST BYPASS - Host created the room, they can join directly
+      if (isHost) {
+        console.log(`[ROOM-SERVICE] 👑 Host ${userId} joining their room (${roomCode})`);
+        // Update host's displayName with the one sent from client
+        const hostParticipant = room.participants.find(p => p.userId === userId);
+        if (hostParticipant && guestName) {
+          hostParticipant.displayName = guestName;
+          console.log(`[ROOM-SERVICE] ✏️ Updated host displayName to: "${guestName}"`);
+        }
+        // Skip all access control - host has all rights
       }
-      
-      if (room.settings.privacy === PRIVACY_LEVELS.INVITE_ONLY && 
-          !room.invitedUsers?.includes(userId)) {
-        throw new Error('This room is invite-only');
+      // ALREADY APPROVED - If user is already in participants, they were approved and can join
+      else if (isAlreadyParticipant) {
+        console.log(`[ROOM-SERVICE] ✅ Already approved participant ${userId} re-joining (${roomCode})`);
+        // Skip all access control - they're already in the room
       }
+      // PRIVATE/INVITE-ONLY ROOM ACCESS LOGIC (only for non-hosts and non-approved)
+      else if (room.settings.privacy === PRIVACY_LEVELS.PRIVATE || 
+          room.settings.privacy === PRIVACY_LEVELS.INVITE_ONLY) {
+        
+        // For private rooms: guests must be invited
+        // For invite-only: everyone must be invited
+        if (!isInvited) {
+          // Guest is not invited - put in waiting area and request approval
+          console.log(`[ROOM-SERVICE] 🚪 Guest ${guestName} (${userId}) requesting access to private room`);
+          
+          // Add to join requests if not already there
+          if (!room.joinRequests.some(jr => jr.userId === userId)) {
+            room.joinRequests.push({
+              userId,
+              username: guestName || userId,
+              requestedAt: new Date(),
+              status: 'pending'
+            });
+          }
+
+          // Add to waiting area
+          if (!room.waitingUsers.some(wu => wu.userId === userId)) {
+            room.waitingUsers.push({
+              userId,
+              username: guestName || userId,
+              displayName: guestName || 'Guest',
+              avatar: null,
+              joinRequestedAt: new Date(),
+              role: 'guest'
+            });
+          }
+
+          await room.save();
+
+          // Return special response indicating waiting for approval
+          return {
+            room,
+            status: 'waiting_for_approval',
+            message: `Join request sent to host. Waiting for ${room.name} host to approve.`,
+            participantCount: room.participants.length
+          };
+        }
+        // If invited, continue to normal join logic below
+      }
+
+      // NORMAL JOIN LOGIC (public rooms or invited users in private rooms)
 
       // Load Lua script
       const luaScript = await fs.readFile(
@@ -166,7 +239,7 @@ class RoomService {
         ],
         arguments: [
           userId,
-          room.settings.maxParticipants.toString(),
+          room.maxParticipants.toString(),
           Date.now().toString()
         ]
       });
@@ -176,22 +249,24 @@ class RoomService {
       }
 
       // Add to MongoDB (canonical participant list) if not already there
-      if (!room.participants.some(p => p.userId.toString() === userId.toString())) {
-        let user = null;
-        if (!asGuest) {
-          user = await User.findById(userId);
-        }
-        
+      if (!room.participants.some(p => p.userId === userId)) {
         room.participants.push({
           userId,
-          username: asGuest ? `guest-${userId.slice(-4)}` : user.username,
-          displayName: asGuest ? 'Guest' : user.displayName,
-          avatar: asGuest ? null : user.avatar,
-          role: asGuest ? 'guest' : 'participant',
+          username: guestName || (isGuest ? `guest-${userId.slice(-4)}` : `user_${userId.slice(-6)}`),
+          displayName: guestName || (isGuest ? 'Guest' : 'User'),
+          avatar: isGuest ? null : 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
+          role: isGuest ? 'guest' : 'participant',
           joinedAt: new Date(),
-          permissions: this.getDefaultPermissions(asGuest)
+          permissions: this.getDefaultPermissions(isGuest)
         });
         
+        // Remove from waiting area if they were there
+        room.waitingUsers = room.waitingUsers.filter(wu => wu.userId !== userId);
+        // Mark join request as accepted
+        room.joinRequests = room.joinRequests.map(jr => 
+          jr.userId === userId ? { ...jr, status: 'accepted' } : jr
+        );
+
         room.version += 1;
         await room.save();
 
@@ -201,12 +276,96 @@ class RoomService {
           room.stats.peakParticipants = currentCount;
           await room.save();
         }
+      } else if (isHost && guestName) {
+        // Update host's displayName if they already exist (shouldn't happen, but safety check)
+        const existingHost = room.participants.find(p => p.userId === userId);
+        if (existingHost) {
+          existingHost.displayName = guestName;
+          await room.save();
+        }
       }
 
-      return { room, participantCount: parseInt(result[2]) };
+      return { room, status: 'joined', participantCount: parseInt(result[2]) };
 
     } catch (error) {
       console.error('Join room error:', error);
+      throw error;
+    }
+  }
+
+  // Handle host accepting a join request
+  async acceptJoinRequest(roomCode, hostId, userId) {
+    try {
+      const room = await Room.findOne({ roomCode });
+      if (!room) throw new Error('Room not found');
+
+      if (room.hostId !== hostId) {
+        throw new Error('Only host can accept join requests');
+      }
+
+      // Find and remove from waiting users
+      const waitingUser = room.waitingUsers.find(wu => wu.userId === userId);
+      if (!waitingUser) {
+        throw new Error('User not in waiting area');
+      }
+
+      // Add to participants with all required fields explicitly set
+      if (!room.participants.some(p => p.userId === userId)) {
+        room.participants.push({
+          userId: waitingUser.userId,
+          username: waitingUser.username,
+          displayName: waitingUser.displayName || 'Guest',
+          avatar: waitingUser.avatar || null,
+          role: 'guest',
+          joinedAt: new Date(),
+          permissions: this.getDefaultPermissions(true),
+          streamSettings: {
+            videoEnabled: true,
+            audioEnabled: true,
+            screenShare: false
+          },
+          lastActive: new Date()
+        });
+      }
+
+      // Remove from waiting and mark request as accepted
+      room.waitingUsers = room.waitingUsers.filter(wu => wu.userId !== userId);
+      room.joinRequests = room.joinRequests.map(jr =>
+        jr.userId === userId ? { ...jr, status: 'accepted' } : jr
+      );
+
+      room.version += 1;
+      await room.save();
+
+      return { success: true, room };
+    } catch (error) {
+      console.error('Accept join request error:', error);
+      throw error;
+    }
+  }
+
+  // Handle host rejecting a join request
+  async rejectJoinRequest(roomCode, hostId, userId) {
+    try {
+      const room = await Room.findOne({ roomCode });
+      if (!room) throw new Error('Room not found');
+
+      if (room.hostId !== hostId) {
+        throw new Error('Only host can reject join requests');
+      }
+
+      // Remove from waiting area and mark as rejected
+      room.waitingUsers = room.waitingUsers.filter(wu => wu.userId !== userId);
+      room.joinRequests = room.joinRequests.map(jr =>
+        jr.userId === userId ? { ...jr, status: 'rejected' } : jr
+      );
+
+      room.version += 1;
+      await room.save();
+
+      return { success: true, message: 'Join request rejected' };
+    } catch (error) {
+      console.error('Reject join request error:', error);
       throw error;
     }
   }
@@ -220,13 +379,13 @@ class RoomService {
       if (!room) throw new Error('Room not found');
 
       // Check if leaving user is host
-      const isHost = room.hostId.toString() === userId.toString();
+      const isHost = room.hostId === userId;  // Both are strings now
       let newHostId = null;
 
       if (isHost) {
         // Find next host (co-host first, then oldest participant)
         const coHost = room.participants.find(p => 
-          p.role === 'cohost' && p.userId.toString() !== userId
+          p.role === 'cohost' && p.userId !== userId  // Both are strings now
         );
         
         if (coHost) {
@@ -234,7 +393,7 @@ class RoomService {
         } else {
           // Promote oldest participant (excluding guests)
           const oldestParticipant = room.participants
-            .filter(p => p.role !== 'guest' && p.userId.toString() !== userId)
+            .filter(p => p.role !== 'guest' && p.userId !== userId)  // Both are strings now
             .sort((a, b) => a.joinedAt - b.joinedAt)[0];
           
           newHostId = oldestParticipant?.userId || null;
@@ -243,7 +402,7 @@ class RoomService {
         if (newHostId) {
           room.hostId = newHostId;
           // Update role
-          const newHost = room.participants.find(p => p.userId.toString() === newHostId.toString());
+          const newHost = room.participants.find(p => p.userId === newHostId);  // Both are strings now
           if (newHost) {
             newHost.role = 'host';
             newHost.permissions = this.getHostPermissions();
@@ -263,7 +422,7 @@ class RoomService {
 
       // Remove from MongoDB
       const participantIndex = room.participants.findIndex(
-        p => p.userId.toString() === userId.toString()
+        p => p.userId === userId  // Both are strings now
       );
       if (participantIndex !== -1) {
         room.participants.splice(participantIndex, 1);
@@ -285,59 +444,22 @@ class RoomService {
   }
 
  
- // Get room participants 
+ // Get room participants (from Room document, not User model)
  
 async getRoomParticipants(roomCode) {
   try {
-    const participantIds = await redisClient.sMembers(
-      createRedisKey(REDIS_KEYS.ROOM_USERS, roomCode)
-    );
+    const room = await Room.findOne({ roomCode })
+      .select('participants')
+      .lean();
 
-    // Separate guests and real users
-    const guestIds = participantIds.filter(id => id.startsWith('guest-'));
-    const realUserIds = participantIds.filter(id => !id.startsWith('guest-'));
+    if (!room) {
+      console.warn(`[ROOM-SERVICE] Room not found: ${roomCode}`);
+      return [];
+    }
 
-    // Bulk fetch all real users in one query — FIXED N+1
-    const users = realUserIds.length > 0 
-      ? await User.find({ _id: { $in: realUserIds } })
-          .select('username displayName avatar')
-          .lean()
-      : [];
-
-    // Create map for O(1) lookup
-    const userMap = {};
-    users.forEach(user => {
-      userMap[user._id.toString()] = user;
-    });
-
-    // Build participants array
-    const participants = [];
-
-    // Add guests
-    guestIds.forEach(id => {
-      participants.push({
-        userId: id,
-        username: id,
-        displayName: 'Guest',
-        isGuest: true
-      });
-    });
-
-    // Add real users
-    realUserIds.forEach(id => {
-      const user = userMap[id];
-      if (user) {
-        participants.push({
-          userId: user._id,
-          username: user.username,
-          displayName: user.displayName,
-          avatar: user.avatar,
-          isGuest: false
-        });
-      }
-    });
-
-    return participants;
+    // Room already has all participant data with usernames, displayNames, avatars
+    // No need to query User model - use the data already stored in participants array
+    return room.participants || [];
 
   } catch (error) {
     console.error('Get participants error:', error);

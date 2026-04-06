@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 
 const participantSchema = new mongoose.Schema({
   userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,  // Clerk user ID (string)
     required: true
   },
   username: {
@@ -70,7 +69,7 @@ const mediaSchema = new mongoose.Schema({
 const queueItemSchema = new mongoose.Schema({
   media: mediaSchema,
   addedBy: {
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     username: String
   },
   addedAt: {
@@ -78,7 +77,7 @@ const queueItemSchema = new mongoose.Schema({
     default: Date.now
   },
   votes: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     vote: { type: Number, enum: [1, -1] } 
   }],
   status: {
@@ -116,14 +115,12 @@ const roomSchema = new mongoose.Schema({
   
   // Ownership
   hostId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,  // Clerk user ID
     required: true,
     index: true
   },
   coHosts: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    type: String  // Clerk user IDs
   }],
   
   // Participants
@@ -138,6 +135,32 @@ const roomSchema = new mongoose.Schema({
     min: 2,
     max: 100
   },
+
+  // Access Control for Private Rooms
+  invitedUsers: [{
+    userId: String,          // Clerk user ID (can be null for email invites)
+    email: String,           // For inviting by email
+    name: String,            // Optional name
+    invitedAt: { type: Date, default: Date.now },
+    joinedAt: Date
+  }],
+
+  joinRequests: [{
+    userId: String,          // Clerk user ID or guest ID
+    username: String,        // Name user entered
+    email: String,           // Optional email
+    requestedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' }
+  }],
+
+  waitingUsers: [{
+    userId: String,          // Guest ID or authenticated user ID
+    username: String,        // Name they entered/chose
+    displayName: String,
+    avatar: String,
+    joinRequestedAt: { type: Date, default: Date.now },
+    role: { type: String, default: 'guest' }
+  }],
   
   // Settings
   settings: {
@@ -251,17 +274,15 @@ roomSchema.index({ 'stats.peakParticipants': -1 });
 
 // MIDDLEWARE
 
-
 // Update participant count before save
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', async function() {
   if (this.participants) {
     this.participantCount = this.participants.length;
   }
-  next();
 });
 
 // Update timestamps based on status
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', async function() {
   if (this.isModified('status')) {
     if (this.status === 'active' && !this.startedAt) {
       this.startedAt = new Date();
@@ -270,7 +291,6 @@ roomSchema.pre('save', function(next) {
       this.endedAt = new Date();
     }
   }
-  next();
 });
 
 
@@ -296,7 +316,7 @@ roomSchema.methods.isCoHost = function(userId) {
  */
 roomSchema.methods.hasPermission = function(userId, permission) {
   const participant = this.participants.find(
-    p => p.userId.toString() === userId.toString()
+    p => p.userId === userId  // Both are strings now, no .toString() needed
   );
   
   if (!participant) return false;
@@ -311,7 +331,7 @@ roomSchema.methods.hasPermission = function(userId, permission) {
  */
 roomSchema.methods.getParticipant = function(userId) {
   return this.participants.find(
-    p => p.userId.toString() === userId.toString()
+    p => p.userId === userId  // Both are strings now, no .toString() needed
   );
 };
 

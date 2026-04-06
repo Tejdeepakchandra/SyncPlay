@@ -8,10 +8,29 @@ const router = express.Router();
  * POST /api/rooms
  */
 router.post('/', validateRoomCreation, async (req, res, next) => {
+  const startTime = Date.now();
+  console.log(`[ROOMS] 🚀 POST /rooms START - userId: ${req.userId}`);
+  
   try {
+    console.log(`[ROOMS] 📥 Request body:`, { 
+      name: req.body.name, 
+      type: req.body.type 
+    });
+    
     const hostId = req.userId; // From auth middleware
     
+    if (!hostId) {
+      console.log(`[ROOMS] ❌ No userId in request`);
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    console.log(`[ROOMS] 🔄 Calling roomService.createRoom...`);
     const room = await roomService.createRoom(req.body, hostId);
+    
+    console.log(`[ROOMS] ✅ Room created: ${room.roomCode} in ${Date.now() - startTime}ms`);
     
     res.status(201).json({
       success: true,
@@ -23,6 +42,7 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
       }
     });
   } catch (error) {
+    console.log(`[ROOMS] ❌ Error after ${Date.now() - startTime}ms:`, error.message);
     next(error);
   }
 });

@@ -5,12 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
+import api from "@/services/api";
 import { toast } from "sonner";
 
 const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
   const [step, setStep] = useState(1);
   const [roomName, setRoomName] = useState("");
   const [isPrivate, setIsPrivate] = useState(true);
@@ -18,45 +18,26 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
   const [selectedFriends, setSelectedFriends] = useState([]);
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [generatedRoomCode, setGeneratedRoomCode] = useState("");
 
-  const [generatedRoomId] = useState(() => {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let code = "";
-    for (let i = 0; i < 6; i++) {
-      code += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return code;
-  });
+  const roomPath = generatedRoomCode 
+    ? (type === "music" ? `/music/room/${generatedRoomCode}` : `/room/${generatedRoomCode}`)
+    : "";
+  const roomLink = roomPath ? `${window.location.origin}${roomPath}` : "";
 
-  const roomPath = type === "music" ? `/music/room/${generatedRoomId.toLowerCase()}` : `/room/${generatedRoomId.toLowerCase()}`;
-  const roomLink = `${window.location.origin}${roomPath}`;
-  const roomDbId = generatedRoomId.toLowerCase();
-
-  // Fetch friends
+  // Validate auth before allowing room creation
   useEffect(() => {
-    if (!user || !open) return;
-    const fetchFriends = async () => {
-      const { data } = await supabase
-        .from("friendships")
-        .select(`
-          requester_id, 
-          addressee_id, 
-          requester:profiles!friendships_requester_id_fkey(id, display_name, avatar_emoji, is_online),
-          addressee:profiles!friendships_addressee_id_fkey(id, display_name, avatar_emoji, is_online)
-        `)
-        .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`)
-        .eq("status", "accepted");
-
-      if (data) {
-        const friendsList = data.map(f => {
-          const friend = f.requester_id === user.id ? f.addressee : f.requester;
-          return friend;
-        });
-        setFriends(friendsList);
-      }
-    };
-    fetchFriends();
-  }, [user, open]);
+    if (open && !isAuthenticated) {
+      // Only show error if we've waited long enough for Clerk to load auth status
+      // But don't wait for DB user profile - that's not needed for room creation
+      setTimeout(() => {
+        if (!isAuthenticated) {
+          toast.error("Please sign in to create a room");
+          onClose();
+        }
+      }, 500);
+    }
+  }, [open, isAuthenticated, onClose]);
 
   const toggleFriend = (id) => {
     setSelectedFriends(prev =>
@@ -65,44 +46,63 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(roomLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (roomLink) {
+      navigator.clipboard.writeText(roomLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const handleCreate = async () => {
-    if (!user) {
+    if (isLoading) {
+      toast.error("Please wait, still loading your information...");
+      return;
+    }
+
+    if (!isAuthenticated) {
       toast.error("Please sign in to create a room");
-      navigate("/auth");
+      return;
+    }
+
+    if (!roomName.trim()) {
+      toast.error("Please enter a room name");
       return;
     }
 
     setCreating(true);
     try {
-      // Create room in database
-      const { error } = await supabase.from("rooms").insert({
-        id: roomDbId,
+      // Create room via REST API
+      const response = await api.post('/rooms', {
         name: roomName,
         type,
-        host_id: user.id,
-        is_private: isPrivate,
-        status: "lobby",
+        settings: {
+          privacy: isPrivate ? 'private' : 'public',
+          allowGuests: true,
+          allowChat: true,
+          allowReactions: true,
+        }
       });
 
-      if (error) throw error;
-
-      // Add host as participant
-      await supabase.from("room_participants").insert({
-        room_id: roomDbId,
-        user_id: user.id,
-        role: "host",
-      });
-
-      setStep(3);
+      if (response.data.success) {
+        const { roomCode } = response.data.data;
+        setGeneratedRoomCode(roomCode);
+        setStep(3); // Show share screen
+        toast.success(`${type === 'music' ? 'Music' : 'Movie'} room created!`);
+      } else {
+        throw new Error(response.data.message || 'Failed to create room');
+      }
     } catch (err) {
-      toast.error(err.message || "Failed to create room");
+      console.error('Room creation error:', err);
+      toast.error(err.response?.data?.message || err.message || "Failed to create room");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleNavigateToRoom = () => {
+    if (generatedRoomCode) {
+      handleClose();
+      navigate(roomPath);
     }
   };
 
@@ -110,6 +110,8 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
     setStep(1);
     setRoomName("");
     setSelectedFriends([]);
+    setGeneratedRoomCode("");
+    setCopied(false);
     onClose();
   };
 
@@ -272,7 +274,7 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
               <p className="text-sm text-muted-foreground mb-2">Share the link or code with friends.</p>
               <div className="glass-panel p-3 mb-3 text-center">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Room Code</p>
-                <p className="text-2xl font-mono font-bold text-foreground tracking-[0.3em]">{generatedRoomId}</p>
+                <p className="text-2xl font-mono font-bold text-foreground tracking-[0.3em]">{generatedRoomCode}</p>
               </div>
               <div className="glass-panel p-3 flex items-center gap-2 mb-4">
                 <Input readOnly value={roomLink} className="bg-transparent border-none text-sm text-muted-foreground" />
@@ -281,7 +283,7 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
                 </Button>
               </div>
               <Button
-                onClick={() => { handleClose(); navigate(roomPath); }}
+                onClick={handleNavigateToRoom}
                 className={`w-full ${type === "music" ? "gradient-music" : "gradient-movie"} text-primary-foreground font-semibold`}
               >
                 Enter Room

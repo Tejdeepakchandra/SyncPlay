@@ -7,43 +7,39 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30 second timeout
+  timeout: 10000, // 10 second timeout (was 30s, too long)
 });
 
 // Request interceptor - ONLY LOG, token added by useApiAuth
 api.interceptors.request.use(
   (config) => {
-    console.log('📤 API Request:', config.method.toUpperCase(), config.url);
-    console.log('   Headers:', config.headers);
+    const method = config.method?.toUpperCase() || 'GET';
+    console.log(`[API] 📤 ${method} ${config.url}`);
     return config;
   },
   (error) => {
-    console.error('❌ Request setup error:', error.message);
+    console.error('[API] ❌ Request error:', error.message);
     return Promise.reject(error);
   }
 );
 
 api.interceptors.response.use(
   (response) => {
-    console.log('📥 API Response:', response.status, response.config.url);
-    console.log('   Data:', response.data);
+    console.log(`[API] ✅ ${response.status} ${response.config.url}`);
     return response;
   },
   (error) => {
-    console.error('❌ API Error');
-    console.error('   Status:', error.response?.status);
-    console.error('   URL:', error.config?.url);
-    console.error('   Message:', error.message);
-    console.error('   Response:', error.response?.data);
+    const url = error.config?.url || 'unknown';
+    const method = error.config?.method?.toUpperCase() || 'unknown';
     
-    // Log timeout specifically
     if (error.code === 'ECONNABORTED') {
-      console.error('   ⏱️  REQUEST TIMEOUT (30s exceeded)');
+      console.error(`[API] ⏱️ TIMEOUT on ${method} ${url} (${error.message})`);
+    } else if (!error.response) {
+      console.error(`[API] 🌐 No response from server on ${method} ${url}`);
+    } else {
+      console.error(`[API] ❌ ${error.response.status} ${method} ${url}: ${error.response.data?.message || error.message}`);
     }
     
-    if (error.response?.status === 401) {
-      console.log('Unauthorized - may need to refresh token');
-    }
     return Promise.reject(error);
   }
 );
