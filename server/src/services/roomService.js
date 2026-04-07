@@ -32,6 +32,7 @@ class RoomService {
         description: roomData.description || '',
         hostId,
         maxParticipants: roomData.settings?.maxParticipants || 20,
+        participantCount: 1,  // Host is initial participant
         settings: {
           privacy: roomData.settings?.privacy || PRIVACY_LEVELS.PUBLIC,
           requireApproval: roomData.settings?.requireApproval || false,
@@ -255,6 +256,7 @@ class RoomService {
           username: guestName || (isGuest ? `guest-${userId.slice(-4)}` : `user_${userId.slice(-6)}`),
           displayName: guestName || (isGuest ? 'Guest' : 'User'),
           avatar: isGuest ? null : 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
+          avatar_emoji: '🧑',  // Default emoji for participant avatars
           role: isGuest ? 'guest' : 'participant',
           joinedAt: new Date(),
           permissions: this.getDefaultPermissions(isGuest)
@@ -267,25 +269,35 @@ class RoomService {
           jr.userId === userId ? { ...jr, status: 'accepted' } : jr
         );
 
-        room.version += 1;
-        await room.save();
-
-        // Update peak participants if needed
-        const currentCount = parseInt(result[2]);
-        if (currentCount > room.stats.peakParticipants) {
-          room.stats.peakParticipants = currentCount;
+        // Update participant count (fallback to array length if result invalid)
+        const currentCount = result && result[2] ? parseInt(result[2]) : room.participants.length;
+        if (!isNaN(currentCount)) {
+          room.participantCount = currentCount;
+          room.version += 1;
           await room.save();
+
+          // Update peak participants if needed
+          if (currentCount > room.stats.peakParticipants) {
+            room.stats.peakParticipants = currentCount;
+            await room.save();
+          }
         }
       } else if (isHost && guestName) {
         // Update host's displayName if they already exist (shouldn't happen, but safety check)
         const existingHost = room.participants.find(p => p.userId === userId);
         if (existingHost) {
           existingHost.displayName = guestName;
-          await room.save();
+          // Update participant count just in case
+          const currentCount = result && result[2] ? parseInt(result[2]) : room.participants.length;
+          if (!isNaN(currentCount)) {
+            room.participantCount = currentCount;
+            await room.save();
+          }
         }
       }
 
-      return { room, status: 'joined', participantCount: parseInt(result[2]) };
+      const finalCount = result && result[2] ? parseInt(result[2]) : room.participants.length;
+      return { room, status: 'joined', participantCount: isNaN(finalCount) ? room.participants.length : finalCount };
 
     } catch (error) {
       console.error('Join room error:', error);
@@ -316,6 +328,7 @@ class RoomService {
           username: waitingUser.username,
           displayName: waitingUser.displayName || 'Guest',
           avatar: waitingUser.avatar || null,
+          avatar_emoji: '🧑',  // Default emoji for participant avatars
           role: 'guest',
           joinedAt: new Date(),
           permissions: this.getDefaultPermissions(true),
@@ -334,6 +347,7 @@ class RoomService {
         jr.userId === userId ? { ...jr, status: 'accepted' } : jr
       );
 
+      room.participantCount = room.participants.length;
       room.version += 1;
       await room.save();
 

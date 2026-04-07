@@ -20,6 +20,16 @@ const ICE_SERVERS = {
 
 export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
   const { user } = useAuth();
+  
+  // Guard: Don't initialize if user is not authenticated
+  if (!user?.id || !roomCode) {
+    return {
+      remoteStream: null,
+      startBroadcastStream: () => {},
+      stopBroadcastStream: () => {},
+    };
+  }
+
   const peersRef = useRef(new Map());
   const localStreamRef = useRef(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -46,7 +56,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
 
     // ICE candidates
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
+      if (e.candidate && user?.id) {
         socket.emit("webrtc:ice-candidate", {
           roomCode,
           to: peerId,
@@ -59,6 +69,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
     // Create offer
     pc.onnegotiationneeded = async () => {
       try {
+        if (!user?.id) return;
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit("webrtc:offer", {
@@ -73,7 +84,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
     };
 
     return pc;
-  }, [roomCode, user.id]);
+  }, [roomCode, user?.id]);
 
   // Create peer for host (participant side)
   const createPeerForHost = useCallback((hostId) => {
@@ -93,7 +104,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
 
     // ICE candidates
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
+      if (e.candidate && user?.id) {
         socket.emit("webrtc:ice-candidate", {
           roomCode,
           to: hostId,
@@ -104,7 +115,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
     };
 
     return pc;
-  }, [roomCode, user.id]);
+  }, [roomCode, user?.id]);
 
   const closeAllPeers = useCallback(() => {
     peersRef.current.forEach((pc) => pc.close());
@@ -186,12 +197,27 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
       setRemoteStream(null);
     };
 
+    const handleAudioPermissionDenied = ({ error, error_code }) => {
+      // Dispatch custom event that can be caught in useRoom or components
+      window.dispatchEvent(new CustomEvent('permission:audio-denied', {
+        detail: { error, error_code }
+      }));
+    };
+
+    const handleVideoPermissionDenied = ({ error, error_code }) => {
+      window.dispatchEvent(new CustomEvent('permission:video-denied', {
+        detail: { error, error_code }
+      }));
+    };
+
     // Register listeners
     socket.on("webrtc:request-stream", handleRequestStream);
     socket.on("webrtc:offer", handleOffer);
     socket.on("webrtc:answer", handleAnswer);
     socket.on("webrtc:ice-candidate", handleIceCandidate);
     socket.on("webrtc:stream-stopped", handleStreamStopped);
+    socket.on("audio:permission-denied", handleAudioPermissionDenied);
+    socket.on("video:permission-denied", handleVideoPermissionDenied);
 
     // If not host, request stream on connection
     if (!isHostRef.current) {
@@ -205,6 +231,8 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
       socket.off("webrtc:answer", handleAnswer);
       socket.off("webrtc:ice-candidate", handleIceCandidate);
       socket.off("webrtc:stream-stopped", handleStreamStopped);
+      socket.off("audio:permission-denied", handleAudioPermissionDenied);
+      socket.off("video:permission-denied", handleVideoPermissionDenied);
     };
   }, [roomCode, user?.id, createPeerForParticipant, createPeerForHost, closeAllPeers]);
 
@@ -221,9 +249,11 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds }) => {
   // Host: stop broadcasting
   const stopBroadcastStream = useCallback(() => {
     localStreamRef.current = null;
-    socket.emit("webrtc:stream-stopped", { roomCode, from: user.id });
+    if (user?.id) {
+      socket.emit("webrtc:stream-stopped", { roomCode, from: user.id });
+    }
     closeAllPeers();
-  }, [roomCode, user.id, closeAllPeers]);
+  }, [roomCode, user?.id, closeAllPeers]);
 
   return {
     remoteStream,

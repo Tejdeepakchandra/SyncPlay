@@ -61,10 +61,17 @@ module.exports = (socket, io) => {
         const participants = await roomService.getRoomParticipants(roomCode);
         console.log(`[ROOM:JOIN] 📤 Sending success response, participants count: ${participants.length}`);
 
-        // Notify others in room
+        // Find the newly joined participant from the database for full data
+        const newParticipant = participants.find(p => p.userId === socket.userId);
+        
+        // Notify others in room with full participant data
         socket.to(roomCode).emit('room:user-joined', {
           userId: socket.userId,
-          username: guestName || socket.username,
+          username: newParticipant?.username || guestName || socket.username,
+          displayName: newParticipant?.displayName || guestName || "Guest",
+          avatar: newParticipant?.avatar || null,
+          avatar_emoji: newParticipant?.avatar_emoji || '🧑',
+          role: newParticipant?.role || 'guest',
           isGuest: socket.isGuest,
           timestamp: Date.now()
         });
@@ -79,7 +86,12 @@ module.exports = (socket, io) => {
         callback({
           success: true,
           status: 'joined',
-          room: result.room,
+          userId: socket.userId,  // Include current user's ID
+          room: {
+            ...result.room.toObject ? result.room.toObject() : result.room,
+            participantCount: participants.length,
+            participants: participants
+          },
           participants,
           isHost: result.room.hostId === socket.userId  // String comparison
         });
@@ -298,6 +310,7 @@ module.exports = (socket, io) => {
 
       callback({
         success: true,
+        userId: socket.userId,  // Include current user's ID
         room: {
           roomCode: room.roomCode,
           name: room.name,
@@ -305,10 +318,123 @@ module.exports = (socket, io) => {
           hostId: room.hostId,
           currentMedia: room.currentMedia,
           settings: room.settings,
+          participantCount: participants.length,
+          participants: participants,
+          joinRequests: room.joinRequests || [],
+          waitingUsers: room.waitingUsers || [],
         },
         participants,
       });
     } catch (error) {
+      callback({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // Update participant permissions (host only)
+  socket.on('room:update-participant-permissions', async ({ roomCode, targetUserId, restrictions }, callback) => {
+    try {
+      console.log(`[PERMISSIONS] 🔒 Host ${socket.userId} updating permissions for ${targetUserId}:`, restrictions);
+
+      const room = await Room.findOne({ roomCode });
+      if (!room) {
+        return callback({ success: false, error: 'Room not found' });
+      }
+
+      // Verify host
+      if (room.hostId !== socket.userId) {
+        return callback({ success: false, error: 'Only host can update permissions' });
+      }
+
+      // Find participant
+      const participant = room.participants.find(p => p.userId === targetUserId);
+      if (!participant) {
+        return callback({ success: false, error: 'Participant not found' });
+      }
+
+      // Update restrictions
+      participant.restrictions = {
+        micDisabledByHost: restrictions.micDisabledByHost || false,
+        videoDisabledByHost: restrictions.videoDisabledByHost || false,
+        chatDisabledByHost: restrictions.chatDisabledByHost || false,
+        restrictedAt: new Date(),
+        restrictedBy: socket.userId
+      };
+
+      room.version += 1;
+      await room.save();
+
+      console.log(`[PERMISSIONS] ✅ Permissions updated for ${targetUserId}`);
+
+      // Notify the affected user about restriction
+      io.to(roomCode).emit('room:participant-permissions-updated', {
+        userId: targetUserId,
+        restrictions: participant.restrictions,
+        message: `Permissions have been changed by the host`
+      });
+
+      callback({ 
+        success: true, 
+        message: 'Permissions updated',
+        restrictions: participant.restrictions
+      });
+    } catch (error) {
+      console.error('[PERMISSIONS] ❌ Error updating permissions:', error);
+      callback({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // Promote/Demote user to co-host (host only)
+  socket.on('room:update-role', async ({ roomCode, targetUserId, newRole }, callback) => {
+    try {
+      console.log(`[ROLE] 👑 Host ${socket.userId} updating role for ${targetUserId} to ${newRole}`);
+
+      const room = await Room.findOne({ roomCode });
+      if (!room) {
+        return callback({ success: false, error: 'Room not found' });
+      }
+
+      // Verify host
+      if (room.hostId !== socket.userId) {
+        return callback({ success: false, error: 'Only host can update roles' });
+      }
+
+      // Find participant
+      const participant = room.participants.find(p => p.userId === targetUserId);
+      if (!participant) {
+        return callback({ success: false, error: 'Participant not found' });
+      }
+
+      // Don't allow demoting the host
+      if (participant.role === 'host' && newRole !== 'host') {
+        return callback({ success: false, error: 'Cannot change host role' });
+      }
+
+      participant.role = newRole;
+      room.version += 1;
+      await room.save();
+
+      console.log(`[ROLE] ✅ Role updated for ${targetUserId} to ${newRole}`);
+
+      // Broadcast role change to all users in room
+      io.to(roomCode).emit('room:participant-role-updated', {
+        userId: targetUserId,
+        newRole: newRole,
+        message: `${participant.displayName} is now a ${newRole}`
+      });
+
+      callback({ 
+        success: true, 
+        message: 'Role updated',
+        newRole: newRole
+      });
+    } catch (error) {
+      console.error('[ROLE] ❌ Error updating role:', error);
       callback({
         success: false,
         error: error.message,

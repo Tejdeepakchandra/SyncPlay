@@ -11,7 +11,11 @@ const participantSchema = new mongoose.Schema({
     required: true
   },
   displayName: String,
-  avatar: String,
+  avatar: String,  // Avatar URL/image
+  avatar_emoji: {  // Avatar emoji character for UI display
+    type: String,
+    default: '🧑'
+  },
   joinedAt: {
     type: Date,
     default: Date.now
@@ -34,6 +38,13 @@ const participantSchema = new mongoose.Schema({
     videoEnabled: { type: Boolean, default: true },
     audioEnabled: { type: Boolean, default: true },
     screenShare: { type: Boolean, default: false }
+  },
+  restrictions: {
+    micDisabledByHost: { type: Boolean, default: false },
+    videoDisabledByHost: { type: Boolean, default: false },
+    chatDisabledByHost: { type: Boolean, default: false },
+    restrictedAt: Date,
+    restrictedBy: String // Host ID who applied restriction
   },
   lastActive: {
     type: Date,
@@ -164,6 +175,26 @@ const roomSchema = new mongoose.Schema({
   
   // Settings
   settings: {
+    chatEnabled: {
+      type: Boolean,
+      default: true
+    },
+    reactionsEnabled: {
+      type: Boolean,
+      default: true
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false
+    },
+    allowScreenShare: {
+      type: Boolean,
+      default: true
+    },
+    slowMode: {
+      type: Boolean,
+      default: false
+    },
     privacy: {
       type: String,
       enum: ['public', 'private', 'invite-only'],
@@ -181,25 +212,9 @@ const roomSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     },
-    allowChat: {
-      type: Boolean,
-      default: true
-    },
-    allowReactions: {
-      type: Boolean,
-      default: true
-    },
-    allowScreenShare: {
-      type: Boolean,
-      default: true
-    },
     allowQueue: {
       type: Boolean,
       default: true
-    },
-    slowMode: {
-      type: Boolean,
-      default: false // Limit chat to 1 per 5 seconds
     }
   },
   

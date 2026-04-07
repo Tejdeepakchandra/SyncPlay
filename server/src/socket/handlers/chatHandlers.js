@@ -6,6 +6,32 @@ const { socketRateLimiter } = require('../middleware/rateLimiter');
 
 module.exports = (socket, io) => {
   /**
+   * Helper function to check if user has permission
+   */
+  const checkChatPermission = async (roomCode, userId) => {
+    try {
+      const room = await Room.findOne({ roomCode });
+      if (!room) return { allowed: false, error: 'Room not found' };
+
+      const participant = room.participants.find(p => p.userId === userId);
+      if (!participant) return { allowed: false, error: 'Participant not found' };
+
+      // Host always has permissions
+      if (participant.role === 'host') return { allowed: true };
+
+      // Check if chat is disabled by host
+      if (participant.restrictions?.chatDisabledByHost) {
+        return { allowed: false, error: 'Chat has been disabled by host', error_code: 'CHAT_DISABLED_BY_HOST' };
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      console.error('[CHAT-PERMISSION] Error checking permissions:', error);
+      return { allowed: false, error: error.message };
+    }
+  };
+
+  /**
    * Send a chat message
    * socket.emit('chat:send', { roomCode, text }, callback)
    */
@@ -35,6 +61,16 @@ module.exports = (socket, io) => {
         // Check if chat is enabled
         if (!room.settings.allowChat) {
           return callback({ success: false, error: 'Chat disabled in this room' });
+        }
+
+        // Check user's individual chat permission
+        const permission = await checkChatPermission(roomCode, socket.userId);
+        if (!permission.allowed) {
+          return callback({ 
+            success: false, 
+            error: permission.error,
+            error_code: permission.error_code
+          });
         }
 
         // Create message

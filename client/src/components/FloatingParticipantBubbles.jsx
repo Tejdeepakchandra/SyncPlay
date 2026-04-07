@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mic, MicOff, Crown, ShieldCheck } from "lucide-react";
 
@@ -11,25 +11,149 @@ const bubblePositions = [
   { top: "50%", right: "20px" },
 ];
 
-const StreamCircle = ({ stream, mirrored = false, muted = false }) => {
+const StreamCircle = ({ stream, mirrored = false, muted = false, fallbackEmoji = "🧑" }) => {
   const videoRef = useRef(null);
+  const [isVideoRendering, setIsVideoRendering] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {});
+    if (!stream) {
+      console.log(`[StreamCircle] No stream provided`);
+      setIsVideoRendering(false);
+      setVideoFailed(false);
+      return;
     }
+
+    console.log(`[StreamCircle] Setting up stream`, {
+      videoTracks: stream.getVideoTracks().length,
+      audioTracks: stream.getAudioTracks().length,
+    });
+
+    const setupStream = async () => {
+      if (!videoRef.current || !stream) {
+        console.log(`[StreamCircle] Missing videoRef or stream`);
+        setIsVideoRendering(false);
+        setVideoFailed(false);
+        return;
+      }
+
+      try {
+        console.log(`[StreamCircle] Assigning srcObject to video element`);
+        videoRef.current.srcObject = stream;
+        // Explicitly ensure muted is set (for autoplay policy)
+        videoRef.current.muted = muted;
+        
+        // Check if stream has at least one video track
+        const videoTracks = stream.getVideoTracks();
+        console.log(`[StreamCircle] Video tracks found: ${videoTracks.length}`, 
+          videoTracks.map(t => ({ enabled: t.enabled, muted: t.muted, readyState: t.readyState }))
+        );
+        
+        if (videoTracks.length > 0 && videoTracks.some(t => t.enabled)) {
+          console.log(`[StreamCircle] Attempting to play video (readyState=${videoRef.current.readyState})`);
+          
+          // Try to play the video
+          try {
+            await videoRef.current.play();
+            setIsVideoRendering(true);
+            setVideoFailed(false);
+            console.log(`[StreamCircle] ✅ Video playing successfully`);
+          } catch (playErr) {
+            console.warn(`[StreamCircle] Autoplay blocked (will retry when ready):`, playErr.name);
+            // Autoplay failure is expected - will retry when metadata loads
+            setIsVideoRendering(false);
+            setVideoFailed(false);
+          }
+        } else {
+          console.warn(`[StreamCircle] ⚠️ No enabled video tracks in stream`);
+          setIsVideoRendering(false);
+          setVideoFailed(false);
+        }
+      } catch (err) {
+        console.error(`[StreamCircle] ❌ Stream setup failed:`, err);
+        setIsVideoRendering(false);
+        setVideoFailed(false);
+      }
+    };
+    
+    setupStream();
+
+    // Re-setup if stream changes
+    return () => {
+      console.log(`[StreamCircle] Cleaning up stream`);
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
   }, [stream]);
 
+  // Add click to unmute video if needed
+  const handleVideoClick = () => {
+    if (videoRef.current) {
+      console.log(`[StreamCircle] Video clicked - attempting play`);
+      videoRef.current.play().then(() => {
+        setIsVideoRendering(true);
+        setVideoFailed(false);
+      }).catch(e => {
+        console.warn(`[StreamCircle] Click-to-play failed:`, e.name);
+        // Still don't mark as failed - user can try clicking again
+      });
+    }
+  };
+
+  // Retry playing when metadata loads (for muted autoplay which browsers allow)
+  const handleMetadataLoaded = () => {
+    console.log(`[StreamCircle] Video loadedmetadata event fired - retrying play`);
+    if (videoRef.current) {
+      // Small delay to ensure video decoding has started
+      setTimeout(() => {
+        if (videoRef.current && videoRef.current.paused) {
+          console.log(`[StreamCircle] Video still paused after metadata, retrying play...`);
+          videoRef.current.play().then(() => {
+            console.log(`[StreamCircle] ✅ Video autoplay with muted succeeded`);
+            setIsVideoRendering(true);
+            setVideoFailed(false);
+          }).catch((err) => {
+            console.warn(`[StreamCircle] Muted autoplay still blocked:`, err.name);
+          });
+        }
+      }, 100);
+    }
+  };
+
   return (
-    <video
-      ref={videoRef}
-      autoPlay
-      playsInline
-      muted={muted}
-      className="absolute inset-0 w-full h-full object-cover rounded-full"
-      style={mirrored ? { transform: "scaleX(-1)" } : undefined}
-    />
+    <div className="absolute inset-0 w-full h-full rounded-full overflow-hidden">
+      {!videoFailed ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={muted}
+          onClick={handleVideoClick}
+          className="absolute inset-0 w-full h-full object-cover rounded-full cursor-pointer bg-black"
+          style={mirrored ? { transform: "scaleX(-1)" } : undefined}
+          onPlay={() => {
+            console.log(`[StreamCircle] Video onPlay event fired`);
+            setIsVideoRendering(true);
+            setVideoFailed(false);
+          }}
+          onPlaying={() => {
+            console.log(`[StreamCircle] Video onPlaying event fired - frames are rendering`);
+            setIsVideoRendering(true);
+            setVideoFailed(false);
+          }}
+          onLoadedMetadata={handleMetadataLoaded}
+          onError={() => {
+            console.error(`[StreamCircle] ❌ Video error - showing emoji fallback`);
+            setVideoFailed(true);
+          }}
+        />
+      ) : (
+        <div className="absolute inset-0 bg-muted/80 backdrop-blur-sm flex items-center justify-center rounded-full">
+          <span className="text-2xl md:text-3xl">{fallbackEmoji}</span>
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -52,10 +176,21 @@ const FloatingParticipantBubbles = ({
   remoteStreams,
   deafened = false,
 }) => {
+  // Log stream availability
+  useEffect(() => {
+    console.log(`[FloatingParticipantBubbles] Current state:`, {
+      participantCount: participants?.length || 0,
+      hasLocalStream: !!localStream,
+      localVideoEnabled,
+      remoteStreamsCount: remoteStreams?.size || 0,
+      remoteStreamIds: Array.from(remoteStreams?.keys() || []),
+    });
+  }, [participants, localStream, localVideoEnabled, remoteStreams]);
+
   return (
     <>
       {participants.map((p, i) => {
-        const isLocal = i === 0;
+        const isLocal = p.isLocalUser === true;
         const hasVideo = isLocal ? localVideoEnabled : p.videoEnabled;
         const hasAudio = isLocal ? localAudioEnabled : p.audioEnabled;
         const pos = bubblePositions[i % bubblePositions.length];
@@ -63,12 +198,26 @@ const FloatingParticipantBubbles = ({
         const isOnline = p.isOnline !== false;
         const displayName = p.name.replace(" (Host)", "");
 
+        // Get remote stream if this is a remote participant
         const remoteStream = !isLocal && p.odlUserId ? remoteStreams?.get(p.odlUserId) : undefined;
-        const hasRemoteVideo = !!remoteStream && remoteStream.getVideoTracks().some(t => t.enabled && !t.muted);
+        const remoteHasVideoTracks = remoteStream ? remoteStream.getVideoTracks().length > 0 : false;
+        const remoteVideoEnabled = remoteStream ? remoteStream.getVideoTracks().some(t => t.enabled) : false;
+        
+        // Show video if: local user with enabled video, OR remote stream exists with video tracks
+        const shouldShowVideo = isLocal ? (localStream && hasVideo) : (remoteStream && remoteHasVideoTracks);
+
+        if (!isLocal && p.odlUserId) {
+          console.log(`[FloatingParticipantBubbles] ${displayName} (${p.odlUserId}):`, {
+            hasRemoteStream: !!remoteStream,
+            videoTracks: remoteHasVideoTracks ? remoteStream.getVideoTracks().length : 0,
+            shouldShowVideo,
+            reason: !remoteStream ? "No remoteStream" : !remoteHasVideoTracks ? "No video tracks" : "Ready to show",
+          });
+        }
 
         return (
           <motion.div
-            key={p.name}
+            key={`${p.odlUserId}-${i}`}
             initial={{ opacity: 0, scale: 0 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0 }}
@@ -82,19 +231,19 @@ const FloatingParticipantBubbles = ({
             }}
             title={`${displayName}${p.role === "host" ? " — Host" : p.role === "co-host" ? " — Co-Host" : ""}${p.speaking ? " (speaking)" : ""}`}
           >
-            {isLocal && localStream && hasVideo ? (
-              <StreamCircle stream={localStream} mirrored muted />
-            ) : remoteStream && (hasRemoteVideo || hasVideo) ? (
-              <StreamCircle stream={remoteStream} muted={deafened} />
-            ) : hasVideo && !remoteStream ? (
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/30 to-secondary/30 animate-pulse rounded-full" />
+            {shouldShowVideo ? (
+              isLocal ? (
+                <StreamCircle stream={localStream} mirrored muted fallbackEmoji={p.emoji} />
+              ) : (
+                <StreamCircle stream={remoteStream} muted={true} fallbackEmoji={p.emoji} />
+              )
             ) : (
               <div className="absolute inset-0 bg-muted/80 backdrop-blur-sm flex items-center justify-center rounded-full">
                 <span className={isLocal ? "text-2xl md:text-3xl" : "text-lg md:text-2xl"}>{p.emoji}</span>
               </div>
             )}
 
-            {!isLocal && remoteStream && !hasRemoteVideo && !deafened && (
+            {!isLocal && remoteStream && !remoteVideoEnabled && !deafened && (
               <HiddenAudio stream={remoteStream} />
             )}
 

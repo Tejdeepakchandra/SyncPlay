@@ -23,6 +23,11 @@ const HostControlsPanel = ({
 
   if (!open) return null;
 
+  // Count stats
+  const guestCount = participants.filter(p => p.role === "guest").length;
+  const coHostCount = participants.filter(p => p.role === "co-host").length;
+  const totalGuests = guestCount + coHostCount;
+
   const getRoleBadge = (role) => {
     switch (role) {
       case "host": return { label: "Host", className: "bg-primary/20 text-primary" };
@@ -64,106 +69,164 @@ const HostControlsPanel = ({
 
       <div className="flex-1 overflow-y-auto p-3">
         {tab === "participants" && (
-          <div className="space-y-2">
-            {participants.map((p) => {
-              const badge = getRoleBadge(p.role);
-              const isHost = p.role === "host";
-              return (
-                <div key={p.name} className="glass-panel p-3 space-y-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="relative flex-shrink-0">
-                      <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-lg">
-                        {p.emoji}
-                      </div>
-                      {p.speaking && (
-                        <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-secondary border-2 border-card animate-pulse" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
-                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
-                        {badge.label}
-                      </span>
-                    </div>
-                    {isHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
-                  </div>
+          <div className="space-y-3">
+            {/* Statistics */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="glass-panel p-3 text-center">
+                <p className="text-xs text-muted-foreground">Total</p>
+                <p className="text-lg font-bold text-primary">{participants.length}</p>
+              </div>
+              <div className="glass-panel p-3 text-center">
+                <p className="text-xs text-muted-foreground">Guests</p>
+                <p className="text-lg font-bold text-accent">{totalGuests}</p>
+              </div>
+            </div>
 
-                  {!isHost && (
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className={`h-7 w-7 ${p.audioEnabled ? "text-foreground" : "text-destructive"}`}
-                        onClick={() => onUpdateParticipant(p.name, { audioEnabled: !p.audioEnabled })}
-                      >
-                        {p.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-                      </Button>
-                      {!hideVideoControls && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className={`h-7 w-7 ${p.videoEnabled ? "text-foreground" : "text-destructive"}`}
-                          onClick={() => onUpdateParticipant(p.name, { videoEnabled: !p.videoEnabled })}
-                        >
-                          {p.videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
-                        </Button>
-                      )}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className={`h-7 w-7 ${p.chatEnabled ? "text-foreground" : "text-destructive"}`}
-                        onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
-                      >
-                        {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
-                      </Button>
+            {/* Bulk Actions */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase">Bulk Actions</p>
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 text-xs h-7"
+                  onClick={() => {
+                    participants.forEach(p => {
+                      if (p.role !== "host") {
+                        onUpdateParticipant(p.name, { audioEnabled: false });
+                      }
+                    });
+                  }}
+                >
+                  <MicOff className="w-3 h-3 mr-1" />
+                  Mute All
+                </Button>
+                {!hideVideoControls && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => {
+                      participants.forEach(p => {
+                        if (p.role !== "host") {
+                          onUpdateParticipant(p.name, { videoEnabled: false });
+                        }
+                      });
+                    }}
+                  >
+                    <VideoOff className="w-3 h-3 mr-1" />
+                    Stop Video
+                  </Button>
+                )}
+              </div>
+            </div>
 
-                      <div className="flex-1" />
+            {/* Divider */}
+            <div className="border-t border-glass-border pt-2"></div>
 
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-accent"
-                        onClick={() => onUpdateParticipant(p.name, {
-                          role: p.role === "co-host" ? "guest" : "co-host"
-                        })}
-                      >
-                        {p.role === "co-host" ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
-                      </Button>
-
-                      {confirmRemove === p.name ? (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="h-7 text-xs px-2"
-                            onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
-                          >
-                            Remove
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 text-xs px-2"
-                            onClick={() => setConfirmRemove(null)}
-                          >
-                            Cancel
-                          </Button>
+            {/* Participants List */}
+            <p className="text-xs font-semibold text-muted-foreground uppercase">Participants</p>
+            <div className="space-y-2">
+              {participants.map((p) => {
+                const badge = getRoleBadge(p.role);
+                const isHost = p.role === "host";
+                return (
+                  <div key={p.name} className="glass-panel p-3 space-y-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="relative flex-shrink-0">
+                        <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-lg">
+                          {p.emoji}
                         </div>
-                      ) : (
+                        {p.speaking && (
+                          <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-secondary border-2 border-card animate-pulse" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                      {isHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
+                    </div>
+
+                    {!isHost && (
+                      <div className="flex items-center gap-1">
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-7 w-7 text-destructive"
-                          onClick={() => setConfirmRemove(p.name)}
+                          className={`h-7 w-7 ${p.audioEnabled ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(p.name, { audioEnabled: !p.audioEnabled })}
                         >
-                          <UserMinus className="w-3.5 h-3.5" />
+                          {p.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
                         </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                        {!hideVideoControls && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className={`h-7 w-7 ${p.videoEnabled ? "text-foreground" : "text-destructive"}`}
+                            onClick={() => onUpdateParticipant(p.name, { videoEnabled: !p.videoEnabled })}
+                          >
+                            {p.videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
+                          </Button>
+                        )}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className={`h-7 w-7 ${p.chatEnabled ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
+                        >
+                          {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
+                        </Button>
+
+                        <div className="flex-1" />
+
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-accent"
+                          onClick={() => onUpdateParticipant(p.name, {
+                            role: p.role === "co-host" ? "guest" : "co-host"
+                          })}
+                        >
+                          {p.role === "co-host" ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                        </Button>
+
+                        {confirmRemove === p.name ? (
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-7 text-xs px-2"
+                              onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
+                            >
+                              Remove
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2"
+                              onClick={() => setConfirmRemove(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive"
+                            onClick={() => setConfirmRemove(p.name)}
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

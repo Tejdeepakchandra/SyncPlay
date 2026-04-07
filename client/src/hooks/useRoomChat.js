@@ -36,12 +36,22 @@ export const useRoomChat = (roomCode) => {
       });
     };
 
+    // Listen for chat permission denied
+    const handleChatPermissionDenied = (data) => {
+      console.log('[CHAT-PERMISSION-DENIED]:', data);
+      window.dispatchEvent(new CustomEvent('permission:chat-denied', {
+        detail: { error: data.error, error_code: data.error_code }
+      }));
+    };
+
     socket.on("chat:message-new", handleNewMessage);
     socket.on("chat:typing-indicator", handleTypingIndicator);
+    socket.on("chat:permission-denied", handleChatPermissionDenied);
 
     return () => {
       socket.off("chat:message-new", handleNewMessage);
       socket.off("chat:typing-indicator", handleTypingIndicator);
+      socket.off("chat:permission-denied", handleChatPermissionDenied);
     };
   }, [roomCode]);
 
@@ -50,7 +60,13 @@ export const useRoomChat = (roomCode) => {
 
     socket.emit("chat:send", { roomCode, text }, (response) => {
       if (!response.success) {
-        console.error("Failed to send message:", response.error);
+        console.error("Failed to send message:", response.error, response.error_code);
+        // Dispatch permission denied event if chat is disabled by host
+        if (response.error_code === 'CHAT_DISABLED_BY_HOST') {
+          window.dispatchEvent(new CustomEvent('permission:chat-denied', {
+            detail: { error: response.error, error_code: response.error_code }
+          }));
+        }
       }
     });
   }, [roomCode]);

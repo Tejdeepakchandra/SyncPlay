@@ -17,6 +17,14 @@ export const useRoom = (roomCode) => {
   useEffect(() => {
     if (!roomCode) return;
 
+    console.log('📍 [ROOM INIT] Starting room initialization:', {
+      roomCode,
+      hasUser: !!user,
+      userClerkId: user?.clerkId,
+      socketConnected: socket.connected,
+      socketUserId: socket.userId,
+    });
+
     const initializeRoom = async () => {
       try {
         // Ensure socket is connected
@@ -49,6 +57,12 @@ export const useRoom = (roomCode) => {
             return;
           }
 
+          // Set current user ID from response
+          if (response.userId) {
+            setCurrentUserId(response.userId);
+            console.log('🔐 [ROOM] Set currentUserId from room:get-state:', response.userId);
+          }
+
           setRoom(response.room);
           setParticipants(response.participants || []);
           setAccessStatus("granted");
@@ -70,6 +84,10 @@ export const useRoom = (roomCode) => {
             socket.emit("room:join", { roomCode, guestName: displayName }, (joinResponse) => {
               console.log('📨 Received room join response (auto-join):', joinResponse);
               if (joinResponse && joinResponse.success) {
+                if (joinResponse.userId) {
+                  setCurrentUserId(joinResponse.userId);
+                  console.log('🔐 [ROOM] Set currentUserId from room:join:', joinResponse.userId);
+                }
                 setJoinStatus("joined");
                 setParticipants(joinResponse.participants || []);
                 setIsHost(joinResponse.isHost);
@@ -95,6 +113,7 @@ export const useRoom = (roomCode) => {
         userRole: data.userRole
       });
       setCurrentUserId(data.userId);
+      console.log('🔐 [SOCKET] Set currentUserId to:', data.userId);
     };
 
     socket.on('socket:identify', handleSocketIdentify);
@@ -109,6 +128,9 @@ export const useRoom = (roomCode) => {
 
     socket.on('connect', handleSocketReconnect);
 
+    // Log currentUserId changes
+    console.log('📍 [ROOM] useEffect cleanup - currentUserId is now:', currentUserId);
+
     return () => {
       socket.off('socket:identify', handleSocketIdentify);
       socket.off('connect', handleSocketReconnect);
@@ -117,23 +139,48 @@ export const useRoom = (roomCode) => {
 
   // Wrap all handlers with useCallback so they can be used in listener dependencies
   const handleParticipantJoined = useCallback((data) => {
-    setParticipants((prev) => [
-      ...prev,
-      {
-        userId: data.userId,
-        username: data.username,
-        displayName: data.displayName,
-        avatar: data.avatar,
-        role: "guest",
-        status: "online",
-      },
-    ]);
+    setParticipants((prev) => {
+      const updated = [
+        ...prev,
+        {
+          userId: data.userId,
+          username: data.username,
+          displayName: data.displayName,
+          avatar: data.avatar,
+          avatar_emoji: data.avatar_emoji || '🧑',
+          role: "guest",
+          status: "online",
+        },
+      ];
+      // Also update room participant count
+      setRoom((prevRoom) => {
+        if (prevRoom) {
+          return {
+            ...prevRoom,
+            participantCount: updated.length,
+          };
+        }
+        return prevRoom;
+      });
+      return updated;
+    });
   }, []);
 
   const handleParticipantLeft = useCallback((data) => {
-    setParticipants((prev) =>
-      prev.filter((p) => p.userId !== data.userId)
-    );
+    setParticipants((prev) => {
+      const updated = prev.filter((p) => p.userId !== data.userId);
+      // Also update room participant count
+      setRoom((prevRoom) => {
+        if (prevRoom) {
+          return {
+            ...prevRoom,
+            participantCount: updated.length,
+          };
+        }
+        return prevRoom;
+      });
+      return updated;
+    });
   }, []);
 
   const handleNewHost = useCallback((data) => {
@@ -201,8 +248,23 @@ export const useRoom = (roomCode) => {
     socket.emit("room:join", { roomCode, guestName: finalName }, (response) => {
       console.log('📨 [GUEST] Auto-join response after acceptance:', response);
       if (response?.success) {
+        if (response.userId) {
+          setCurrentUserId(response.userId);
+          console.log('🔐 [ROOM] Set currentUserId from room:join (after approval):', response.userId);
+        }
         console.log('✅ [GUEST] Successfully joined room after approval');
-        setParticipants(response.participants || []);
+        const participants = response.participants || [];
+        setParticipants(participants);
+        // Update room participant count
+        setRoom((prevRoom) => {
+          if (prevRoom) {
+            return {
+              ...prevRoom,
+              participantCount: participants.length,
+            };
+          }
+          return prevRoom;
+        });
         setIsHost(response.isHost);
       } else {
         console.error('❌ [GUEST] Failed to auto-join after acceptance:', response?.error);
@@ -226,6 +288,37 @@ export const useRoom = (roomCode) => {
     setJoinStatus(null);
   }, [roomCode, currentUserId]);
 
+  const handleParticipantPermissionsUpdated = useCallback((data) => {
+    console.log('🔐 Participant permissions updated:', data);
+    // Notify component about permission changes
+    window.dispatchEvent(new CustomEvent('permission:updated', {
+      detail: {
+        targetUserId: data.targetUserId,
+        restrictions: data.restrictions,
+        updatedBy: data.updatedBy
+      }
+    }));
+  }, []);
+
+  const handleRoleUpdated = useCallback((data) => {
+    console.log('👑 User role updated:', data);
+    // Update participants list to reflect role change
+    setParticipants((prev) =>
+      prev.map((p) => 
+        p.userId === data.targetUserId 
+          ? { ...p, role: data.newRole }
+          : p
+      )
+    );
+    // Also dispatch custom event for UI updates
+    window.dispatchEvent(new CustomEvent('permission:role-updated', {
+      detail: {
+        targetUserId: data.targetUserId,
+        newRole: data.newRole
+      }
+    }));
+  }, []);
+
   // Register socket event listeners - this runs whenever handlers change (which happens when dependencies change)
   useEffect(() => {
     if (!socket.connected) {
@@ -241,6 +334,8 @@ export const useRoom = (roomCode) => {
     socket.on("room:join-request", handleJoinRequest);
     socket.on("room:join-accepted", handleJoinAccepted);
     socket.on("room:join-rejected", handleJoinRejected);
+    socket.on("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
+    socket.on("room:role-updated", handleRoleUpdated);
 
     return () => {
       console.log('📡 [LISTENERS] Unregistering socket event listeners...');
@@ -250,8 +345,10 @@ export const useRoom = (roomCode) => {
       socket.off("room:join-request", handleJoinRequest);
       socket.off("room:join-accepted", handleJoinAccepted);
       socket.off("room:join-rejected", handleJoinRejected);
+      socket.off("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
+      socket.off("room:role-updated", handleRoleUpdated);
     };
-  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected]);
+  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected, handleParticipantPermissionsUpdated, handleRoleUpdated]);
 
   // Function to join room with guest name
   const joinAsGuest = (guestNameInput) => {
@@ -265,6 +362,11 @@ export const useRoom = (roomCode) => {
         if (!response.success) {
           reject(new Error(response.error || "Failed to join room"));
           return;
+        }
+
+        if (response.userId) {
+          setCurrentUserId(response.userId);
+          console.log('🔐 [ROOM] Set currentUserId from joinAsGuest:', response.userId);
         }
 
         if (response.status === "waiting_for_approval") {
@@ -327,6 +429,7 @@ export const useRoom = (roomCode) => {
     joinStatus,
     joinRequests,
     waitingUsers,
+    currentUserId,
     joinAsGuest,
     acceptJoinRequest,
     rejectJoinRequest

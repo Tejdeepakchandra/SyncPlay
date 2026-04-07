@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Copy, Check, Share2, Link2, X, Users } from "lucide-react";
+import { Copy, Check, Share2, Link2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
@@ -12,7 +12,8 @@ const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = fa
 
   const roomCode = roomId.replace(/^(room-|music-)/, "").toUpperCase();
   const roomLink = `${window.location.origin}${roomType === "music" ? "/music/room/" : "/room/"}${roomId}`;
-  const displayHost = isHost ? `${profile?.username || user?.username || "You"} (Host)` : (host || "Host");
+  // displayHost is already formatted in the parent (MovieRoom) - just use it as is
+  const displayHost = host || "Host";
 
   const handleCopy = () => {
     navigator.clipboard.writeText(roomLink);
@@ -41,8 +42,14 @@ const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = fa
   };
 
   return (
-    <>
-      <Button size="icon" variant="ghost" onClick={() => setShowPanel(!showPanel)} className={showPanel ? "text-primary" : "text-muted-foreground"}>
+    <div className="relative">
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={() => setShowPanel(!showPanel)}
+        className={showPanel ? "text-primary" : "text-muted-foreground"}
+        title="Room Info"
+      >
         <Link2 className="w-4 h-4" />
       </Button>
 
@@ -56,9 +63,7 @@ const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = fa
           >
             <div className="glass-panel p-4 space-y-3 shadow-xl">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                  <Link2 className="w-3.5 h-3.5 text-primary" /> Room Info
-                </h3>
+                <h3 className="text-sm font-semibold text-foreground">Room Info</h3>
                 <button onClick={() => setShowPanel(false)} className="text-muted-foreground hover:text-foreground">
                   <X className="w-4 h-4" />
                 </button>
@@ -82,7 +87,7 @@ const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = fa
                 <div className="p-2 rounded-lg bg-muted/30">
                   <p className="text-muted-foreground">Participants</p>
                   <p className="font-medium text-foreground flex items-center gap-1">
-                    <Users className="w-3 h-3" /> {participantCount}
+                    {participantCount}
                   </p>
                 </div>
               </div>
@@ -112,7 +117,7 @@ const RoomInfoBar = ({ roomId, roomType, host, participantCount = 1, isHost = fa
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+    </div>
   );
 };
 
