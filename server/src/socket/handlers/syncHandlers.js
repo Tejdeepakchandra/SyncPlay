@@ -4,6 +4,9 @@ const analyticsService = require('../../services/analyticsService');
 const Room = require('../../models/mongodb/Room');
 const { socketRateLimiter } = require('../middleware/rateLimiter');
 
+// Lightweight runtime state for legacy sync:broadcast compatibility.
+const roomRuntimeSyncState = new Map();
+
 
  // Check if user has permission
  
@@ -64,6 +67,98 @@ module.exports = (socket, io) => {
         serverTime: Date.now()
       });
 
+    } catch (error) {
+      callback({ success: false, error: error.message });
+    }
+  });
+
+  // Legacy client compatibility layer used by MovieRoom/MusicRoom hooks.
+  // Keeps media propagation and basic play/pause/seek broadcasts functional.
+  socket.on('sync:broadcast', async ({ roomCode, event, media, timestamp, time }, callback = () => {}) => {
+    try {
+      if (!roomCode || !event) {
+        callback({ success: false, error: 'Missing roomCode or event' });
+        return;
+      }
+
+      const canControl = await checkPermission(roomCode, socket.userId, 'canControl');
+      if (!canControl) {
+        callback({ success: false, error: 'Permission denied' });
+        return;
+      }
+
+      const prev = roomRuntimeSyncState.get(roomCode) || {
+        media: null,
+        isPlaying: false,
+        position: 0,
+        updatedAt: Date.now(),
+      };
+
+      const next = { ...prev, updatedAt: Date.now() };
+
+      if (event === 'media_change') {
+        next.media = media || null;
+        next.position = 0;
+        next.isPlaying = false;
+        socket.to(roomCode).emit('sync:media-change', {
+          media: next.media,
+          userId: socket.userId,
+          timestamp: Date.now(),
+        });
+      } else if (event === 'play') {
+        next.isPlaying = true;
+        socket.to(roomCode).emit('sync:play', {
+          userId: socket.userId,
+          timestamp: timestamp || Date.now(),
+        });
+      } else if (event === 'pause') {
+        next.isPlaying = false;
+        socket.to(roomCode).emit('sync:pause', {
+          userId: socket.userId,
+          timestamp: timestamp || Date.now(),
+        });
+      } else if (event === 'seek') {
+        if (typeof time === 'number') {
+          next.position = time;
+        }
+        socket.to(roomCode).emit('sync:seek', {
+          userId: socket.userId,
+          timestamp: timestamp || Date.now(),
+          time: typeof time === 'number' ? time : 0,
+        });
+      }
+
+      roomRuntimeSyncState.set(roomCode, next);
+      callback({ success: true });
+    } catch (error) {
+      callback({ success: false, error: error.message });
+    }
+  });
+
+  socket.on('sync:request-state', ({ roomCode }, callback = () => {}) => {
+    try {
+      if (!roomCode) {
+        callback({ success: false, error: 'Missing roomCode' });
+        return;
+      }
+
+      const state = roomRuntimeSyncState.get(roomCode) || {
+        media: null,
+        isPlaying: false,
+        position: 0,
+        updatedAt: Date.now(),
+      };
+
+      socket.emit('sync:update', {
+        timestamp: Date.now(),
+        currentPlayback: {
+          media: state.media,
+          isPlaying: state.isPlaying,
+          time: state.position,
+        },
+      });
+
+      callback({ success: true, state });
     } catch (error) {
       callback({ success: false, error: error.message });
     }

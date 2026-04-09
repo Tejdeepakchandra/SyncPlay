@@ -107,7 +107,7 @@ export const useWebRTC = () => {
           cursor: "always",
           displaySurface: "monitor",
         },
-        audio: false,
+        audio: true,
       });
 
       screenRef.current = screen;

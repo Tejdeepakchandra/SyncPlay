@@ -5,13 +5,23 @@ const User = require('../../models/mongodb/User');
 const clerk = new Clerk({ secretKey: process.env.CLERK_SECRET_KEY });
 
 /**
- * Generate consistent guest ID for socket
+ * Generate consistent guest ID for socket (fallback only)
+ * Prefers client-provided guestId, falls back to IP+UA hash
  */
-const generateGuestId = (socket) => {
+const generateGuestId = (socket, clientGuestId = null) => {
+  // If client provided a unique guest ID, use it (multiple guests from same IP)
+  if (clientGuestId && clientGuestId.startsWith('guest-')) {
+    console.log(`🔐 Using client-provided guest ID: ${clientGuestId}`);
+    return clientGuestId;
+  }
+  
+  // Fallback: generate from IP + UA (for backward compatibility)
   const ip = socket.handshake.address;
   const ua = socket.handshake.headers['user-agent'] || 'unknown';
   const hash = require('crypto').createHash('md5').update(ip + ua).digest('hex');
-  return `guest-${hash.substring(0, 8)}`;
+  const guestId = `guest-${hash.substring(0, 8)}`;
+  console.log(`🔐 Generated guest ID from IP+UA: ${guestId}`);
+  return guestId;
 };
 
 /**
@@ -22,10 +32,11 @@ const generateGuestId = (socket) => {
 const authenticateSocket = async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
+    const clientGuestId = socket.handshake.auth?.guestId; // Get guest ID from client
     
     if (!token) {
       // No token: guest mode
-      socket.userId = generateGuestId(socket);
+      socket.userId = generateGuestId(socket, clientGuestId);
       socket.userRole = 'guest';
       socket.isGuest = true;
       return next();
@@ -45,12 +56,13 @@ const authenticateSocket = async (socket, next) => {
 
       const clerkUserId = decoded.payload.sub;
       
-      // Try to find user in MongoDB
+      // Try to find user in MongoDB for display info only
       const user = await User.findOne({ clerkId: clerkUserId });
       
       if (user) {
-        // ✅ User found in MongoDB
-        socket.userId = user._id.toString();
+        // ✅ User found in MongoDB - use Clerk ID as the primary identifier (IMPORTANT!)
+        // This ensures consistency with how rooms are created and participants are stored
+        socket.userId = clerkUserId;  // Use Clerk ID, NOT MongoDB ObjectId
         socket.clerkId = clerkUserId;
         socket.userRole = 'user';
         socket.isGuest = false;
@@ -63,7 +75,7 @@ const authenticateSocket = async (socket, next) => {
           isOnline: true 
         }).catch(err => console.error('Socket: Failed to update user status:', err.message));
         
-        console.log(`✅ Socket authenticated: ${socket.id} → User: ${user.username}`);
+        console.log(`✅ Socket authenticated: ${socket.id} → User: ${user.username} (${clerkUserId})`);
       } else {
         // User has valid Clerk token but NOT in MongoDB yet
         // This happens right after OAuth signin (webhook pending)

@@ -25,9 +25,9 @@ export function AppRouter() {
         {/* Public routes */}
         <Route path="/" element={<Index />} />
         <Route path="/movies" element={<Movies />} />
-        <Route path="/room/:roomId" element={<MovieRoom />} />
+        <Route path="/room/:roomCode" element={<MovieRoom />} />
         <Route path="/music" element={<MusicPage />} />
-        <Route path="/music/room/:roomId" element={<MusicRoom />} />
+        <Route path="/music/room/:roomCode" element={<MusicRoom />} />
         <Route path="/friends" element={<Friends />} />
 
         {/* Protected routes - require authentication */}

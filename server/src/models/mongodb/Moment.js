@@ -80,8 +80,7 @@ const momentSchema = new mongoose.Schema({
   // Participants involved
   participants: [{
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
+      type: String,  // Clerk user ID
     },
     username: String,
     displayName: String,
@@ -94,7 +93,7 @@ const momentSchema = new mongoose.Schema({
   
   // Reactions data
   reactions: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     username: String,
     reaction: String,
     timestamp: Date,
@@ -103,7 +102,7 @@ const momentSchema = new mongoose.Schema({
   
   // Comments during this moment
   comments: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     username: String,
     text: String,
     timestamp: Date,

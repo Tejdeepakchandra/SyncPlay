@@ -103,8 +103,6 @@ const userSchema = new mongoose.Schema({
 )
 
 
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
 userSchema.index({'friends.userId': 1});
 userSchema.index({ lastActive: -1 });
 

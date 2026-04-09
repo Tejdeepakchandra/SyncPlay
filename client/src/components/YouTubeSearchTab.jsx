@@ -1,46 +1,10 @@
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Search, Play, Eye, Clock, ThumbsUp, Loader2, Youtube, TrendingUp } from "lucide-react";
+import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
+import { Search, Eye, Loader2, Youtube, TrendingUp } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import api from "@/services/api";
 import { toast } from "sonner";
-
-// YouTube API service (mock for now, replace with real API)
-const searchVideos = async (query, maxResults = 12, pageToken) => {
-  // Mock implementation - replace with actual YouTube API
-  await new Promise(r => setTimeout(r, 1000));
-  
-  return {
-    videos: Array(maxResults).fill(0).map((_, i) => ({
-      id: `video-${i}`,
-      title: `Sample Video ${i + 1} - ${query}`,
-      thumbnail: `https://picsum.photos/320/180?random=${i}`,
-      channelTitle: "Sample Channel",
-      viewCount: Math.floor(Math.random() * 1000000).toString(),
-      likeCount: Math.floor(Math.random() * 100000).toString(),
-      duration: `${Math.floor(Math.random() * 10)}:${Math.floor(Math.random() * 60).toString().padStart(2, '0')}`,
-    })),
-    nextPageToken: pageToken ? null : "next-page-token"
-  };
-};
-
-const getTrendingVideos = async (maxResults = 12, categoryId, pageToken) => {
-  // Mock implementation
-  await new Promise(r => setTimeout(r, 1000));
-  
-  return {
-    videos: Array(maxResults).fill(0).map((_, i) => ({
-      id: `trending-${i}`,
-      title: `Trending Video ${i + 1}`,
-      thumbnail: `https://picsum.photos/320/180?random=${i + 100}`,
-      channelTitle: "Trending Channel",
-      viewCount: Math.floor(Math.random() * 5000000).toString(),
-      likeCount: Math.floor(Math.random() * 500000).toString(),
-      duration: `${Math.floor(Math.random() * 15)}:${Math.floor(Math.random() * 60).toString().padStart(2, '0')}`,
-    })),
-    nextPageToken: pageToken ? null : "next-page-token"
-  };
-};
 
 const formatViewCount = (count) => {
   const num = parseInt(count);
@@ -49,22 +13,35 @@ const formatViewCount = (count) => {
   return num.toString();
 };
 
-const container = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.06 },
-  },
+const formatDuration = (secondsLike) => {
+  const total = Number(secondsLike || 0);
+  if (!Number.isFinite(total) || total <= 0) return "0:00";
+
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = Math.floor(total % 60);
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 };
 
-const item = {
-  hidden: { opacity: 0, y: 20, filter: "blur(8px)" },
-  show: {
-    opacity: 1,
-    y: 0,
-    filter: "blur(0px)",
-    transition: { type: "spring", stiffness: 200, damping: 20 },
-  },
+const normalizeVideoResult = (video) => {
+  const id = String(video?.id || video?.videoId || "").trim();
+  if (!id) return null;
+
+  return {
+    id,
+    title: video?.title || "Untitled video",
+    thumbnail:
+      video?.thumbnail ||
+      `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+    channelTitle: video?.artist || video?.channelTitle || "Unknown",
+    viewCount: video?.views || video?.viewCount || "0",
+    likeCount: video?.likeCount || null,
+    duration: formatDuration(video?.duration),
+  };
 };
 
 const YouTubeSearchTab = ({ onSelectVideo }) => {
@@ -74,20 +51,51 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
   const [searched, setSearched] = useState(false);
   const [nextPageToken, setNextPageToken] = useState(null);
   const [mode, setMode] = useState("trending");
+  const [hasSearched, setHasSearched] = useState(false);
+
+  const quickQueries = [
+    "official trailer",
+    "teaser",
+    "new release trailer",
+    "imax trailer",
+    "movie clip",
+  ];
 
   const handleSearch = async (pageToken) => {
-    if (!query.trim() && mode === "search") return;
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      return;
+    }
     
     setLoading(true);
     setMode("search");
+    setHasSearched(true);
     
     try {
-      const result = await searchVideos(query.trim(), 12, pageToken);
-      setVideos(pageToken ? [...videos, ...result.videos] : result.videos);
-      setNextPageToken(result.nextPageToken);
+      const response = await api.post("/movies/search", {
+        query: normalizedQuery,
+        pageToken: pageToken || undefined,
+        maxResults: 24,
+      });
+      const payload = response.data || {};
+      if (!payload.success) {
+        throw new Error(payload.message || payload.error || "Search failed");
+      }
+
+      const mapped = (payload.results || [])
+        .map(normalizeVideoResult)
+        .filter(Boolean);
+
+      setVideos(pageToken ? [...videos, ...mapped] : mapped);
+      setNextPageToken(payload.nextPageToken || null);
       setSearched(true);
+      setHasSearched(true);
     } catch (err) {
-      toast.error("Search failed", { description: err.message });
+      const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || "Search failed";
+      toast.error("Search failed", { description: message });
+      setVideos([]);
+      setSearched(true);
+      setHasSearched(true);
     } finally {
       setLoading(false);
     }
@@ -96,14 +104,32 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
   const handleTrending = async (pageToken) => {
     setLoading(true);
     setMode("trending");
+    setHasSearched(true);
     
     try {
-      const result = await getTrendingVideos(12, undefined, pageToken);
-      setVideos(pageToken ? [...videos, ...result.videos] : result.videos);
-      setNextPageToken(result.nextPageToken);
+      const endpoint = pageToken
+        ? `/movies/category/trending?pageToken=${encodeURIComponent(pageToken)}&maxResults=24`
+        : "/movies/trending";
+      const response = await api.get(endpoint);
+      const payload = response.data || {};
+      if (!payload.success) {
+        throw new Error(payload.message || payload.error || "Failed to load trending");
+      }
+
+      const mapped = (payload.results || [])
+        .map(normalizeVideoResult)
+        .filter(Boolean);
+
+      setVideos(pageToken ? [...videos, ...mapped] : mapped);
+      setNextPageToken(payload.nextPageToken || null);
       setSearched(true);
+      setHasSearched(true);
     } catch (err) {
-      toast.error("Failed to load trending", { description: err.message });
+      const message = err?.response?.data?.message || err?.response?.data?.error || err?.message || "Failed to load trending";
+      toast.error("Failed to load trending", { description: message });
+      setVideos([]);
+      setSearched(true);
+      setHasSearched(true);
     } finally {
       setLoading(false);
     }
@@ -119,6 +145,12 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
     toast.success(`🎬 Selected: ${video.title}`, { duration: 2000 });
   };
 
+  useEffect(() => {
+    handleTrending();
+    // Load initial results when MovieRoom opens YouTube search.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="space-y-6">
       {/* Search bar */}
@@ -126,7 +158,7 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
           <Input
-            placeholder="Search YouTube videos..."
+            placeholder="Search movie trailers, teasers, clips..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -160,6 +192,21 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
         </Button>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        {quickQueries.map((q) => (
+          <button
+            key={q}
+            onClick={() => {
+              setQuery(q);
+              setTimeout(() => handleSearch(), 10);
+            }}
+            className="text-[11px] px-3 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary/90 hover:bg-primary/20 transition-colors"
+          >
+            {q}
+          </button>
+        ))}
+      </div>
+
       {/* Results */}
       {!searched && !loading && (
         <div className="text-center py-16">
@@ -176,70 +223,63 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
         </div>
       )}
 
-      <AnimatePresence mode="wait">
-        {videos.length > 0 && (
-          <motion.div
-            key="results"
-            variants={container}
-            initial="hidden"
-            animate="show"
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+      <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-1">
+        {videos.length > 0 && videos.map((video, idx) => (
+          <motion.button
+            key={`${video.id}-${video.title}`}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: Math.min(idx * 0.02, 0.2) }}
+            onClick={() => handleSelect(video)}
+            className="w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-muted/40 border border-glass-border/60 hover:border-primary/30 transition-colors group text-left"
           >
-            {videos.map((video) => (
-              <motion.div
-                key={video.id}
-                variants={item}
-                onClick={() => handleSelect(video)}
-                className="glass-panel cursor-pointer group overflow-hidden rounded-2xl"
-              >
-                {/* Thumbnail */}
-                <div className="relative aspect-video bg-muted overflow-hidden">
-                  <img
-                    src={video.thumbnail}
-                    alt={video.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                    loading="lazy"
-                  />
-                  {/* Duration badge */}
-                  {video.duration && (
-                    <div className="absolute bottom-2 right-2 bg-background/80 backdrop-blur-sm px-1.5 py-0.5 rounded text-[10px] font-medium text-foreground">
-                      {video.duration}
-                    </div>
-                  )}
-                  {/* Play overlay */}
-                  <div className="absolute inset-0 bg-background/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                    <div className="w-12 h-12 rounded-full gradient-movie flex items-center justify-center shadow-lg shadow-primary/30">
-                      <Play className="w-5 h-5 text-primary-foreground ml-0.5" />
-                    </div>
-                  </div>
+            <div className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0 bg-muted relative">
+              <img
+                src={video.thumbnail}
+                alt={video.title}
+                className="w-full h-full object-cover"
+                loading="lazy"
+                onError={(e) => {
+                  e.currentTarget.src = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+                }}
+              />
+              {!!video.duration && (
+                <div className="absolute bottom-0.5 right-0.5 bg-background/80 px-1 py-0.5 rounded text-[8px] font-mono">
+                  {video.duration}
                 </div>
+              )}
+            </div>
 
-                {/* Info */}
-                <div className="p-3">
-                  <h4 className="text-sm font-semibold text-foreground line-clamp-2 group-hover:text-primary transition-colors leading-snug mb-1.5">
-                    {video.title}
-                  </h4>
-                  <p className="text-xs text-muted-foreground truncate mb-2">{video.channelTitle}</p>
-                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                    {video.viewCount && (
-                      <span className="flex items-center gap-1">
-                        <Eye className="w-3 h-3" />
-                        {formatViewCount(video.viewCount)}
-                      </span>
-                    )}
-                    {video.likeCount && (
-                      <span className="flex items-center gap-1">
-                        <ThumbsUp className="w-3 h-3" />
-                        {parseInt(video.likeCount).toLocaleString()}
-                      </span>
-                    )}
-                  </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground line-clamp-2 group-hover:text-primary transition-colors">
+                {video.title}
+              </p>
+              <p className="text-xs text-muted-foreground truncate mb-1">
+                {video.channelTitle}
+              </p>
+              {!!video.viewCount && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <Eye className="w-3 h-3" />
+                  <span>{formatViewCount(video.viewCount)}</span>
                 </div>
-              </motion.div>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
+              )}
+            </div>
+          </motion.button>
+        ))}
+      </div>
+
+      {hasSearched && !loading && videos.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-sm text-muted-foreground">No videos found for this query.</p>
+          <Button
+            variant="outline"
+            className="mt-3 border-glass-border"
+            onClick={() => handleTrending()}
+          >
+            Show Trending
+          </Button>
+        </div>
+      )}
 
       {/* Load more */}
       {nextPageToken && videos.length > 0 && (
@@ -248,10 +288,10 @@ const YouTubeSearchTab = ({ onSelectVideo }) => {
             variant="outline"
             onClick={() => mode === "search" ? handleSearch(nextPageToken) : handleTrending(nextPageToken)}
             disabled={loading}
-            className="border-glass-border rounded-xl"
+            className="border-glass-border rounded-xl px-5"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-            Load More
+            Load More Results
           </Button>
         </div>
       )}

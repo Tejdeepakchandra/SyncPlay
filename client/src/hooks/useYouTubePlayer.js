@@ -63,6 +63,9 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
   const suppressSyncRef = useRef(false);
   const [apiIsReady, setApiIsReady] = useState(apiReady);
   const currentVideoIdRef = useRef(videoId);
+  const playerReadyRef = useRef(false);
+  const lastTimeRef = useRef(0);
+  const lastDurationRef = useRef(0);
 
   // Refs for callbacks
   const onStateChangeRef = useRef(onStateChange);
@@ -83,9 +86,13 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
       } catch { /* player already destroyed */ }
       playerRef.current = null;
     }
+    playerReadyRef.current = false;
     if (wrapperRef.current) {
       wrapperRef.current.innerHTML = "";
     }
+    setPlayerState("unstarted");
+    setDuration(0);
+    setCurrentTime(0);
   }, []);
 
   // Load API
@@ -93,35 +100,12 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
     ensureAPI(() => setApiIsReady(true));
   }, []);
 
-  // Block top-level navigation attempts
+  // If YouTube media is closed in UI, fully tear down iframe/player.
   useEffect(() => {
-    if (!videoId || !apiIsReady) return;
-
-    const handleBeforeUnload = (e) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-
-    const handleClick = (e) => {
-      const target = e.target;
-      const anchor = target.closest?.("a");
-      if (anchor) {
-        const href = anchor.getAttribute("href") || "";
-        if (href.includes("youtube.com") || href.includes("youtu.be")) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    document.addEventListener("click", handleClick, true);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      document.removeEventListener("click", handleClick, true);
-    };
-  }, [videoId, apiIsReady]);
+    if (!videoId) {
+      destroyPlayer();
+    }
+  }, [videoId, destroyPlayer]);
 
   // Create player when ready
   useEffect(() => {
@@ -130,6 +114,17 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
     let cancelled = false;
     let retryCount = 0;
     const maxRetries = 10;
+
+    const hasMountedIframe = !!wrapperRef.current?.querySelector("iframe");
+    if (playerRef.current?.loadVideoById && hasMountedIframe && playerReadyRef.current) {
+      try {
+        playerRef.current.loadVideoById(videoId);
+        playerRef.current.playVideo?.();
+        return;
+      } catch {
+        // Fallback to recreate flow below when player is in bad state.
+      }
+    }
 
     const tryCreate = () => {
       if (cancelled) return;
@@ -152,6 +147,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
       try {
         playerRef.current = new window.YT.Player(target, {
           videoId,
+          host: "https://www.youtube-nocookie.com",
           width: "100%",
           height: "100%",
           playerVars: {
@@ -169,6 +165,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
           events: {
             onReady: (e) => {
               if (cancelled) return;
+              playerReadyRef.current = true;
               setDuration(e.target.getDuration());
               e.target.playVideo();
               onReadyRef.current?.();
@@ -182,6 +179,11 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
                 setDuration(e.target.getDuration());
               }
             },
+            onError: () => {
+              if (cancelled) return;
+              setPlayerState("error");
+              onStateChangeRef.current?.("error");
+            },
           },
         });
       } catch (err) {
@@ -193,7 +195,6 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
 
     return () => {
       cancelled = true;
-      destroyPlayer();
     };
   }, [videoId, apiIsReady, destroyPlayer]);
 
@@ -208,10 +209,16 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
       if (playerRef.current?.getCurrentTime) {
         try {
           const time = playerRef.current.getCurrentTime();
-          setCurrentTime(time);
+          if (Math.abs(time - lastTimeRef.current) >= 0.5) {
+            lastTimeRef.current = time;
+            setCurrentTime(time);
+          }
 
           const dur = playerRef.current.getDuration();
-          if (dur > 0) setDuration(dur);
+          if (dur > 0 && Math.abs(dur - lastDurationRef.current) >= 0.5) {
+            lastDurationRef.current = dur;
+            setDuration(dur);
+          }
 
           // Detect video changes
           const url = playerRef.current.getVideoUrl?.();
@@ -228,7 +235,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
           }
         } catch { /* player not ready */ }
       }
-    }, 500);
+    }, 1000);
 
     return () => {
       if (timeIntervalRef.current) {

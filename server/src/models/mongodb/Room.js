@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 
 const participantSchema = new mongoose.Schema({
   userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,  // Clerk user ID (string)
     required: true
   },
   username: {
@@ -12,14 +11,18 @@ const participantSchema = new mongoose.Schema({
     required: true
   },
   displayName: String,
-  avatar: String,
+  avatar: String,  // Avatar URL/image
+  avatar_emoji: {  // Avatar emoji character for UI display
+    type: String,
+    default: '🧑'
+  },
   joinedAt: {
     type: Date,
     default: Date.now
   },
   role: {
     type: String,
-    enum: ['host', 'cohost', 'participant', 'guest'],
+    enum: ['host', 'cohost', 'co-host', 'participant', 'guest'],
     default: 'participant'
   },
   permissions: {
@@ -35,6 +38,13 @@ const participantSchema = new mongoose.Schema({
     videoEnabled: { type: Boolean, default: true },
     audioEnabled: { type: Boolean, default: true },
     screenShare: { type: Boolean, default: false }
+  },
+  restrictions: {
+    micDisabledByHost: { type: Boolean, default: false },
+    videoDisabledByHost: { type: Boolean, default: false },
+    chatDisabledByHost: { type: Boolean, default: false },
+    restrictedAt: Date,
+    restrictedBy: String // Host ID who applied restriction
   },
   lastActive: {
     type: Date,
@@ -70,7 +80,7 @@ const mediaSchema = new mongoose.Schema({
 const queueItemSchema = new mongoose.Schema({
   media: mediaSchema,
   addedBy: {
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     username: String
   },
   addedAt: {
@@ -78,7 +88,7 @@ const queueItemSchema = new mongoose.Schema({
     default: Date.now
   },
   votes: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     vote: { type: Number, enum: [1, -1] } 
   }],
   status: {
@@ -116,14 +126,17 @@ const roomSchema = new mongoose.Schema({
   
   // Ownership
   hostId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,  // Clerk user ID
+    required: true,
+    index: true
+  },
+  originalHostId: {
+    type: String,
     required: true,
     index: true
   },
   coHosts: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    type: String  // Clerk user IDs
   }],
   
   // Participants
@@ -138,9 +151,55 @@ const roomSchema = new mongoose.Schema({
     min: 2,
     max: 100
   },
+
+  // Access Control for Private Rooms
+  invitedUsers: [{
+    userId: String,          // Clerk user ID (can be null for email invites)
+    email: String,           // For inviting by email
+    name: String,            // Optional name
+    invitedAt: { type: Date, default: Date.now },
+    joinedAt: Date
+  }],
+
+  joinRequests: [{
+    userId: String,          // Clerk user ID or guest ID
+    username: String,        // Name user entered
+    email: String,           // Optional email
+    requestedAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' }
+  }],
+
+  waitingUsers: [{
+    userId: String,          // Guest ID or authenticated user ID
+    username: String,        // Name they entered/chose
+    displayName: String,
+    avatar: String,
+    joinRequestedAt: { type: Date, default: Date.now },
+    role: { type: String, default: 'guest' }
+  }],
   
   // Settings
   settings: {
+    chatEnabled: {
+      type: Boolean,
+      default: true
+    },
+    reactionsEnabled: {
+      type: Boolean,
+      default: true
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false
+    },
+    allowScreenShare: {
+      type: Boolean,
+      default: true
+    },
+    slowMode: {
+      type: Boolean,
+      default: false
+    },
     privacy: {
       type: String,
       enum: ['public', 'private', 'invite-only'],
@@ -158,25 +217,9 @@ const roomSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     },
-    allowChat: {
-      type: Boolean,
-      default: true
-    },
-    allowReactions: {
-      type: Boolean,
-      default: true
-    },
-    allowScreenShare: {
-      type: Boolean,
-      default: true
-    },
     allowQueue: {
       type: Boolean,
       default: true
-    },
-    slowMode: {
-      type: Boolean,
-      default: false // Limit chat to 1 per 5 seconds
     }
   },
   
@@ -241,8 +284,6 @@ const roomSchema = new mongoose.Schema({
 
 // INDEXES for Performance
 
-roomSchema.index({ roomCode: 1 });
-roomSchema.index({ hostId: 1 });
 roomSchema.index({ status: 1 });
 roomSchema.index({ 'participants.userId': 1 });
 roomSchema.index({ createdAt: -1 });
@@ -251,17 +292,20 @@ roomSchema.index({ 'stats.peakParticipants': -1 });
 
 // MIDDLEWARE
 
-
 // Update participant count before save
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', async function() {
   if (this.participants) {
     this.participantCount = this.participants.length;
+
+    // Keep coHosts array aligned with participant role assignments.
+    this.coHosts = this.participants
+      .filter((p) => p.role === 'co-host' || p.role === 'cohost')
+      .map((p) => p.userId);
   }
-  next();
 });
 
 // Update timestamps based on status
-roomSchema.pre('save', function(next) {
+roomSchema.pre('save', async function() {
   if (this.isModified('status')) {
     if (this.status === 'active' && !this.startedAt) {
       this.startedAt = new Date();
@@ -270,7 +314,6 @@ roomSchema.pre('save', function(next) {
       this.endedAt = new Date();
     }
   }
-  next();
 });
 
 
@@ -296,12 +339,12 @@ roomSchema.methods.isCoHost = function(userId) {
  */
 roomSchema.methods.hasPermission = function(userId, permission) {
   const participant = this.participants.find(
-    p => p.userId.toString() === userId.toString()
+    p => p.userId === userId  // Both are strings now, no .toString() needed
   );
   
   if (!participant) return false;
   if (participant.role === 'host') return true;
-  if (participant.role === 'cohost') return true;
+  if (participant.role === 'cohost' || participant.role === 'co-host') return true;
   
   return participant.permissions[permission] || false;
 };
@@ -311,7 +354,7 @@ roomSchema.methods.hasPermission = function(userId, permission) {
  */
 roomSchema.methods.getParticipant = function(userId) {
   return this.participants.find(
-    p => p.userId.toString() === userId.toString()
+    p => p.userId === userId  // Both are strings now, no .toString() needed
   );
 };
 
@@ -341,14 +384,20 @@ roomSchema.statics.findActive = function() {
 /**
  * Generate unique room code
  */
-roomSchema.statics.generateRoomCode = async function() {
+roomSchema.statics.generateRoomCode = async function(roomType = 'custom') {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const typePrefixMap = {
+    movie: 'V',
+    music: 'M',
+    custom: 'C',
+  };
+  const prefix = typePrefixMap[String(roomType || '').toLowerCase()] || 'C';
   let code;
   let exists;
   
   do {
-    code = '';
-    for (let i = 0; i < 6; i++) {
+    code = prefix;
+    for (let i = 0; i < 5; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     exists = await this.exists({ roomCode: code });

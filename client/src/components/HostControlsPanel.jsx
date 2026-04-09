@@ -16,12 +16,37 @@ const HostControlsPanel = ({
   onRemoveParticipant,
   roomSettings,
   onUpdateSettings,
+  isHost = false,
   hideVideoControls = false,
+  panelTheme = "movie",
 }) => {
   const [tab, setTab] = useState("participants");
   const [confirmRemove, setConfirmRemove] = useState(null);
 
+  const palette = panelTheme === "music"
+    ? {
+        panelBorder: "border-emerald-400/20",
+        panelBg: "from-emerald-950/65 to-emerald-900/35",
+        iconText: "text-emerald-300",
+        activeTabText: "text-emerald-300",
+        activeTabBorder: "border-emerald-300",
+        statsText: "text-emerald-300",
+      }
+    : {
+        panelBorder: "border-blue-400/20",
+        panelBg: "from-blue-950/65 to-blue-900/35",
+        iconText: "text-sky-300",
+        activeTabText: "text-sky-300",
+        activeTabBorder: "border-sky-300",
+        statsText: "text-sky-300",
+      };
+
   if (!open) return null;
+
+  // Count stats
+  const guestCount = participants.filter((p) => p.role === "guest").length;
+  const coHostCount = participants.filter((p) => p.role === "co-host" || p.role === "cohost").length;
+  const totalGuests = guestCount + coHostCount;
 
   const getRoleBadge = (role) => {
     switch (role) {
@@ -36,11 +61,11 @@ const HostControlsPanel = ({
       initial={{ width: 0, opacity: 0 }}
       animate={{ width: typeof window !== "undefined" && window.innerWidth < 768 ? "100%" : 320, opacity: 1 }}
       exit={{ width: 0, opacity: 0 }}
-      className="border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0"
+      className={`h-full border-l ${palette.panelBorder} bg-gradient-to-b ${palette.panelBg} backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0`}
     >
       <div className="p-4 border-b border-glass-border flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Settings className="w-4 h-4 text-primary" />
+          <Settings className={`w-4 h-4 ${palette.iconText}`} />
           <h3 className="text-sm font-semibold text-foreground">Host Controls</h3>
         </div>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -49,12 +74,12 @@ const HostControlsPanel = ({
       </div>
 
       <div className="flex border-b border-glass-border">
-        {["participants", "settings"].map((t) => (
+        {(["participants", ...(isHost ? ["settings"] : [])]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`flex-1 py-2.5 text-xs font-medium transition-colors capitalize ${
-              tab === t ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
+              tab === t ? `${palette.activeTabText} border-b-2 ${palette.activeTabBorder}` : "text-muted-foreground hover:text-foreground"
             }`}
           >
             {t}
@@ -64,106 +89,176 @@ const HostControlsPanel = ({
 
       <div className="flex-1 overflow-y-auto p-3">
         {tab === "participants" && (
-          <div className="space-y-2">
-            {participants.map((p) => {
-              const badge = getRoleBadge(p.role);
-              const isHost = p.role === "host";
-              return (
-                <div key={p.name} className="glass-panel p-3 space-y-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="relative flex-shrink-0">
-                      <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-lg">
-                        {p.emoji}
-                      </div>
-                      {p.speaking && (
-                        <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-secondary border-2 border-card animate-pulse" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
-                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
-                        {badge.label}
-                      </span>
-                    </div>
-                    {isHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
-                  </div>
+          <div className="space-y-3">
+            {/* Statistics */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="glass-panel p-3 text-center">
+                <p className="text-xs text-muted-foreground">Total</p>
+                <p className={`text-lg font-bold ${palette.statsText}`}>{participants.length}</p>
+              </div>
+              <div className="glass-panel p-3 text-center">
+                <p className="text-xs text-muted-foreground">Guests</p>
+                <p className="text-lg font-bold text-accent">{totalGuests}</p>
+              </div>
+            </div>
 
-                  {!isHost && (
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className={`h-7 w-7 ${p.audioEnabled ? "text-foreground" : "text-destructive"}`}
-                        onClick={() => onUpdateParticipant(p.name, { audioEnabled: !p.audioEnabled })}
-                      >
-                        {p.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-                      </Button>
-                      {!hideVideoControls && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className={`h-7 w-7 ${p.videoEnabled ? "text-foreground" : "text-destructive"}`}
-                          onClick={() => onUpdateParticipant(p.name, { videoEnabled: !p.videoEnabled })}
-                        >
-                          {p.videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
-                        </Button>
-                      )}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className={`h-7 w-7 ${p.chatEnabled ? "text-foreground" : "text-destructive"}`}
-                        onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
-                      >
-                        {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
-                      </Button>
+            {/* Bulk Actions */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase">Bulk Actions</p>
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 text-xs h-7"
+                  onClick={() => {
+                    participants.forEach(p => {
+                      if (p.role !== "host") {
+                        onUpdateParticipant(p.name, { audioEnabled: false });
+                      }
+                    });
+                  }}
+                >
+                  <MicOff className="w-3 h-3 mr-1" />
+                  Mute All
+                </Button>
+                {!hideVideoControls && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => {
+                      participants.forEach(p => {
+                        if (p.role !== "host") {
+                          onUpdateParticipant(p.name, { videoEnabled: false });
+                        }
+                      });
+                    }}
+                  >
+                    <VideoOff className="w-3 h-3 mr-1" />
+                    Stop Video
+                  </Button>
+                )}
+              </div>
+            </div>
 
-                      <div className="flex-1" />
+            {/* Divider */}
+            <div className="border-t border-glass-border pt-2"></div>
 
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-accent"
-                        onClick={() => onUpdateParticipant(p.name, {
-                          role: p.role === "co-host" ? "guest" : "co-host"
-                        })}
-                      >
-                        {p.role === "co-host" ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
-                      </Button>
-
-                      {confirmRemove === p.name ? (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="h-7 text-xs px-2"
-                            onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
-                          >
-                            Remove
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 text-xs px-2"
-                            onClick={() => setConfirmRemove(null)}
-                          >
-                            Cancel
-                          </Button>
+            {/* Participants List */}
+            <p className="text-xs font-semibold text-muted-foreground uppercase">Participants</p>
+            <div className="space-y-2">
+              {participants.map((p) => {
+                const badge = getRoleBadge(p.role);
+                const isParticipantHost = p.role === "host";
+                const isParticipantCoHost = p.role === "co-host" || p.role === "cohost";
+                const restrictions = p.restrictions || {};
+                return (
+                  <div key={p.name} className="glass-panel p-3 space-y-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="relative flex-shrink-0">
+                        <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-lg">
+                          {p.emoji}
                         </div>
-                      ) : (
+                        {p.speaking && (
+                          <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-secondary border-2 border-card animate-pulse" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                        {(restrictions.micDisabledByHost || restrictions.videoDisabledByHost || restrictions.chatDisabledByHost) && (
+                          <p className="text-[10px] text-destructive mt-1">
+                            {[restrictions.micDisabledByHost ? "Mic blocked" : null, restrictions.videoDisabledByHost ? "Video blocked" : null, restrictions.chatDisabledByHost ? "Chat blocked" : null]
+                              .filter(Boolean)
+                              .join(" • ")}
+                          </p>
+                        )}
+                      </div>
+                      {isParticipantHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
+                    </div>
+
+                    {!isParticipantHost && (
+                      <div className="flex items-center gap-1">
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-7 w-7 text-destructive"
-                          onClick={() => setConfirmRemove(p.name)}
+                          className={`h-7 w-7 ${p.audioEnabled ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(p.name, { audioEnabled: !p.audioEnabled })}
                         >
-                          <UserMinus className="w-3.5 h-3.5" />
+                          {p.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
                         </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                        {!hideVideoControls && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className={`h-7 w-7 ${p.videoEnabled ? "text-foreground" : "text-destructive"}`}
+                            onClick={() => onUpdateParticipant(p.name, { videoEnabled: !p.videoEnabled })}
+                          >
+                            {p.videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
+                          </Button>
+                        )}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className={`h-7 w-7 ${p.chatEnabled ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
+                        >
+                          {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
+                        </Button>
+
+                        <div className="flex-1" />
+
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-accent"
+                          disabled={!isHost}
+                          onClick={() => onUpdateParticipant(p.name, {
+                            role: isParticipantCoHost ? "guest" : "co-host"
+                          })}
+                        >
+                          {isParticipantCoHost ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                        </Button>
+
+                        {confirmRemove === p.name ? (
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-7 text-xs px-2"
+                              disabled={!isHost}
+                              onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
+                            >
+                              Remove
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2"
+                              onClick={() => setConfirmRemove(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive"
+                            disabled={!isHost}
+                            onClick={() => setConfirmRemove(p.name)}
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

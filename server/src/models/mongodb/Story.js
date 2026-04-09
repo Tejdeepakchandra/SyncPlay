@@ -7,8 +7,7 @@ const mongoose = require('mongoose');
  */
 const storySchema = new mongoose.Schema({
   userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    type: String,  // Clerk user ID
     required: true,
     index: true
   },
@@ -58,14 +57,14 @@ const storySchema = new mongoose.Schema({
   
   // Participants tagged
   participants: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     username: String,
     avatar: String
   }],
   
   // Engagement
   views: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     viewedAt: {
       type: Date,
       default: Date.now
@@ -76,7 +75,7 @@ const storySchema = new mongoose.Schema({
     default: 0
   },
   reactions: [{
-    userId: mongoose.Schema.Types.ObjectId,
+    userId: String,  // Clerk user ID
     reaction: String,
     createdAt: {
       type: Date,
