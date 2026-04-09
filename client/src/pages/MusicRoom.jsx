@@ -4,17 +4,21 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, SkipForward, SkipBack, Shuffle, Repeat,
   MessageSquare, Music, ListMusic, Sliders, Settings,
-  Heart, Bookmark, Smile, Headphones, VolumeX, Search,
-  Eye, ChevronLeft, Send, Link2, Volume2
+  Heart, Bookmark, Smile, Headphones, VolumeX,
+  ChevronLeft, ChevronUp, Send, Volume2, Wifi, WifiOff, X,
+  Mic, MicOff, UserX, Youtube, Upload
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { socket } from "@/services/socket";
 import { toast } from "sonner";
 
 // Hooks
 import { useRoom } from "@/hooks/useRoom";
 import { useRoomChat } from "@/hooks/useRoomChat";
 import { useYouTubePlayer } from "@/hooks/useYouTubePlayer";
-import { useParticipantStates } from "@/hooks/useParticipantStates";
+import { useRoomSync } from "@/hooks/useRoomSync";
+import { useWebRTC } from "@/hooks/useWebRTC";
+import { useWebRTCMesh } from "@/hooks/useWebRTCMesh";
 
 // Components
 import RoomAccessGate from "@/components/RoomAccessGate";
@@ -23,7 +27,6 @@ import RoomInfoBar from "@/components/RoomInfoBar";
 import GuestNameDialog from "@/components/GuestNameDialog";
 import WaitingAreaDialog from "@/components/WaitingAreaDialog";
 import JoinRequestNotification from "@/components/JoinRequestNotification";
-import AudioBubble from "@/components/AudioBubble";
 import UpNextQueue from "@/components/UpNextQueue";
 import TrackEndedOverlay from "@/components/TrackEndedOverlay";
 import MusicSourcePicker from "@/components/MusicSourcePicker";
@@ -32,6 +35,93 @@ import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 
 const reactionEmojis = ["🔥", "🎵", "💜", "👏", "🎧", "🤩"];
+
+const audioBubblePositions = [
+  { bottom: "24px", right: "24px" },
+  { top: "24px", left: "24px" },
+  { top: "24px", right: "24px" },
+  { bottom: "24px", left: "24px" },
+  { top: "50%", left: "12px" },
+  { top: "50%", right: "12px" },
+];
+
+function OverlayAudioBubble({
+  participant,
+  index,
+  isLocal,
+  localAudioEnabled,
+  isMutedByYou,
+  onToggleMute,
+}) {
+  const [showMenu, setShowMenu] = useState(false);
+  const hasAudio = isLocal ? localAudioEnabled : (participant.audioEnabled && !isMutedByYou);
+  const pos = audioBubblePositions[index % audioBubblePositions.length];
+  const isSpeaking = participant.speaking && hasAudio;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0 }}
+      transition={{ delay: index * 0.1, type: "spring", stiffness: 260, damping: 20 }}
+      className="absolute z-20 group cursor-pointer"
+      style={pos}
+      title={`${participant.name}${isSpeaking ? " (speaking)" : ""}${isMutedByYou ? " (muted by you)" : ""}`}
+      onClick={() => !isLocal && setShowMenu(!showMenu)}
+    >
+      <AnimatePresence>
+        {isSpeaking && (
+          <motion.div
+            initial={{ scale: 1, opacity: 0.5 }}
+            animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+            className="absolute -inset-1.5 rounded-full border-2 border-secondary pointer-events-none"
+          />
+        )}
+      </AnimatePresence>
+
+      <div
+        className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center relative transition-shadow duration-300 ${
+          isLocal ? "ring-2 ring-primary/60" : ""
+        } ${isMutedByYou ? "opacity-50" : ""}`}
+        style={{
+          background: "hsl(var(--muted) / 0.85)",
+          backdropFilter: "blur(8px)",
+          boxShadow: isSpeaking
+            ? "0 0 0 2px hsl(var(--secondary)), 0 0 16px hsl(var(--secondary) / 0.35)"
+            : "0 0 0 1.5px hsl(var(--border)), 0 4px 12px rgba(0,0,0,0.3)",
+        }}
+      >
+        <span className="text-xl md:text-2xl select-none">{participant.emoji}</span>
+        {!isSpeaking && (
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-card/90 backdrop-blur flex items-center justify-center border border-border">
+            {isMutedByYou ? <UserX className="w-2.5 h-2.5 text-destructive" /> : hasAudio ? <Mic className="w-2.5 h-2.5 text-secondary" /> : <MicOff className="w-2.5 h-2.5 text-destructive" />}
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {showMenu && !isLocal && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8, y: 5 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.8, y: 5 }}
+            className="absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-card/95 backdrop-blur-xl border border-border rounded-xl shadow-xl z-50 overflow-hidden min-w-[140px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => { onToggleMute(); setShowMenu(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 transition-colors">
+              {isMutedByYou ? (
+                <><Volume2 className="w-3.5 h-3.5 text-secondary" /><span className="text-foreground">Unmute {participant.name.split(" ")[0]}</span></>
+              ) : (
+                <><VolumeX className="w-3.5 h-3.5 text-destructive" /><span className="text-foreground">Mute {participant.name.split(" ")[0]}</span></>
+              )}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
 
 const MusicRoom = () => {
   const navigate = useNavigate();
@@ -46,18 +136,16 @@ const MusicRoom = () => {
     accessStatus,
     joinStatus,
     joinRequests,
-    waitingUsers,
+    currentUserId,
+    leaveRoom,
+    endRoom,
     joinAsGuest,
     acceptJoinRequest,
     rejectJoinRequest
   } = useRoom(roomCode);
   const { messages, sendMessage } = useRoomChat(roomCode);
   
-  // Participant audio states
-  const { participantStates, participantActivity, broadcastAudioState, broadcastActivityLevel } = useParticipantStates(roomCode);
-
   // Local state
-  const [guestNameSubmitted, setGuestNameSubmitted] = useState(false);
   const [isJoiningAsGuest, setIsJoiningAsGuest] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -71,28 +159,62 @@ const MusicRoom = () => {
   const [isLiked, setIsLiked] = useState(false);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [showUpNext, setShowUpNext] = useState(false);
-  const [trackProgress, setTrackProgress] = useState(0);
-  const [trackDuration, setTrackDuration] = useState(0);
+  const [_trackProgress, _setTrackProgress] = useState(0);
+  const [_trackDuration, _setTrackDuration] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [floatingReactions, setFloatingReactions] = useState([]);
   const [musicVolume, setMusicVolume] = useState(80);
   const [voiceChatVolume, setVoiceChatVolume] = useState(60);
+  const [deafenVoiceChat, setDeafenVoiceChat] = useState(false);
+  const [mutedUserIds, setMutedUserIds] = useState(new Set());
   const [audioActive, setAudioActive] = useState(false);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState("off"); // off, one, all
-  const [showMusicPicker, setShowMusicPicker] = useState(true);
-  const [searchResults, setSearchResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [showYoutubeSearch, setShowYoutubeSearch] = useState(false);
+  const [showSourcePicker, setShowSourcePicker] = useState(true);
+  const [_searchResults, _setSearchResults] = useState([]);
+  const [_isSearching, _setIsSearching] = useState(false);
+  const [_showYoutubeSearch, _setShowYoutubeSearch] = useState(false);
   const [trackEnded, setTrackEnded] = useState(false);
-  const [showAudioBubbles, setShowAudioBubbles] = useState(false);
+  const [_showAudioBubbles, _setShowAudioBubbles] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [isLeavingRoom, setIsLeavingRoom] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [syncStatus, _setSyncStatus] = useState("synced");
+  const [localDuration, setLocalDuration] = useState(0);
+  const [localCurrentTime, setLocalCurrentTime] = useState(0);
+  const [roomSettings, setRoomSettings] = useState({
+    chatEnabled: true,
+    reactionsEnabled: true,
+    isPrivate: false,
+    allowScreenShare: false,
+    slowMode: false,
+  });
 
   // Audio refs
   const chatEndRef = useRef(null);
   const reactionIdRef = useRef(0);
   const containerRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const localAudioRef = useRef(null);
+  const remoteAudioRefs = useRef(new Map());
+
+  const webrtc = useWebRTC();
+  const myUserId = currentUserId || socket.userId || user?.id;
+  const myParticipant = (dbParticipants || []).find((p) => p.userId === myUserId);
+  const myRestrictions = myParticipant?.restrictions || {};
+  const micBlockedByHost = !!myRestrictions.micDisabledByHost;
+  const otherParticipantIds = (dbParticipants || [])
+    .filter((p) => p.userId !== myUserId)
+    .map((p) => p.userId);
+
+  const meshStreams = useWebRTCMesh({
+    roomCode,
+    participantIds: otherParticipantIds,
+    localStream: webrtc.stream,
+    enabled: audioActive,
+    userId: myUserId,
+    isHost,
+  });
 
   // YouTube player for music (hidden)
   const ytPlayer = useYouTubePlayer({
@@ -118,42 +240,220 @@ const MusicRoom = () => {
   });
 
   // Determine user role
-  const userRole = isHost ? "host" : (dbParticipants?.find(p => p.userId === user?.id)?.role || "guest");
-  const canControl = userRole === "host" || userRole === "co-host";
+  const myRole = myParticipant?.role;
+  const isCurrentUserHost = Boolean(myUserId && room?.hostId === myUserId);
+  const userRole = isCurrentUserHost
+    ? "host"
+    : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
+  const canControl = userRole === "host" || userRole === "co-host" || userRole === "cohost";
+
+  const roomSync = useRoomSync({
+    roomCode,
+    isHost,
+    isCoHost: userRole === "co-host" || userRole === "cohost",
+    onMediaChange: (media) => {
+      if (media?.type === "youtube" && media.videoId) {
+        setCurrentTrack({
+          videoId: media.videoId,
+          title: media.title || "YouTube Track",
+          artist: media.artist || "Unknown",
+          thumbnail: media.thumbnail || null,
+          sourceType: "youtube",
+        });
+        setShowSourcePicker(false);
+        setTrackEnded(false);
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+          localAudioRef.current = null;
+          setLocalCurrentTime(0);
+          setLocalDuration(0);
+        }
+      }
+      if (media?.type === "local" && media.audioUrl) {
+        setCurrentTrack({
+          title: media.title || "Local Audio",
+          artist: media.artist || "Uploaded",
+          thumbnail: null,
+          sourceType: "local",
+          audioUrl: media.audioUrl,
+        });
+        setShowSourcePicker(false);
+        setTrackEnded(false);
+      } else if (media?.type === "local" && !media.audioUrl) {
+        toast("Host selected a local file", {
+          description: "Local uploads are currently host-only in this version.",
+        });
+      }
+      if (!media || media.type === "none") {
+        setCurrentTrack(null);
+        setShowSourcePicker(true);
+      }
+    },
+    onPlay: () => {
+      setIsPlaying(true);
+      if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+        localAudioRef.current.play().catch(() => {});
+      } else {
+        ytPlayer.play();
+      }
+    },
+    onPause: () => {
+      setIsPlaying(false);
+      if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+        localAudioRef.current.pause();
+      } else {
+        ytPlayer.pause();
+      }
+    },
+    onSeek: (pct) => {
+      if (typeof pct === "number") {
+        if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
+          localAudioRef.current.currentTime = (pct / 100) * localDuration;
+          setLocalCurrentTime(localAudioRef.current.currentTime);
+        } else {
+          ytPlayer.seekToPercent(pct);
+        }
+      }
+    },
+  });
 
   // Build participants list
   useEffect(() => {
     const list = [];
-    if (clerkUser) {
-      list.push({
-        name: clerkUser.firstName || clerkUser.username || "You",
-        emoji: "🎧",
-        speaking: false,
-        role: isHost ? "host" : "participant",
-        audioEnabled: audioActive,
-        username: clerkUser.username || "",
-        isOnline: true,
-        userId: user?.id,
-      });
-    }
+    const seen = new Set();
 
     if (dbParticipants && dbParticipants.length > 0) {
-      dbParticipants.forEach(p => {
-        if (p.userId === user?.id) return;
+      dbParticipants.forEach((p) => {
+        if (!p?.userId || seen.has(p.userId)) return;
+        seen.add(p.userId);
+
+        const isLocal = p.userId === myUserId;
+        const remoteStream = !isLocal ? meshStreams.remoteStreams.get(p.userId) : null;
+
         list.push({
-          name: p.displayName || "User",
-          emoji: "🎧",
+          name: isLocal
+            ? (clerkUser?.firstName || clerkUser?.username || p.displayName || "You")
+            : (p.displayName || "User"),
+          emoji: p.avatar_emoji || "🎧",
           speaking: false,
-          role: p.role || "guest",
-          audioEnabled: true,
+          role: p.role || (isLocal && isHost ? "host" : "guest"),
+          audioEnabled: isLocal
+            ? webrtc.audioEnabled
+            : !!remoteStream?.getAudioTracks()?.some((t) => t.enabled),
           username: p.username || "",
           isOnline: true,
           userId: p.userId,
+          restrictions: p.restrictions || {},
         });
       });
     }
+
+    if (list.length === 0 && myUserId) {
+      list.push({
+        name: clerkUser?.firstName || clerkUser?.username || "You",
+        emoji: "🎧",
+        speaking: false,
+        role: isHost ? "host" : userRole,
+        audioEnabled: webrtc.audioEnabled,
+        username: clerkUser?.username || "",
+        isOnline: true,
+        userId: myUserId,
+      });
+    }
+
     setParticipants(list);
-  }, [dbParticipants, clerkUser, user?.id, isHost, audioActive]);
+  }, [dbParticipants, clerkUser, userRole, myUserId, isHost, webrtc.audioEnabled, meshStreams.remoteStreams]);
+
+  useEffect(() => {
+    (meshStreams.remoteStreams || new Map()).forEach((stream, peerId) => {
+      const audioEl = remoteAudioRefs.current.get(peerId);
+      if (!audioEl) return;
+      if (audioEl.srcObject !== stream) {
+        audioEl.srcObject = stream;
+      }
+      audioEl.volume = Math.max(0, Math.min(1, voiceChatVolume / 100));
+      audioEl.muted = deafenVoiceChat || mutedUserIds.has(peerId);
+      audioEl.play?.().catch(() => {});
+    });
+  }, [meshStreams.remoteStreams, voiceChatVolume, mutedUserIds, deafenVoiceChat]);
+
+  useEffect(() => {
+    if (currentTrack?.sourceType !== "local" || !currentTrack?.audioUrl) return;
+
+    if (localAudioRef.current?.src !== currentTrack.audioUrl) {
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
+      }
+
+      const audio = new Audio(currentTrack.audioUrl);
+      audio.volume = isMuted ? 0 : musicVolume / 100;
+      localAudioRef.current = audio;
+
+      const onTimeUpdate = () => setLocalCurrentTime(audio.currentTime || 0);
+      const onDurationChange = () => setLocalDuration(audio.duration || 0);
+      const onEnded = () => {
+        setTrackEnded(true);
+        setIsPlaying(false);
+      };
+
+      audio.addEventListener("timeupdate", onTimeUpdate);
+      audio.addEventListener("durationchange", onDurationChange);
+      audio.addEventListener("ended", onEnded);
+
+      audio.play().catch(() => {
+        setIsPlaying(false);
+      });
+
+      return () => {
+        audio.removeEventListener("timeupdate", onTimeUpdate);
+        audio.removeEventListener("durationchange", onDurationChange);
+        audio.removeEventListener("ended", onEnded);
+      };
+    }
+  }, [currentTrack?.audioUrl, currentTrack?.sourceType, isMuted, musicVolume]);
+
+  useEffect(() => {
+    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+      localAudioRef.current.volume = isMuted ? 0 : musicVolume / 100;
+    }
+  }, [isMuted, musicVolume, currentTrack?.sourceType]);
+
+  useEffect(() => {
+    const nextVolume = isMuted ? 0 : musicVolume;
+    ytPlayer.setVolume(nextVolume);
+    if (isMuted) {
+      ytPlayer.mute();
+    } else {
+      ytPlayer.unmute();
+    }
+
+    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+      localAudioRef.current.volume = nextVolume / 100;
+    }
+  }, [isMuted, musicVolume, ytPlayer, currentTrack?.sourceType]);
+
+  useEffect(() => {
+    return () => {
+      if (localAudioRef.current) {
+        const src = localAudioRef.current.src;
+        localAudioRef.current.pause();
+        localAudioRef.current = null;
+        if (src && src.startsWith("blob:")) {
+          URL.revokeObjectURL(src);
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setRoomSettings((prev) => ({
+      chatEnabled: room?.settings?.chatEnabled ?? prev.chatEnabled,
+      reactionsEnabled: room?.settings?.reactionsEnabled ?? prev.reactionsEnabled,
+      isPrivate: room?.settings?.isPrivate ?? prev.isPrivate,
+      allowScreenShare: room?.settings?.allowScreenShare ?? prev.allowScreenShare,
+      slowMode: room?.settings?.slowMode ?? prev.slowMode,
+    }));
+  }, [room?.settings]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -171,12 +471,27 @@ const MusicRoom = () => {
 
   // Playback controls
   const togglePlayPause = useCallback(() => {
+    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+      if (isPlaying) {
+        localAudioRef.current.pause();
+        setIsPlaying(false);
+        if (canControl) roomSync.broadcastPause();
+      } else {
+        localAudioRef.current.play().catch(() => {});
+        setIsPlaying(true);
+        if (canControl) roomSync.broadcastPlay();
+      }
+      return;
+    }
+
     if (isPlaying) {
       ytPlayer.pause();
+      if (canControl) roomSync.broadcastPause();
     } else {
       ytPlayer.play();
+      if (canControl) roomSync.broadcastPlay();
     }
-  }, [isPlaying, ytPlayer]);
+  }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType]);
 
   const playNext = useCallback(() => {
     if (queue.length > 0) {
@@ -184,18 +499,27 @@ const MusicRoom = () => {
       setCurrentTrack(nextTrack);
       setQueue(queue.slice(1));
       setShowUpNext(false);
+      if (canControl) {
+        roomSync.broadcastMediaChange({
+          type: "youtube",
+          videoId: nextTrack.videoId,
+          title: nextTrack.title,
+          artist: nextTrack.artist,
+          thumbnail: nextTrack.thumbnail,
+        });
+      }
     }
-  }, [queue]);
+  }, [queue, canControl, roomSync]);
 
   const playPrevious = useCallback(() => {
+    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+      localAudioRef.current.currentTime = 0;
+      setLocalCurrentTime(0);
+      return;
+    }
     ytPlayer.seekToStart();
     setIsPlaying(true);
-  }, [ytPlayer]);
-
-  const handleSkip = useCallback((direction) => {
-    const percentage = direction === "forward" ? trackProgress + 5 : Math.max(0, trackProgress - 5);
-    ytPlayer.seekToPercent(percentage);
-  }, [trackProgress, ytPlayer]);
+  }, [ytPlayer, currentTrack?.sourceType]);
 
   const toggleShuffle = useCallback(() => {
     setShuffle(!shuffle);
@@ -215,12 +539,152 @@ const MusicRoom = () => {
     }, 2000);
   }, []);
 
+  const handleToggleAudio = useCallback(async () => {
+    if (!audioActive && micBlockedByHost) {
+      toast.error("Your mic is disabled by host");
+      return;
+    }
+
+    if (!audioActive) {
+      const stream = await webrtc.startMedia(false, true);
+      if (stream) {
+        setAudioActive(true);
+        toast.success("Voice chat enabled");
+      }
+      return;
+    }
+
+    webrtc.stopMedia();
+    setAudioActive(false);
+    toast("Voice chat disabled");
+  }, [audioActive, webrtc, micBlockedByHost]);
+
+  const handleToggleUserMute = useCallback((targetUserId) => {
+    setMutedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(targetUserId)) next.delete(targetUserId);
+      else next.add(targetUserId);
+      return next;
+    });
+  }, []);
+
+  const handleToggleDeafen = useCallback(() => {
+    setDeafenVoiceChat((prev) => !prev);
+  }, []);
+
+  const handleRequestLeave = useCallback(() => {
+    setShowLeaveConfirm(true);
+  }, []);
+
+  const handleConfirmLeave = useCallback(async () => {
+    if (isLeavingRoom) return;
+    setIsLeavingRoom(true);
+    try {
+      await leaveRoom();
+      navigate("/music");
+    } finally {
+      setIsLeavingRoom(false);
+      setShowLeaveConfirm(false);
+    }
+  }, [isLeavingRoom, leaveRoom, navigate]);
+
+  const handleConfirmEndRoom = useCallback(async () => {
+    if (isLeavingRoom) return;
+    setIsLeavingRoom(true);
+    try {
+      await endRoom();
+      navigate("/music");
+    } finally {
+      setIsLeavingRoom(false);
+      setShowLeaveConfirm(false);
+    }
+  }, [isLeavingRoom, endRoom, navigate]);
+
+  const handleSelectTrack = useCallback((track) => {
+    const nextTrack = {
+      videoId: track.videoId || track.id,
+      title: track.title,
+      artist: track.artist || track.channel || "Unknown",
+      thumbnail: track.thumbnail || null,
+      sourceType: "youtube",
+    };
+
+    if (localAudioRef.current) {
+      localAudioRef.current.pause();
+      localAudioRef.current = null;
+      setLocalCurrentTime(0);
+      setLocalDuration(0);
+    }
+
+    setCurrentTrack(nextTrack);
+    setShowSourcePicker(false);
+    setTrackEnded(false);
+    setIsPlaying(true);
+    if (canControl) {
+      roomSync.broadcastMediaChange({
+        type: "youtube",
+        videoId: nextTrack.videoId,
+        title: nextTrack.title,
+        artist: nextTrack.artist,
+        thumbnail: nextTrack.thumbnail,
+      });
+      roomSync.broadcastPlay();
+    }
+  }, [canControl, roomSync]);
+
+  const handleSelectLocalTrack = useCallback((file, audioUrl) => {
+    const nextTrack = {
+      title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
+      artist: "Uploaded",
+      thumbnail: null,
+      sourceType: "local",
+      audioUrl,
+    };
+
+    setCurrentTrack(nextTrack);
+    setShowSourcePicker(false);
+    setTrackEnded(false);
+    setIsPlaying(true);
+    setQueue((prev) => [...prev, nextTrack]);
+
+    if (canControl) {
+      toast("Local upload started", {
+        description: "This local file is only playable on your device.",
+      });
+    }
+  }, [canControl]);
+
   const closeAllPanels = useCallback(() => {
     setShowChat(false);
     setShowHostControls(false);
     setShowMixer(false);
     setShowPlaylist(false);
   }, []);
+
+  const handleSeek = useCallback((pct) => {
+    if (!canControl) return;
+
+    if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
+      localAudioRef.current.currentTime = (pct / 100) * localDuration;
+      setLocalCurrentTime(localAudioRef.current.currentTime);
+    } else {
+      ytPlayer.seekToPercent(pct);
+    }
+
+    roomSync.broadcastSeek(pct);
+  }, [canControl, ytPlayer, roomSync, currentTrack?.sourceType, localDuration]);
+
+  const displayCurrentTime = currentTrack?.sourceType === "local" ? localCurrentTime : ytPlayer.currentTime;
+  const displayDuration = currentTrack?.sourceType === "local" ? localDuration : ytPlayer.duration;
+  const progressPercent = displayDuration > 0 ? (displayCurrentTime / displayDuration) * 100 : 0;
+
+  const waveformBars = Array.from({ length: 48 }, (_, i) => {
+    const playingBase = 18 + ((i * 7) % 35);
+    const idleBase = 12 + ((i * 3) % 10);
+    return isPlaying ? playingBase : idleBase;
+  });
+
+  const albumGradient = currentTrack?.thumbnail ? undefined : "from-primary to-accent";
 
   const handleSendMessage = useCallback(() => {
     if (chatMessage.trim()) {
@@ -229,39 +693,90 @@ const MusicRoom = () => {
     }
   }, [chatMessage, sendMessage]);
 
+  const handleUpdateParticipant = useCallback((nameOrUserId, updates) => {
+    const target = (dbParticipants || []).find(
+      (p) => p.userId === nameOrUserId || p.displayName === nameOrUserId || p.username === nameOrUserId
+    );
+    if (!target?.userId) return;
+
+    if (updates.audioEnabled !== undefined) {
+      socket.emit("room:update-participant-permissions", {
+        roomCode,
+        targetUserId: target.userId,
+        restrictions: { micDisabledByHost: !updates.audioEnabled },
+      });
+    }
+
+    if (updates.chatEnabled !== undefined) {
+      socket.emit("room:update-participant-permissions", {
+        roomCode,
+        targetUserId: target.userId,
+        restrictions: { chatDisabledByHost: !updates.chatEnabled },
+      });
+    }
+
+    if (updates.role) {
+      socket.emit("room:update-role", {
+        roomCode,
+        targetUserId: target.userId,
+        newRole: updates.role,
+      });
+    }
+  }, [dbParticipants, roomCode]);
+
+  const handleRemoveParticipant = useCallback((nameOrUserId) => {
+    const target = (dbParticipants || []).find(
+      (p) => p.userId === nameOrUserId || p.displayName === nameOrUserId || p.username === nameOrUserId
+    );
+    if (!target?.userId) return;
+    socket.emit("room:remove-participant", { roomCode, targetUserId: target.userId });
+  }, [dbParticipants, roomCode]);
+
+  const handleUpdateSettings = useCallback((updates) => {
+    setRoomSettings((prev) => ({ ...prev, ...updates }));
+    socket.emit("room:update-settings", { roomCode, settings: updates }, (response) => {
+      if (!response?.success) {
+        setRoomSettings((prev) => ({ ...prev, ...Object.fromEntries(Object.keys(updates).map((k) => [k, !updates[k]])) }));
+      }
+    });
+  }, [roomCode]);
+
   // Access control handling
-  if (accessStatus === "loading") {
-    return <RoomAccessGate accessStatus="loading" />;
-  }
-
-  if (accessStatus !== "granted") {
-    return <RoomAccessGate accessStatus={accessStatus} />;
-  }
-
-  // Guest wait flow
-  if (!isJoiningAsGuest && !user && joinStatus !== "joined") {
+  if (!user && accessStatus === "granted" && !joinStatus) {
     return (
       <GuestNameDialog
-        roomCode={roomCode}
-        onSubmit={(name) => {
-          setGuestNameSubmitted(true);
+        roomName={room?.name || "Music Room"}
+        onJoinAsGuest={async (name) => {
           setIsJoiningAsGuest(true);
-          joinAsGuest(name);
+          try {
+            await joinAsGuest(name);
+          } finally {
+            setIsJoiningAsGuest(false);
+          }
         }}
+        onSignIn={() => navigate("/sign-in")}
+        isLoading={isJoiningAsGuest}
       />
     );
   }
 
-  // Show waiting area for private rooms
   if (joinStatus === "waiting_for_approval") {
-    return <WaitingAreaDialog roomCode={roomCode} roomName={room?.name} />;
+    return (
+      <WaitingAreaDialog
+        roomName={room?.name || "Music Room"}
+        guestName={user ? "You" : "Guest"}
+        onCancel={() => setIsJoiningAsGuest(false)}
+        roomType="music"
+      />
+    );
+  }
+
+  if (accessStatus !== "granted") {
+    return <RoomAccessGate status={accessStatus} roomType="music" />;
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="h-screen bg-background flex flex-col transition-colors duration-700 overflow-hidden"
-    >
+    <div ref={containerRef} className="h-screen bg-[radial-gradient(circle_at_12%_15%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_88%_80%,rgba(34,197,94,0.16),transparent_36%),hsl(224,40%,6%)] flex flex-col overflow-hidden">
       {/* Join Request Notifications for Host */}
       {isHost && joinRequests.length > 0 && (
         <JoinRequestNotification
@@ -271,14 +786,6 @@ const MusicRoom = () => {
           isHost={isHost}
         />
       )}
-
-      {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="audio/*"
-        className="hidden"
-      />
 
       {/* Floating reactions */}
       <div className="fixed inset-0 pointer-events-none z-50">
@@ -303,23 +810,24 @@ const MusicRoom = () => {
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-nav px-4 py-3 flex items-center justify-between z-30 relative"
+        className="glass-nav px-4 py-3 flex items-center justify-between z-30 relative border-b border-emerald-400/20 bg-emerald-950/20"
       >
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate("/music")}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
+          <button onClick={handleRequestLeave} className="text-muted-foreground hover:text-foreground transition-colors">
             <ChevronLeft className="w-5 h-5" />
           </button>
           <div>
             <h1 className="font-display text-sm font-semibold text-foreground">
-              {currentTrack?.title || "Music Room"}
+              {currentTrack?.title || "Chill Vibes Session"}
             </h1>
             <div className="flex items-center gap-2">
-              <p className="text-xs text-muted-foreground">
-                {participants.length} listening · Room {roomCode?.slice(0, 6)}
-              </p>
+              <p className="text-xs text-muted-foreground">{participants.length} listening · Room {roomCode?.slice(0, 6)}</p>
+              <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
+                syncStatus === "synced" ? "bg-emerald-400/20 text-emerald-300" : "bg-amber-400/20 text-amber-300"
+              }`}>
+                {syncStatus === "synced" ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
+                {syncStatus === "synced" ? "Synced" : "Syncing..."}
+              </span>
             </div>
           </div>
         </div>
@@ -334,6 +842,16 @@ const MusicRoom = () => {
               isHost={isHost}
             />
           )}
+          <div className="flex -space-x-1.5 mr-2">
+            {participants.slice(0, 4).map((p) => (
+              <div key={p.name} className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-sm border-2 border-background" title={p.name}>
+                {p.emoji}
+              </div>
+            ))}
+            {participants.length > 4 && (
+              <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-[10px] text-muted-foreground border-2 border-background">+{participants.length - 4}</div>
+            )}
+          </div>
           <Button
             size="icon"
             variant="ghost"
@@ -341,7 +859,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowPlaylist(!showPlaylist);
             }}
-            className={showPlaylist ? "text-primary" : "text-muted-foreground"}
+            className={showPlaylist ? "text-emerald-300" : "text-muted-foreground"}
             title="Queue"
           >
             <ListMusic className="w-4 h-4" />
@@ -353,7 +871,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowChat(!showChat);
             }}
-            className={showChat ? "text-primary" : "text-muted-foreground"}
+            className={showChat ? "text-emerald-300" : "text-muted-foreground"}
             title="Chat"
           >
             <MessageSquare className="w-4 h-4" />
@@ -365,7 +883,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowMixer(!showMixer);
             }}
-            className={showMixer ? "text-primary" : "text-muted-foreground"}
+            className={showMixer ? "text-emerald-300" : "text-muted-foreground"}
             title="Volume Mixer"
           >
             <Sliders className="w-4 h-4" />
@@ -378,267 +896,163 @@ const MusicRoom = () => {
                 closeAllPanels();
                 setShowHostControls(!showHostControls);
               }}
-              className={showHostControls ? "text-primary" : "text-muted-foreground"}
+              className={showHostControls ? "text-emerald-300" : "text-muted-foreground"}
               title="Host Controls"
             >
               <Settings className="w-4 h-4" />
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleRequestLeave}
+            className="ml-2 border-emerald-300/30 text-emerald-200 hover:bg-emerald-500/10"
+          >
+            Leave
+          </Button>
         </div>
       </motion.header>
 
-      {/* Main content */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Music area */}
-        <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden">
-          {/* Background effects */}
-          <div className="absolute inset-0">
-            <div className="absolute inset-0 bg-gradient-to-b from-secondary/5 via-background to-background" />
-            {currentTrack && (
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-96 rounded-full bg-secondary/8 blur-3xl" />
-            )}
-          </div>
-
-          {/* Content */}
-          <div className="relative z-10 flex flex-col items-center justify-center h-full w-full px-4">
-            {!currentTrack ? (
-              // No track - show source picker
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="flex flex-col items-center justify-center gap-6 p-8 text-center"
-              >
-                <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
-                  <Music className="w-8 h-8 text-muted-foreground/30" />
-                </div>
-                <div>
-                  <h2 className="font-display text-xl font-bold text-foreground mb-2">
-                    Choose Music Source
-                  </h2>
-                  <p className="text-sm text-muted-foreground max-w-sm">
-                    Select a music source to start your session
-                  </p>
-                </div>
-                <div className="flex gap-3 flex-col">
-                  <Button
-                    className="gradient-music text-secondary-foreground h-10 px-6"
-                    onClick={() => setShowYoutubeSearch(true)}
-                  >
-                    <Music className="w-5 h-5 mr-2" />
-                    YouTube Music
-                  </Button>
-                  <Button variant="outline" className="border-glass-border h-10 px-6">
-                    <SkipForward className="w-5 h-5 mr-2" />
-                    Upload Audio
-                  </Button>
-                </div>
-              </motion.div>
+        <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-0">
+          {showSourcePicker ? (
+            canControl ? (
+              <MusicSourcePicker onSelectTrack={handleSelectTrack} onSelectLocal={handleSelectLocalTrack} onSourceChange={() => setShowSourcePicker(true)} />
             ) : (
-              // Track active - show player view
-              <>
-                {/* Album art with glow */}
-                {currentTrack.thumbnail && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.9, rotate: -5 }}
-                    animate={{ opacity: 1, scale: 1, rotate: 0 }}
-                    transition={{ duration: 0.4 }}
-                    className="w-40 h-40 md:w-72 md:h-72 rounded-3xl overflow-hidden shadow-2xl mb-6 relative"
-                    style={{
-                      boxShadow: "0 30px 60px -15px hsl(var(--secondary) / 0.3)"
-                    }}
-                  >
-                    <img
-                      src={currentTrack.thumbnail}
-                      alt={currentTrack.title}
-                      className="w-full h-full object-cover"
-                    />
-                  </motion.div>
-                )}
+              <div className="text-center p-8">
+                <div className="w-20 h-20 rounded-full bg-muted/30 flex items-center justify-center mx-auto mb-4">
+                  <Music className="w-8 h-8 text-muted-foreground" />
+                </div>
+                <p className="text-foreground/80 text-sm font-medium mb-1">Waiting for host to pick a track</p>
+                <p className="text-muted-foreground text-xs">The host controls what plays in this room</p>
+              </div>
+            )
+          ) : currentTrack ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-12 relative w-full">
+              <div className={`absolute inset-0 bg-gradient-to-br ${albumGradient || "from-emerald-500 to-lime-400"} opacity-[0.08]`} />
 
-                {/* Track info */}
+              <AnimatePresence>
+                {audioActive && participants.map((p, i) => (
+                  <OverlayAudioBubble
+                    key={`${p.userId || p.name}-${i}`}
+                    participant={p}
+                    index={i}
+                    isLocal={i === 0}
+                    localAudioEnabled={webrtc.audioEnabled}
+                    isMutedByYou={deafenVoiceChat || mutedUserIds.has(p.userId)}
+                    onToggleMute={() => handleToggleUserMute(p.userId)}
+                  />
+                ))}
+              </AnimatePresence>
+
+              <div className="relative z-10 w-full max-w-md mx-auto flex flex-col items-center">
                 <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-center mb-4 md:mb-6 w-full"
+                  key={currentTrack.videoId || currentTrack.title}
+                  initial={{ opacity: 0, scale: 0.9, rotate: -5 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                  transition={{ duration: 0.4 }}
+                  className="w-40 h-40 md:w-72 md:h-72 rounded-3xl overflow-hidden flex items-center justify-center mb-4 md:mb-8 shadow-2xl relative"
+                  style={{ boxShadow: "0 30px 60px -15px rgba(16,185,129,0.35)" }}
                 >
-                  <h2 className="font-display text-base md:text-2xl font-bold text-foreground line-clamp-2 mb-1">
-                    {currentTrack.title}
-                  </h2>
-                  <p className="text-muted-foreground text-xs md:text-sm">
-                    {currentTrack.artist || currentTrack.channel}
-                  </p>
+                  {currentTrack.thumbnail ? (
+                    <img src={currentTrack.thumbnail} alt={currentTrack.title} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className={`w-full h-full bg-gradient-to-br ${albumGradient || "from-emerald-500 to-lime-400"} flex items-center justify-center`}>
+                      <Music className="w-20 h-20 text-foreground/30" />
+                    </div>
+                  )}
                 </motion.div>
 
-                {/* Waveform visualizer */}
+                <motion.div key={`info-${currentTrack.title}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-1 md:mb-2 w-full">
+                  <h2 className="font-display text-base md:text-2xl font-bold text-foreground mb-0.5 md:mb-1 line-clamp-2 leading-tight">{currentTrack.title}</h2>
+                  <p className="text-muted-foreground text-xs md:text-sm">{currentTrack.artist || "Unknown Artist"}</p>
+                </motion.div>
+
+                <button onClick={() => setShowSourcePicker(true)} className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors mb-4 px-2 py-1 rounded-full bg-muted/30">
+                  {currentTrack?.sourceType === "local" ? <Upload className="w-3 h-3" /> : <Youtube className="w-3 h-3" />}
+                  {currentTrack?.sourceType === "local" ? "Upload" : "YouTube"} · Change source
+                </button>
+
                 <div className="w-full flex items-end justify-center gap-[2px] h-8 md:h-12 mb-2 md:mb-4">
-                  {Array.from({ length: 48 }).map((_, i) => (
-                    <motion.div
-                      key={i}
-                      className="w-1 rounded-full bg-secondary/60"
-                      animate={{
-                        height: isPlaying
-                          ? [
-                              `${20 + Math.sin(i * 0.5 + Date.now() / 100) * 25}%`,
-                              `${40 + Math.cos(i * 0.3 + Date.now() / 100) * 30}%`,
-                              `${15 + Math.sin(i * 0.7 + Date.now() / 100) * 20}%`,
-                            ]
-                          : "15%",
-                      }}
-                      transition={{
-                        duration: isPlaying ? 0.5 : 0,
-                        repeat: Infinity,
-                      }}
-                    />
+                  {waveformBars.map((height, i) => (
+                    <motion.div key={i} className="w-1 rounded-full bg-secondary/60" animate={{ height: isPlaying ? `${height}%` : "15%" }} transition={{ duration: 0.3, ease: "easeInOut" }} />
                   ))}
                 </div>
 
-                {/* Progress bar */}
-                <div className="w-full max-w-sm mb-2">
-                  <div className="relative h-1.5 bg-muted rounded-full cursor-pointer group">
-                    <div
-                      className="absolute inset-y-0 left-0 gradient-music rounded-full transition-all"
-                      style={{ width: `${(trackProgress / trackDuration) * 100}%` }}
-                    />
-                    <div
-                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-secondary opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{
-                        left: `${(trackProgress / trackDuration) * 100}%`,
-                        transform: "translateX(-50%)",
-                      }}
-                    />
+                <div className="w-full mb-3 md:mb-6">
+                  <div className="w-full h-1.5 bg-muted rounded-full cursor-pointer group relative" onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+                    handleSeek(Math.max(0, Math.min(100, pct)));
+                  }}>
+                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-400 to-lime-400 rounded-full" style={{ width: `${progressPercent}%` }} />
+                    <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-emerald-300 opacity-0 group-hover:opacity-100 transition-opacity" style={{ left: `${progressPercent}%`, transform: "translateX(-50%) translateY(-50%)" }} />
                   </div>
-                  <div className="flex justify-between mt-1.5 text-[10px] text-muted-foreground">
-                    <span>
-                      {Math.floor(trackProgress / 60)}:{String(Math.floor(trackProgress % 60)).padStart(2, "0")}
-                    </span>
-                    <span>
-                      {Math.floor(trackDuration / 60)}:{String(Math.floor(trackDuration % 60)).padStart(2, "0")}
-                    </span>
+                  <div className="flex justify-between mt-1.5">
+                    <span className="text-[10px] text-muted-foreground">{Math.floor(displayCurrentTime / 60)}:{String(Math.floor(displayCurrentTime % 60)).padStart(2, "0")}</span>
+                    <span className="text-[10px] text-muted-foreground">{Math.floor(displayDuration / 60)}:{String(Math.floor(displayDuration % 60)).padStart(2, "0")}</span>
                   </div>
                 </div>
 
-                {/* Playback controls */}
-                <div className="flex items-center justify-center gap-3 md:gap-4 mb-6">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={toggleShuffle}
-                    className={shuffle ? "text-secondary" : "text-muted-foreground"}
-                  >
-                    <Shuffle className="w-5 h-5" />
-                  </Button>
-
-                  <Button
-                    size="icon"
-                    onClick={playPrevious}
-                    variant="ghost"
-                    className="text-foreground"
-                  >
-                    <SkipBack className="w-5 h-5" />
-                  </Button>
-
-                  <Button
-                    onClick={togglePlayPause}
-                    className="gradient-music text-secondary-foreground rounded-full h-12 w-12 md:h-14 md:w-14 shadow-lg"
-                  >
-                    {isPlaying ? (
-                      <Pause className="w-6 h-6" />
-                    ) : (
-                      <Play className="w-6 h-6 ml-0.5" />
-                    )}
-                  </Button>
-
-                  <Button
-                    size="icon"
-                    onClick={playNext}
-                    variant="ghost"
-                    className="text-foreground"
-                  >
-                    <SkipForward className="w-5 h-5" />
-                  </Button>
-
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={cycleRepeat}
-                    className={repeat !== "off" ? "text-secondary" : "text-muted-foreground"}
-                  >
-                    <Repeat className="w-5 h-5" />
-                    {repeat === "one" && (
-                      <span className="absolute text-[10px] font-bold bottom-0.5">1</span>
-                    )}
-                  </Button>
+                <div className="flex items-center justify-center gap-3 md:gap-4 mb-3 md:mb-6">
+                  <Button size="icon" variant="ghost" onClick={toggleShuffle} className={shuffle ? "text-emerald-300" : "text-muted-foreground"}><Shuffle className="w-4 h-4" /></Button>
+                  <Button size="icon" variant="ghost" className="text-foreground" onClick={playPrevious}><SkipBack className="w-5 h-5" /></Button>
+                  <button onClick={togglePlayPause} className="w-12 h-12 md:w-14 md:h-14 rounded-full gradient-music flex items-center justify-center active:scale-95 md:hover:scale-105 transition-transform shadow-lg">
+                    {isPlaying ? <Pause className="w-6 h-6 text-secondary-foreground" /> : <Play className="w-6 h-6 text-secondary-foreground ml-0.5" />}
+                  </button>
+                  <Button size="icon" variant="ghost" className="text-foreground" onClick={playNext}><SkipForward className="w-5 h-5" /></Button>
+                  <Button size="icon" variant="ghost" onClick={cycleRepeat} className={repeat !== "off" ? "text-emerald-300" : "text-muted-foreground"}><Repeat className="w-4 h-4" /></Button>
                 </div>
 
-                {/* Action buttons */}
-                <div className="flex items-center justify-between w-full max-w-sm gap-3">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => setIsLiked(!isLiked)}
-                    className={isLiked ? "text-destructive" : "text-muted-foreground"}
-                  >
-                    <Heart className={`w-5 h-5 ${isLiked ? "fill-current" : ""}`} />
-                  </Button>
+                <div className="flex items-center justify-between w-full max-w-sm gap-2">
+                  <div className="flex items-center gap-1">
+                    <Button size="icon" variant="ghost" onClick={() => setIsLiked(!isLiked)} className={isLiked ? "text-destructive" : "text-muted-foreground"}><Heart className={`w-4 h-4 ${isLiked ? "fill-current" : ""}`} /></Button>
+                    <Button size="icon" variant="ghost" onClick={() => setIsBookmarked(!isBookmarked)} className={isBookmarked ? "text-emerald-300" : "text-muted-foreground"}><Bookmark className="w-4 h-4" /></Button>
+                  </div>
 
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => setIsBookmarked(!isBookmarked)}
-                    className={isBookmarked ? "text-secondary" : "text-muted-foreground"}
-                  >
-                    <Bookmark className={`w-5 h-5 ${isBookmarked ? "fill-current" : ""}`} />
-                  </Button>
-
-                  {/* Reaction picker */}
-                  <div className="relative">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => setShowReactionPicker(!showReactionPicker)}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <Smile className="w-5 h-5" />
+                  <div className="flex items-center gap-1 bg-muted/30 rounded-full px-1.5 py-0.5">
+                    <Button size="icon" variant="ghost" onClick={handleToggleAudio} title={audioActive ? "Leave voice chat" : "Join voice chat"} className={`h-8 w-8 rounded-full ${audioActive ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground"}`}>
+                      {audioActive ? <Headphones className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                     </Button>
-                    <AnimatePresence>
-                      {showReactionPicker && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass-panel px-2 py-1.5 flex items-center gap-1"
-                        >
-                          {reactionEmojis.map((emoji) => (
-                            <button
-                              key={emoji}
-                              onClick={() => {
-                                handleAddReaction(emoji);
-                                setShowReactionPicker(false);
-                              }}
-                              className="text-lg hover:scale-125 transition-transform p-1"
-                            >
-                              {emoji}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {audioActive && (
+                      <Button size="icon" variant="ghost" onClick={() => {
+                        if (!webrtc.audioEnabled && micBlockedByHost) {
+                          toast.error("Your mic is disabled by host");
+                          return;
+                        }
+                        webrtc.toggleAudio();
+                      }} title={webrtc.audioEnabled ? "Mute your mic" : "Unmute your mic"} className={`h-8 w-8 rounded-full ${webrtc.audioEnabled ? "text-foreground" : "text-destructive bg-destructive/10"}`}>
+                        {webrtc.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
+                    {audioActive && (
+                      <Button size="icon" variant="ghost" onClick={handleToggleDeafen} title={deafenVoiceChat ? "Undeafen" : "Deafen"} className={`h-8 w-8 rounded-full ${deafenVoiceChat ? "text-destructive bg-destructive/10" : "text-muted-foreground"}`}>
+                        {deafenVoiceChat ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
                   </div>
 
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => setAudioActive(!audioActive)}
-                    className={audioActive ? "text-secondary" : "text-muted-foreground"}
-                  >
-                    {audioActive ? (
-                      <Headphones className="w-5 h-5" />
-                    ) : (
-                      <VolumeX className="w-5 h-5" />
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <div className="relative">
+                      <Button size="icon" variant="ghost" onClick={() => setShowReactionPicker(!showReactionPicker)} className="text-muted-foreground hover:text-foreground"><Smile className="w-4 h-4" /></Button>
+                      <AnimatePresence>
+                        {showReactionPicker && (
+                          <motion.div initial={{ opacity: 0, y: 10, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10, scale: 0.9 }} className="absolute bottom-full mb-2 right-0 glass-panel px-2 py-1.5 flex items-center gap-1">
+                            {reactionEmojis.map((emoji) => (
+                              <button key={emoji} onClick={() => { handleAddReaction(emoji); setShowReactionPicker(false); }} className="text-xl hover:scale-125 transition-transform p-1">{emoji}</button>
+                            ))}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                    <Button size="icon" variant="ghost" onClick={() => setIsMuted(!isMuted)} className={isMuted ? "text-destructive" : "text-muted-foreground"}>
+                      {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    </Button>
+                  </div>
                 </div>
 
-                {/* Track ended overlay */}
+                {webrtc.error && <p className="text-xs text-destructive text-center mt-2">{webrtc.error}</p>}
+
                 <AnimatePresence>
                   {trackEnded && (
                     <TrackEndedOverlay
@@ -660,18 +1074,17 @@ const MusicRoom = () => {
                       onSearchAnother={() => {
                         setCurrentTrack(null);
                         setTrackEnded(false);
-                        setShowMusicPicker(true);
+                        setShowSourcePicker(true);
                       }}
                       onChangeSource={() => {
                         setCurrentTrack(null);
                         setTrackEnded(false);
-                        setShowMusicPicker(true);
+                        setShowSourcePicker(true);
                       }}
                     />
                   )}
                 </AnimatePresence>
 
-                {/* Up Next queue */}
                 <AnimatePresence>
                   {showUpNext && queue.length > 0 && (
                     <UpNextQueue
@@ -687,69 +1100,9 @@ const MusicRoom = () => {
                     />
                   )}
                 </AnimatePresence>
-              </>
-            )}
-
-            {/* Audio bubbles (participant speakers around the player) */}
-            {currentTrack && (
-              <div className="absolute inset-0 pointer-events-none">
-                {/* Top-left */}
-                {participants[1] && (
-                  <div className="absolute top-12 left-6 md:top-16 md:left-8 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[1]} 
-                      speaking={participantStates[participants[1]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
-                {/* Top-right */}
-                {participants[2] && (
-                  <div className="absolute top-12 right-6 md:top-16 md:right-8 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[2]} 
-                      speaking={participantStates[participants[2]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
-                {/* Bottom-left */}
-                {participants[3] && (
-                  <div className="absolute bottom-20 left-6 md:bottom-24 md:left-8 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[3]} 
-                      speaking={participantStates[participants[3]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
-                {/* Bottom-right */}
-                {participants[4] && (
-                  <div className="absolute bottom-20 right-6 md:bottom-24 md:right-8 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[4]} 
-                      speaking={participantStates[participants[4]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
-                {/* Mid-left */}
-                {participants[5] && (
-                  <div className="absolute left-6 md:left-8 top-1/2 -translate-y-1/2 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[5]} 
-                      speaking={participantStates[participants[5]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
-                {/* Mid-right */}
-                {participants[6] && (
-                  <div className="absolute right-6 md:right-8 top-1/2 -translate-y-1/2 pointer-events-auto">
-                    <AudioBubble 
-                      participant={participants[6]} 
-                      speaking={participantStates[participants[6]?.id]?.isSpeaking || false}
-                    />
-                  </div>
-                )}
               </div>
-            )}
-          </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Side panels */}
@@ -759,7 +1112,7 @@ const MusicRoom = () => {
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
-              className="bg-card/90 backdrop-blur-sm border-l border-glass-border overflow-hidden flex flex-col"
+              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
             >
               <div className="p-3 border-b border-glass-border">
                 <h3 className="text-sm font-semibold text-foreground">
@@ -775,7 +1128,7 @@ const MusicRoom = () => {
                       variant="outline"
                       size="sm"
                       className="border-glass-border h-7 text-xs"
-                      onClick={() => setShowYoutubeSearch(true)}
+                      onClick={() => setShowSourcePicker(true)}
                     >
                       Add Music
                     </Button>
@@ -815,7 +1168,7 @@ const MusicRoom = () => {
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: isMobile ? "100%" : 300, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
-              className="bg-card/90 backdrop-blur-sm border-l border-glass-border overflow-hidden flex flex-col"
+              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
             >
               <div className="p-3 border-b border-glass-border">
                 <h3 className="text-sm font-semibold text-foreground">Live Chat</h3>
@@ -863,12 +1216,12 @@ const MusicRoom = () => {
             </motion.div>
           )}
 
-          {showMixer && (
+          {showMixer && !showHostControls && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
-              className="bg-card/90 backdrop-blur-sm border-l border-glass-border overflow-hidden flex flex-col"
+              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
             >
               <div className="p-4 space-y-6 overflow-y-auto flex-1">
                 {/* Music volume */}
@@ -914,8 +1267,23 @@ const MusicRoom = () => {
                     onValueChange={(v) => setVoiceChatVolume(v[0])}
                     max={100}
                     step={1}
-                    disabled={!audioActive}
+                    disabled={!audioActive || deafenVoiceChat}
                   />
+                  <Button
+                    size="sm"
+                    variant={deafenVoiceChat ? "destructive" : "outline"}
+                      onClick={handleToggleDeafen}
+                    disabled={!audioActive}
+                  >
+                    {deafenVoiceChat ? "Undeafen" : "Deafen"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={audioActive ? "outline" : "secondary"}
+                    onClick={handleToggleAudio}
+                  >
+                    {audioActive ? "Leave Voice" : "Join Voice"}
+                  </Button>
                 </div>
 
                 {/* Individual user volumes */}
@@ -923,7 +1291,7 @@ const MusicRoom = () => {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Participants
                   </p>
-                  {participants.filter(p => p.userId !== user?.id).map((p) => (
+                  {participants.filter((p, idx) => idx !== 0).map((p) => (
                     <div
                       key={p.userId}
                       className="glass-panel p-3 flex items-center gap-3"
@@ -943,8 +1311,9 @@ const MusicRoom = () => {
                         size="icon"
                         variant="ghost"
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => handleToggleUserMute(p.userId)}
                       >
-                        <Volume2 className="w-4 h-4" />
+                        {mutedUserIds.has(p.userId) || deafenVoiceChat ? <VolumeX className="w-4 h-4 text-destructive" /> : <Volume2 className="w-4 h-4" />}
                       </Button>
                     </div>
                   ))}
@@ -958,18 +1327,131 @@ const MusicRoom = () => {
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
+              className="h-full"
             >
               <HostControlsPanel
+                open={showHostControls}
+                onClose={() => setShowHostControls(false)}
                 participants={participants}
-                onMuteParticipant={() => {}}
-                onRemoveParticipant={() => {}}
-                onPromoteParticipant={() => {}}
+                onUpdateParticipant={handleUpdateParticipant}
+                onRemoveParticipant={handleRemoveParticipant}
+                roomSettings={roomSettings}
+                onUpdateSettings={handleUpdateSettings}
+                isHost={userRole === "host"}
                 hideVideoControls={true}
+                panelTheme="music"
               />
             </motion.div>
           )}
         </AnimatePresence>
       </div>
+
+      {(meshStreams.remoteStreams ? Array.from(meshStreams.remoteStreams.entries()) : []).map(([peerId, stream]) => (
+        <audio
+          key={peerId}
+          ref={(el) => {
+            if (!el) return;
+            remoteAudioRefs.current.set(peerId, el);
+            if (el.srcObject !== stream) {
+              el.srcObject = stream;
+            }
+            el.volume = Math.max(0, Math.min(1, voiceChatVolume / 100));
+            el.muted = deafenVoiceChat || mutedUserIds.has(peerId);
+            el.play?.().catch(() => {});
+          }}
+          autoPlay
+          playsInline
+          className="hidden"
+        />
+      ))}
+
+      <AnimatePresence>
+        {showLeaveConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+          >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !isLeavingRoom && setShowLeaveConfirm(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              className="relative z-10 w-full max-w-md glass-panel p-5"
+            >
+              <h3 className="text-lg font-semibold text-foreground mb-1">{isHost ? "Leave or End Room" : "Leave Room"}</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {isHost
+                  ? "You can leave and transfer host to another participant, or end the room for everyone."
+                  : "Are you sure you want to leave this room?"}
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <Button variant="ghost" onClick={() => setShowLeaveConfirm(false)} disabled={isLeavingRoom}>Cancel</Button>
+                <Button variant="outline" onClick={handleConfirmLeave} disabled={isLeavingRoom}>{isLeavingRoom ? "Leaving..." : "Leave Room"}</Button>
+                {isHost && (
+                  <Button variant="destructive" onClick={handleConfirmEndRoom} disabled={isLeavingRoom}>End Room</Button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSourcePicker && currentTrack && (
+          <motion.div
+            initial={{ y: 80, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 80, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 280, damping: 28 }}
+            className="fixed bottom-0 left-0 right-0 z-[65]"
+          >
+            <div className="h-0.5 bg-muted/60 w-full">
+              <div className="h-full bg-gradient-to-r from-emerald-400 to-lime-400 transition-[width] duration-300" style={{ width: `${progressPercent}%` }} />
+            </div>
+
+            <div className="bg-emerald-950/85 backdrop-blur-xl border-t border-emerald-300/20 px-3 py-2 flex items-center gap-3">
+              <button
+                className="w-10 h-10 rounded-lg bg-emerald-900/40 border border-emerald-300/20 flex items-center justify-center overflow-hidden shrink-0"
+                onClick={() => setShowSourcePicker(false)}
+                title="Back to player"
+              >
+                {currentTrack?.thumbnail ? (
+                  <img src={currentTrack.thumbnail} alt={currentTrack.title} className="w-full h-full object-cover" />
+                ) : (
+                  <Music className="w-5 h-5 text-emerald-300" />
+                )}
+              </button>
+
+              <button className="flex-1 min-w-0 text-left" onClick={() => setShowSourcePicker(false)}>
+                <p className="text-sm font-medium text-foreground truncate">{currentTrack.title}</p>
+                <p className="text-[10px] text-muted-foreground truncate">{currentTrack.artist || "Unknown"} · {Math.floor(displayCurrentTime / 60)}:{String(Math.floor(displayCurrentTime % 60)).padStart(2, "0")} / {Math.floor(displayDuration / 60)}:{String(Math.floor(displayDuration % 60)).padStart(2, "0")}</p>
+              </button>
+
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={playPrevious} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors">
+                  <SkipBack className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={togglePlayPause}
+                  className="p-2 rounded-full bg-gradient-to-r from-emerald-400 to-lime-400 text-emerald-950 hover:brightness-110 transition"
+                >
+                  {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+                </button>
+                <button onClick={playNext} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors">
+                  <SkipForward className="w-4 h-4" />
+                </button>
+                <button onClick={() => setShowSourcePicker(false)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors ml-1">
+                  <ChevronUp className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div ref={ytPlayer.wrapperRef} className="pointer-events-none" style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0.01, zIndex: -1 }} />
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -48,7 +48,20 @@ const MovieRoom = () => {
   const { user, profile } = useAuth();
 
   // Room and chat data
-  const { room, participants: dbParticipants, isHost, accessStatus, joinStatus, joinAsGuest, joinRequests, acceptJoinRequest, rejectJoinRequest, currentUserId } = useRoom(effectiveRoomId, "movie");
+  const {
+    room,
+    participants: dbParticipants,
+    isHost,
+    accessStatus,
+    joinStatus,
+    joinAsGuest,
+    joinRequests,
+    acceptJoinRequest,
+    rejectJoinRequest,
+    currentUserId,
+    leaveRoom,
+    endRoom,
+  } = useRoom(effectiveRoomId, "movie");
   const { messages, sendMessage: sendChatMessage, userId } = useRoomChat(effectiveRoomId);
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -83,6 +96,8 @@ const MovieRoom = () => {
   const [videoDisbldUsers, setVideoDisabledUsers] = useState(new Set());
   const [selectedUserSettings, setSelectedUserSettings] = useState(null);
   const [showUserSettings, setShowUserSettings] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [isLeavingRoom, setIsLeavingRoom] = useState(false);
 
   const [roomSettings, setRoomSettings] = useState({
     chatEnabled: true,
@@ -111,8 +126,10 @@ const MovieRoom = () => {
   const reactionIdRef = useRef(0);
   const containerRef = useRef(null);
   const uploadVideoRef = useRef(null);
+  const screenVideoRef = useRef(null);
   const fileInputRef = useRef(null);
   const suppressRemoteSyncRef = useRef(false);
+  const lastYoutubeBroadcastRef = useRef({ state: null, at: 0 });
 
   // WebRTC hooks
   const webrtc = useWebRTC();
@@ -121,16 +138,41 @@ const MovieRoom = () => {
   // Use currentUserId from room (socket userId from socket:identify event)
   // Fallback to socket.userId directly (set by server auth middleware)
   const myUserId = currentUserId || socket.userId || user?.id;
-  const otherParticipantIds = (dbParticipants || [])
-    .filter((p) => p.userId !== myUserId)
-    .map((p) => p.userId);
+  const currentParticipant = useMemo(
+    () => (dbParticipants || []).find((p) => p.userId === myUserId),
+    [dbParticipants, myUserId]
+  );
+  const myRestrictions = useMemo(
+    () => currentParticipant?.restrictions || {},
+    [currentParticipant]
+  );
+  const micBlockedByHost = !!myRestrictions.micDisabledByHost;
+  const videoBlockedByHost = !!myRestrictions.videoDisabledByHost;
+
+  const otherParticipantIds = useMemo(() => 
+    (dbParticipants || [])
+      .filter((p) => p.userId !== myUserId)
+      .map((p) => p.userId),
+    [dbParticipants, myUserId]
+  );
 
   // WebRTC signaling (for screen share)
   const rtcSignaling = useWebRTCSignaling({
     roomCode: effectiveRoomId,
     isHost,
     participantIds: otherParticipantIds,
+    userId: myUserId,
   });
+  const screenStream = webrtc.screenStream || rtcSignaling.remoteStream;
+
+  useEffect(() => {
+    if (mediaSource !== "screen") return;
+    if (isHost) return;
+    if (screenStream) return;
+
+    // Late-join fallback: explicitly request host stream when room sync indicates active screen share.
+    rtcSignaling.requestStream?.();
+  }, [mediaSource, isHost, screenStream, rtcSignaling]);
 
   // WebRTC mesh (for camera/mic)
   const meshStreams = useWebRTCMesh({
@@ -139,10 +181,15 @@ const MovieRoom = () => {
     localStream: webrtc.stream,
     enabled: showVideoChat,
     userId: myUserId,
+    isHost,
   });
 
   // User role
-  const userRole = isHost ? "host" : (dbParticipants?.find(p => p.userId === myUserId)?.role === "co-host" ? "co-host" : "guest");
+  const myRole = dbParticipants?.find((p) => p.userId === myUserId)?.role;
+  const isCurrentUserHost = Boolean(myUserId && room?.hostId === myUserId);
+  const userRole = isCurrentUserHost
+    ? "host"
+    : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
   const canControl = userRole === "host" || userRole === "co-host";
 
   // YouTube player
@@ -151,13 +198,23 @@ const MovieRoom = () => {
     onStateChange: (state) => {
       if (state === "playing") {
         setIsPlaying(true);
-        if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current) {
+        const now = Date.now();
+        const shouldBroadcast =
+          lastYoutubeBroadcastRef.current.state !== "playing" ||
+          now - lastYoutubeBroadcastRef.current.at > 1200;
+        if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current && shouldBroadcast) {
           roomSync.broadcastPlay();
+          lastYoutubeBroadcastRef.current = { state: "playing", at: now };
         }
       } else if (state === "paused") {
         setIsPlaying(false);
-        if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current) {
+        const now = Date.now();
+        const shouldBroadcast =
+          lastYoutubeBroadcastRef.current.state !== "paused" ||
+          now - lastYoutubeBroadcastRef.current.at > 1200;
+        if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current && shouldBroadcast) {
           roomSync.broadcastPause();
+          lastYoutubeBroadcastRef.current = { state: "paused", at: now };
         }
       } else if (state === "ended") {
         setIsPlaying(false);
@@ -165,10 +222,15 @@ const MovieRoom = () => {
           roomSync.broadcastPause();
         }
         toast("🎬 Video finished!", { description: "Pick another video to continue watching." });
+      } else if (state === "error") {
+        setIsPlaying(false);
+        toast.error("Unable to play this YouTube video", {
+          description: "This video may be restricted. Try another result.",
+          duration: 3000,
+        });
       }
     },
     onReady: () => {
-      toast.success("▶️ YouTube player ready", { duration: 1500 });
       if (!canControl && mediaSource === "youtube" && isPlaying) {
         ytPlayer.play();
       }
@@ -192,7 +254,7 @@ const MovieRoom = () => {
 
   // Room sync
   const roomSync = useRoomSync({
-    roomId: effectiveRoomId,
+    roomCode: effectiveRoomId,
     isHost,
     isCoHost: userRole === "co-host",
     onMediaChange: (media) => {
@@ -200,15 +262,13 @@ const MovieRoom = () => {
         setYoutubeVideoId(media.videoId);
         setMediaSource("youtube");
         setIsPlaying(true);
-        toast(`🎬 Host is playing: ${media.title || "video"}`, { duration: 2000 });
       } else if (media.type === "upload" && media.videoUrl) {
         setUploadedVideoUrl(media.videoUrl);
         setMediaSource("upload");
         setIsPlaying(true);
-        toast(`🎬 Host shared a video: ${media.title || "upload"}`, { duration: 2000 });
       } else if (media.type === "screen") {
         setMediaSource("screen");
-        toast(`🖥️ Host is sharing their screen`, { duration: 2000 });
+        setIsPlaying(true);
       } else if (media.type === "none" || !media.type) {
         setMediaSource("none");
         setYoutubeVideoId(null);
@@ -228,7 +288,6 @@ const MovieRoom = () => {
       } else {
         suppressRemoteSyncRef.current = false;
       }
-      toast("▶️ Host resumed playback", { duration: 1500 });
     },
     onPause: () => {
       setIsPlaying(false);
@@ -242,7 +301,6 @@ const MovieRoom = () => {
       } else {
         suppressRemoteSyncRef.current = false;
       }
-      toast("⏸️ Host paused playback", { duration: 1500 });
     },
     onSeek: (pct) => {
       setProgress(pct);
@@ -256,7 +314,6 @@ const MovieRoom = () => {
       } else {
         suppressRemoteSyncRef.current = false;
       }
-      toast(`⏩ Host seeked to ${Math.round(pct)}%`, { duration: 1500 });
     },
   });
 
@@ -293,51 +350,66 @@ const MovieRoom = () => {
 
   // Sync participants
   useEffect(() => {
+    const seenIds = new Set();
     const list = [];
-    // Always include local user (even if profile not loaded yet)
-    if (myUserId && (isHost || accessStatus === "granted")) {
+
+    // Build from canonical DB participants first to avoid duplicate local+remote host entries.
+    if (dbParticipants && Array.isArray(dbParticipants)) {
+      for (const p of dbParticipants) {
+        if (!p?.userId || seenIds.has(p.userId)) continue;
+        seenIds.add(p.userId);
+
+        const isPrimaryHostRow = isHost && p.role === "host" && !list.some((item) => item.isLocalUser);
+        const isLocal = (!!myUserId && p.userId === myUserId) || isPrimaryHostRow;
+        const remoteStream = !isLocal ? meshStreams.remoteStreams.get(p.userId) : null;
+
+        const remoteHasVideo = remoteStream ? remoteStream.getVideoTracks().some((t) => t.enabled) : false;
+        const remoteHasAudio = remoteStream ? remoteStream.getAudioTracks().some((t) => t.enabled) : true;
+
+        list.push({
+          name: isLocal
+            ? (profile?.display_name || p.displayName || p.username || "You") + (isHost ? " (Host)" : "")
+            : (p.displayName || p.username || "User"),
+          emoji: isLocal ? (profile?.avatar_emoji || p.avatar_emoji || "😎") : (p.avatar_emoji || "🧑"),
+          speaking: false,
+          role: p.role || (isLocal && isHost ? "host" : "guest"),
+          audioEnabled: isLocal
+            ? (webrtc.audioEnabled && !micBlockedByHost)
+            : (remoteHasAudio && !p?.restrictions?.micDisabledByHost),
+          videoEnabled: isLocal
+            ? (webrtc.videoEnabled && !videoBlockedByHost)
+            : (!!remoteStream && remoteHasVideo && !p?.restrictions?.videoDisabledByHost),
+          chatEnabled: true,
+          username: isLocal ? (profile?.username || user?.username || p.username || "You") : (p.username || ""),
+          isOnline: true,
+          odlUserId: p.userId,
+          restrictions: isLocal ? myRestrictions : (p.restrictions || {}),
+          isLocalUser: isLocal,
+        });
+      }
+    }
+
+    // Fallback: if local user isn't present in DB participants yet, add synthetic local entry once.
+    const hasCanonicalParticipants = Array.isArray(dbParticipants) && dbParticipants.length > 0;
+    if (myUserId && !hasCanonicalParticipants && !seenIds.has(myUserId) && (isHost || accessStatus === "granted")) {
       list.push({
         name: (profile?.display_name || "You") + (isHost ? " (Host)" : ""),
         emoji: profile?.avatar_emoji || "😎",
         speaking: false,
-        role: isHost ? "host" : (dbParticipants?.find(p => p.userId === myUserId)?.role || "guest"),
-        audioEnabled: webrtc.audioEnabled,
-        videoEnabled: webrtc.videoEnabled,
+        role: isHost ? "host" : "guest",
+        audioEnabled: webrtc.audioEnabled && !micBlockedByHost,
+        videoEnabled: webrtc.videoEnabled && !videoBlockedByHost,
         chatEnabled: true,
         username: profile?.username || user?.username || "You",
         isOnline: true,
         odlUserId: myUserId,
-        isLocalUser: true,  // Mark as local user explicitly
+        restrictions: myRestrictions,
+        isLocalUser: true,
       });
     }
 
-    // Remote participants - Get actual stream states
-    if (dbParticipants && Array.isArray(dbParticipants)) {
-      for (const p of dbParticipants) {
-        if (p.userId === myUserId) continue;
-        const remoteStream = meshStreams.remoteStreams.get(p.userId);
-        
-        // Check actual track states from remote stream
-        const remoteHasVideo = remoteStream ? remoteStream.getVideoTracks().some(t => t.enabled) : false;
-        const remoteHasAudio = remoteStream ? remoteStream.getAudioTracks().some(t => t.enabled) : true;
-
-        list.push({
-          name: p.displayName || "User",
-          emoji: p.avatar_emoji || "🧑",
-          speaking: false,
-          role: p.role || "guest",
-          audioEnabled: remoteHasAudio,  // Use actual remote track state
-          videoEnabled: !!remoteStream,  // Show video container if stream exists (even if tracks disabled)
-          chatEnabled: true,
-          username: p.username || "",
-          isOnline: true,
-          odlUserId: p.userId,
-          isLocalUser: false,  // Mark as remote user
-        });
-      }
-    }
     setParticipants(list);
-  }, [user, dbParticipants, profile, isHost, accessStatus, meshStreams.remoteStreams]);
+  }, [user, dbParticipants, profile, isHost, accessStatus, meshStreams.remoteStreams, myUserId, webrtc.audioEnabled, webrtc.videoEnabled, micBlockedByHost, videoBlockedByHost, myRestrictions]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -370,12 +442,9 @@ const MovieRoom = () => {
   // Sync progress from YouTube
   useEffect(() => {
     if (mediaSource !== "youtube") return;
-    const interval = setInterval(() => {
-      if (ytPlayer.duration > 0) {
-        setProgress(ytPlayer.progressPercent);
-      }
-    }, 500);
-    return () => clearInterval(interval);
+    if (ytPlayer.duration > 0) {
+      setProgress(ytPlayer.progressPercent);
+    }
   }, [mediaSource, ytPlayer.progressPercent, ytPlayer.duration]);
 
   // Media Session API
@@ -497,12 +566,14 @@ const MovieRoom = () => {
       webrtc.stopScreenShare();
       rtcSignaling.stopBroadcastStream();
       setMediaSource("none");
+      setIsPlaying(false);
       roomSync.broadcastMediaChange({ type: "none" });
       toast.success("🖥️ Screen sharing stopped", { duration: 2000 });
     } else {
       const stream = await webrtc.startScreenShare();
       if (stream) {
         setMediaSource("screen");
+        setIsPlaying(true);
         roomSync.broadcastMediaChange({ type: "screen", title: "Screen Share" });
         rtcSignaling.startBroadcastStream(stream);
         toast.success("🖥️ Screen sharing started!", {
@@ -511,12 +582,43 @@ const MovieRoom = () => {
         });
         stream.getVideoTracks()[0]?.addEventListener("ended", () => {
           setMediaSource("none");
+          setIsPlaying(false);
           rtcSignaling.stopBroadcastStream();
           roomSync.broadcastMediaChange({ type: "none" });
         });
       }
     }
   }, [webrtc, roomSync, rtcSignaling]);
+
+  // Bind screen share stream to video element using srcObject (required for MediaStream).
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video || mediaSource !== "screen") return;
+
+    if (screenStream) {
+      if (video.srcObject !== screenStream) {
+        video.srcObject = screenStream;
+      }
+      video.play().catch(() => {});
+    } else if (video.srcObject) {
+      video.srcObject = null;
+    }
+
+    return () => {
+      if (video && mediaSource !== "screen") {
+        video.srcObject = null;
+      }
+    };
+  }, [mediaSource, screenStream]);
+
+  // Apply media mixer controls to incoming shared-screen audio while muting local preview.
+  useEffect(() => {
+    const video = screenVideoRef.current;
+    if (!video || mediaSource !== "screen") return;
+    const isLocalScreen = Boolean(webrtc.screenStream);
+    video.muted = isLocalScreen ? true : isMuted;
+    video.volume = isLocalScreen ? 0 : (isMuted ? 0 : movieVolume / 100);
+  }, [mediaSource, webrtc.screenStream, isMuted, movieVolume]);
 
   const handleUploadVideo = useCallback(() => {
     fileInputRef.current?.click();
@@ -546,14 +648,31 @@ const MovieRoom = () => {
   }, []);
 
   const handleSelectYoutubeVideo = useCallback((video) => {
-    setYoutubeVideoId(video.id);
+    const rawId = video?.id || video?.videoId || "";
+    const rawUrl = video?.url || "";
+    let normalizedId = String(rawId).trim();
+
+    if (!normalizedId && rawUrl) {
+      const watchMatch = rawUrl.match(/[?&]v=([^&]+)/);
+      const shortMatch = rawUrl.match(/youtu\.be\/([^?&/]+)/);
+      const embedMatch = rawUrl.match(/\/embed\/([^?&/]+)/);
+      normalizedId = watchMatch?.[1] || shortMatch?.[1] || embedMatch?.[1] || "";
+    }
+
+    if (!normalizedId) {
+      toast.error("Invalid YouTube video selection");
+      return;
+    }
+
+    setYoutubeVideoId(normalizedId);
     setMediaSource("youtube");
     setShowYoutubeSearch(false);
     setIsPlaying(true);
+    setProgress(0);
     toast(`🎬 Now playing: ${video.title}`, { duration: 3000 });
     roomSync.broadcastMediaChange({
       type: "youtube",
-      videoId: video.id,
+      videoId: normalizedId,
       title: video.title,
     });
     roomSync.broadcastPlay();
@@ -561,7 +680,20 @@ const MovieRoom = () => {
 
   const handleToggleVideoChat = useCallback(async () => {
     if (!showVideoChat) {
-      if (!webrtc.stream) await webrtc.startMedia(true, true);
+      if (!webrtc.stream) {
+        await webrtc.startMedia(!videoBlockedByHost, !micBlockedByHost);
+      }
+
+      // If media stream already exists from a previous session, re-enable tracks on rejoin.
+      if (webrtc.stream) {
+        webrtc.stream.getAudioTracks().forEach((track) => {
+          track.enabled = !micBlockedByHost;
+        });
+        webrtc.stream.getVideoTracks().forEach((track) => {
+          track.enabled = !videoBlockedByHost;
+        });
+      }
+
       setShowVideoChat(true);
       toast.success("📹 Video chat enabled", {
         description: "Your camera and mic are now active.",
@@ -570,7 +702,42 @@ const MovieRoom = () => {
     } else {
       setShowVideoChat(false);
     }
-  }, [showVideoChat, webrtc]);
+  }, [showVideoChat, webrtc, micBlockedByHost, videoBlockedByHost]);
+
+  const handleToggleMyAudio = useCallback(() => {
+    if (!showVideoChat) {
+      handleToggleVideoChat();
+      return;
+    }
+
+    if (!webrtc.audioEnabled && micBlockedByHost) {
+      toast.error("Microphone access disabled by host", {
+        duration: 2000,
+      });
+      return;
+    }
+
+    webrtc.toggleAudio();
+    toast(webrtc.audioEnabled ? "🔇 Mic muted" : "🎤 Mic unmuted", {
+      duration: 1500,
+    });
+  }, [showVideoChat, handleToggleVideoChat, webrtc, micBlockedByHost]);
+
+  const handleToggleMyVideo = useCallback(() => {
+    if (!showVideoChat) {
+      handleToggleVideoChat();
+      return;
+    }
+
+    if (!webrtc.videoEnabled && videoBlockedByHost) {
+      toast.error("Camera access disabled by host", {
+        duration: 2000,
+      });
+      return;
+    }
+
+    webrtc.toggleVideo();
+  }, [showVideoChat, handleToggleVideoChat, webrtc, videoBlockedByHost]);
 
   const handleToggleDeafen = useCallback(() => {
     const next = !deafenVoiceChat;
@@ -618,13 +785,13 @@ const MovieRoom = () => {
     }
 
     // Make sure this is NOT the current user (can't change own permissions)
-    if (targetUserId === user?.id) {
+    if (targetUserId === myUserId) {
       console.warn('⚠️ Cannot change own permissions via host controls');
       return;
     }
 
-    // Update local UI state
-    setParticipants(prev => prev.map(p => p.odlUserId === targetUserId ? { ...p, ...updates } : p));
+    // Do not optimistically update participant moderation state here.
+    // Wait for server ack + broadcast event to keep UI fully aligned with DB truth.
 
     // Send socket events for permission updates
     if (updates.audioEnabled !== undefined && updates.audioEnabled === false) {
@@ -754,19 +921,42 @@ const MovieRoom = () => {
         },
         (response) => {
           if (response?.success) {
-            toast(`⬇️ ${name} demoted to Guest`, { duration: 2000 });
+            toast(`⬇️ User demoted to Guest`, { duration: 2000 });
           } else {
-            toast.error(`Failed to demote ${name}`, { duration: 2000 });
+            toast.error(`Failed to demote user`, { duration: 2000 });
           }
         }
       );
     }
-  }, [dbParticipants, roomCode]);
+  }, [dbParticipants, roomCode, myUserId]);
 
-  const handleRemoveParticipant = useCallback((name) => {
-    setParticipants(prev => prev.filter(p => p.name !== name));
-    toast(`${name} has been removed from the room`, { duration: 3000 });
-  }, []);
+  const handleRemoveParticipant = useCallback((nameOrUserId) => {
+    let targetUserId = null;
+
+    if (dbParticipants) {
+      const byUserId = dbParticipants.find((p) => p.userId === nameOrUserId);
+      if (byUserId) {
+        targetUserId = byUserId.userId;
+      } else {
+        const byDisplay = dbParticipants.find((p) => p.displayName === nameOrUserId || p.username === nameOrUserId);
+        if (byDisplay) targetUserId = byDisplay.userId;
+      }
+    }
+
+    if (!targetUserId) {
+      toast.error("Participant not found", { duration: 2000 });
+      return;
+    }
+
+    socket.emit("room:remove-participant", { roomCode, targetUserId }, (response) => {
+      if (response?.success) {
+        setParticipants((prev) => prev.filter((p) => p.odlUserId !== targetUserId));
+        toast(`Participant removed from room`, { duration: 2500 });
+      } else {
+        toast.error(response?.error || "Failed to remove participant", { duration: 2500 });
+      }
+    });
+  }, [dbParticipants, roomCode]);
 
   const handleUpdateSettings = useCallback((updates) => {
     setRoomSettings(prev => ({ ...prev, ...updates }));
@@ -830,7 +1020,7 @@ const MovieRoom = () => {
       ytPlayer.unmute();
       ytPlayer.setVolume(movieVolume);
     }
-  }, [isMuted, movieVolume, mediaSource, ytPlayer]);
+  }, [isMuted, movieVolume, mediaSource, youtubeVideoId, isPlaying, ytPlayer]);
 
   // Listen for room settings updates from server
   useEffect(() => {
@@ -879,8 +1069,23 @@ const MovieRoom = () => {
     const handlePermissionUpdated = (event) => {
       const { targetUserId, restrictions, updatedBy } = event.detail;
       console.log('[PERMISSION-UPDATED]:', { targetUserId, restrictions, updatedBy });
+
+      // Apply restrictions immediately for current user so mic/video can't remain active.
+      if (targetUserId === myUserId && webrtc.stream) {
+        if (restrictions?.micDisabledByHost) {
+          webrtc.stream.getAudioTracks().forEach((track) => {
+            track.enabled = false;
+          });
+        }
+        if (restrictions?.videoDisabledByHost) {
+          webrtc.stream.getVideoTracks().forEach((track) => {
+            track.enabled = false;
+          });
+        }
+      }
+
       // Optionally show a notification if permissions were updated for other users
-      if (targetUserId !== user?.id) {
+      if (targetUserId !== myUserId) {
         toast("🔐 Participant permissions updated", {
           duration: 2000,
         });
@@ -896,11 +1101,46 @@ const MovieRoom = () => {
       }
     };
 
+    const handleHostChanged = (event) => {
+      const { newHostId, previousHostId, reason, restored } = event.detail;
+      if (!newHostId) return;
+
+      if (newHostId === myUserId) {
+        toast.success("👑 You are now the host", {
+          description: restored
+            ? "Your host role has been restored."
+            : "You were automatically promoted due to host unavailability.",
+          duration: 3000,
+        });
+        return;
+      }
+
+      if (previousHostId === myUserId && restored) {
+        toast("ℹ️ Host role restored", {
+          description: "Room creator rejoined and regained host role.",
+          duration: 2500,
+        });
+        return;
+      }
+
+      const messagesByReason = {
+        'host-disconnected': 'Host disconnected. New host was promoted.',
+        'host-left': 'Host left the room. New host was promoted.',
+        'original-host-rejoined': 'Original host rejoined and regained host role.',
+      };
+
+      toast("👑 Host changed", {
+        description: messagesByReason[reason] || 'Host role was updated by the system.',
+        duration: 2500,
+      });
+    };
+
     window.addEventListener('permission:audio-denied', handleAudioPermissionDenied);
     window.addEventListener('permission:video-denied', handleVideoPermissionDenied);
     window.addEventListener('permission:chat-denied', handleChatPermissionDenied);
     window.addEventListener('permission:updated', handlePermissionUpdated);
     window.addEventListener('permission:role-updated', handleRoleUpdated);
+    window.addEventListener('room:host-changed', handleHostChanged);
 
     return () => {
       window.removeEventListener('permission:audio-denied', handleAudioPermissionDenied);
@@ -908,8 +1148,9 @@ const MovieRoom = () => {
       window.removeEventListener('permission:chat-denied', handleChatPermissionDenied);
       window.removeEventListener('permission:updated', handlePermissionUpdated);
       window.removeEventListener('permission:role-updated', handleRoleUpdated);
+      window.removeEventListener('room:host-changed', handleHostChanged);
     };
-  }, [user?.id]);
+  }, [user?.id, myUserId, webrtc.stream]);
 
   // Utility functions
   const formatTimeSeconds = (totalSeconds) => {
@@ -945,8 +1186,42 @@ const MovieRoom = () => {
     setShowMixer(false);
   };
 
+  const handleRequestLeave = useCallback(() => {
+    setShowLeaveConfirm(true);
+  }, []);
+
+  const handleConfirmLeave = useCallback(async () => {
+    if (isLeavingRoom) return;
+    setIsLeavingRoom(true);
+    try {
+      await leaveRoom();
+      toast.success("Left room successfully", { duration: 1800 });
+      navigate("/movies");
+    } catch (error) {
+      toast.error(error?.message || "Failed to leave room", { duration: 2500 });
+    } finally {
+      setIsLeavingRoom(false);
+      setShowLeaveConfirm(false);
+    }
+  }, [isLeavingRoom, leaveRoom, navigate]);
+
+  const handleConfirmEndRoom = useCallback(async () => {
+    if (isLeavingRoom) return;
+    setIsLeavingRoom(true);
+    try {
+      await endRoom();
+      toast.success("Room ended", { duration: 1800 });
+      navigate("/movies");
+    } catch (error) {
+      toast.error(error?.message || "Failed to end room", { duration: 2500 });
+    } finally {
+      setIsLeavingRoom(false);
+      setShowLeaveConfirm(false);
+    }
+  }, [isLeavingRoom, endRoom, navigate]);
+
   const handleCopyLink = useCallback(() => {
-    const roomLink = `${window.location.origin}/movies/${roomCode}`;
+    const roomLink = `${window.location.origin}/room/${roomCode}`;
     navigator.clipboard.writeText(roomLink);
     setShowCopyLinkToast(true);
     toast.success("📋 Room link copied!", {
@@ -990,7 +1265,7 @@ const MovieRoom = () => {
     return (
       <WaitingAreaDialog
         roomName={room?.name || "Movie Room"}
-        guestName={isJoiningAsGuest ? "You" : "Guest"}
+        guestName={user ? "You" : (isJoiningAsGuest ? "You" : "Guest")}
         onCancel={handleCancelWaiting}
         roomType="movie"
       />
@@ -1057,10 +1332,12 @@ const MovieRoom = () => {
           >
             <div className="flex items-center gap-3">
               <button
-                onClick={() => navigate("/movies")}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                onClick={handleRequestLeave}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                title="Leave Room"
               >
                 <ChevronLeft className="w-5 h-5" />
+                <span className="text-xs font-medium">Leave</span>
               </button>
               <div>
                 <h1 className="font-display text-sm font-semibold text-foreground">
@@ -1088,10 +1365,12 @@ const MovieRoom = () => {
                     <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary">
                       {mediaSource === "screen" ? (
                         <Monitor className="w-2.5 h-2.5" />
+                      ) : mediaSource === "youtube" ? (
+                        <Youtube className="w-2.5 h-2.5" />
                       ) : (
                         <Upload className="w-2.5 h-2.5" />
                       )}
-                      {mediaSource === "screen" ? "Screen Share" : "Local Video"}
+                      {mediaSource === "screen" ? "Screen Share" : mediaSource === "youtube" ? "YouTube" : "Local Video"}
                     </span>
                   )}
                 </div>
@@ -1189,6 +1468,9 @@ const MovieRoom = () => {
                 localVideoEnabled={webrtc.videoEnabled}
                 localAudioEnabled={webrtc.audioEnabled}
                 remoteStreams={meshStreams.remoteStreams}
+                mutedUserIds={mutedUsers}
+                hiddenVideoUserIds={videoDisbldUsers}
+                voiceChatVolume={voiceChatVolume}
                 deafened={deafenVoiceChat}
               />
             )}
@@ -1210,10 +1492,11 @@ const MovieRoom = () => {
                   </div>
                 )}
               </div>
-            ) : mediaSource === "screen" && (webrtc.screenStream || rtcSignaling.remoteStream) ? (
+            ) : mediaSource === "screen" && screenStream ? (
               <video
-                src={webrtc.screenStream || rtcSignaling.remoteStream}
+                ref={screenVideoRef}
                 autoPlay
+                playsInline
                 className="w-full h-full object-contain"
               />
             ) : mediaSource === "upload" && uploadedVideoUrl ? (
@@ -1366,7 +1649,10 @@ const MovieRoom = () => {
                   onClick={() => {
                     if (mediaSource === "screen") {
                       webrtc.stopScreenShare();
+                      rtcSignaling.stopBroadcastStream();
                       setMediaSource("none");
+                      setIsPlaying(false);
+                      roomSync.broadcastMediaChange({ type: "none" });
                     } else if (mediaSource === "youtube") {
                       ytPlayer.destroyPlayer();
                       setYoutubeVideoId(null);
@@ -1390,7 +1676,7 @@ const MovieRoom = () => {
           </div>
 
           {/* Progress bar */}
-          {mediaSource !== "none" && (
+          {mediaSource !== "none" && isPlaying && (
             <div
               className="relative h-1.5 bg-muted/50 cursor-pointer group"
               onClick={e => {
@@ -1418,18 +1704,22 @@ const MovieRoom = () => {
               >
                 {/* Left controls */}
                 <div className="flex items-center gap-1.5">
-                  <Button size="icon" variant="ghost" onClick={handleTogglePlay} className="h-8 w-8">
-                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={handleSkipForward}
-                    title="Skip forward 5%"
-                    className="h-8 w-8"
-                  >
-                    <SkipForward className="w-4 h-4" />
-                  </Button>
+                  {mediaSource !== "none" && isPlaying && (
+                    <>
+                      <Button size="icon" variant="ghost" onClick={handleTogglePlay} className="h-8 w-8">
+                        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={handleSkipForward}
+                        title="Skip forward 5%"
+                        className="h-8 w-8"
+                      >
+                        <SkipForward className="w-4 h-4" />
+                      </Button>
+                    </>
+                  )}
                   <Button
                     size="icon"
                     variant="ghost"
@@ -1438,9 +1728,11 @@ const MovieRoom = () => {
                   >
                     {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                   </Button>
-                  <span className="text-xs text-muted-foreground ml-1">
-                    {formatTime(progress)} / {totalDuration}
-                  </span>
+                  {mediaSource !== "none" && isPlaying && (
+                    <span className="text-xs text-muted-foreground ml-1">
+                      {formatTime(progress)} / {totalDuration}
+                    </span>
+                  )}
                 </div>
 
                 {/* Center controls */}
@@ -1544,12 +1836,7 @@ const MovieRoom = () => {
                       <Button
                         size="icon"
                         variant="ghost"
-                        onClick={() => {
-                          webrtc.toggleAudio();
-                          toast(webrtc.audioEnabled ? "🔇 Mic muted" : "🎤 Mic unmuted", {
-                            duration: 1500,
-                          });
-                        }}
+                        onClick={handleToggleMyAudio}
                         title={webrtc.audioEnabled ? "Mute" : "Unmute"}
                         className={`h-7 w-7 rounded-full ${
                           webrtc.audioEnabled
@@ -1566,7 +1853,7 @@ const MovieRoom = () => {
                       <Button
                         size="icon"
                         variant="ghost"
-                        onClick={() => webrtc.toggleVideo()}
+                        onClick={handleToggleMyVideo}
                         title={webrtc.videoEnabled ? "Camera Off" : "Camera On"}
                         className={`h-7 w-7 rounded-full ${
                           webrtc.videoEnabled
@@ -1616,7 +1903,7 @@ const MovieRoom = () => {
         </div>
 
         {/* Side panels */}
-        <AnimatePresence mode="wait">
+        <AnimatePresence>
           {/* Chat Panel */}
           {showChat && !showMixer && !lightsOff && (
             <motion.aside
@@ -1835,11 +2122,12 @@ const MovieRoom = () => {
                   </p>
                   {dbParticipants && dbParticipants.length > 0 ? (
                     dbParticipants
-                      .filter(p => p.userId !== user?.id)
+                      .filter(p => p.userId !== myUserId)
                       .map(p => {
                         const displayName = p.displayName || p.username || "User";
                         const userMuted = mutedUsers.has(p.userId) || deafenVoiceChat;
                         const videoDisabled = videoDisbldUsers.has(p.userId);
+                        const restrictedByHost = p.restrictions || {};
                         
                         // Check actual remote stream state
                         const remoteStream = meshStreams.remoteStreams.get(p.userId);
@@ -1848,6 +2136,8 @@ const MovieRoom = () => {
                         
                         // Show status based on both host control AND remote state
                         const statusParts = [];
+                        if (restrictedByHost.micDisabledByHost) statusParts.push("Mic blocked by host");
+                        if (restrictedByHost.videoDisabledByHost) statusParts.push("Video blocked by host");
                         if (!remoteAudioEnabled) statusParts.push("Audio off");
                         if (!remoteVideoEnabled) statusParts.push("Video off");
                         if (userMuted && remoteAudioEnabled) statusParts.push("Muted by you");
@@ -1957,6 +2247,8 @@ const MovieRoom = () => {
                       <p className="text-sm font-medium text-foreground">
                         {!showVideoChat
                           ? "Video chat off"
+                          : micBlockedByHost
+                          ? "Mic blocked by host"
                           : webrtc.audioEnabled
                           ? "Mic active"
                           : "Mic muted"}
@@ -1964,6 +2256,8 @@ const MovieRoom = () => {
                       <p className="text-[10px] text-muted-foreground">
                         {!showVideoChat
                           ? "Enable video chat to use mic"
+                          : micBlockedByHost
+                          ? "Host must re-enable your microphone"
                           : webrtc.audioEnabled
                           ? "Others can hear you"
                           : "Others can't hear you"}
@@ -1972,16 +2266,7 @@ const MovieRoom = () => {
                     <Button
                       size="sm"
                       variant={showVideoChat && webrtc.audioEnabled ? "secondary" : "outline"}
-                      onClick={() => {
-                        if (!showVideoChat) {
-                          handleToggleVideoChat();
-                        } else {
-                          webrtc.toggleAudio();
-                          toast(webrtc.audioEnabled ? "🔇 Mic muted" : "🎤 Mic unmuted", {
-                            duration: 1500,
-                          });
-                        }
-                      }}
+                      onClick={handleToggleMyAudio}
                       className="text-xs h-7 gap-1.5"
                     >
                       {showVideoChat && webrtc.audioEnabled ? (
@@ -2008,7 +2293,9 @@ const MovieRoom = () => {
               onRemoveParticipant={handleRemoveParticipant}
               roomSettings={roomSettings}
               onUpdateSettings={handleUpdateSettings}
+              isHost={userRole === "host"}
               hideVideoControls={false}
+              panelTheme="movie"
             />
           )}
 
@@ -2023,6 +2310,59 @@ const MovieRoom = () => {
           />
         </AnimatePresence>
       </div>
+
+      {/* Leave/End room confirmation */}
+      <AnimatePresence>
+        {showLeaveConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+          >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !isLeavingRoom && setShowLeaveConfirm(false)} />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              className="relative z-10 w-full max-w-md glass-panel p-5"
+            >
+              <h3 className="text-lg font-semibold text-foreground mb-1">{isHost ? "Leave or End Room" : "Leave Room"}</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {isHost
+                  ? "You can leave and transfer host to another participant, or end the room for everyone."
+                  : "Are you sure you want to leave this room?"}
+              </p>
+
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => setShowLeaveConfirm(false)}
+                  disabled={isLeavingRoom}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleConfirmLeave}
+                  disabled={isLeavingRoom}
+                >
+                  {isLeavingRoom ? "Leaving..." : "Leave Room"}
+                </Button>
+                {isHost && (
+                  <Button
+                    variant="destructive"
+                    onClick={handleConfirmEndRoom}
+                    disabled={isLeavingRoom}
+                  >
+                    End Room
+                  </Button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

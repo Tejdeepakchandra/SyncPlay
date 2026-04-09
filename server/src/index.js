@@ -102,12 +102,14 @@ const roomRoutes = require('./routes/roomRoutes');
 const momentRoutes = require('./routes/momentRoutes');
 const userRoutes = require('./routes/userRoutes');
 const musicRoutes = require('./routes/musicRoutes');
+const movieRoutes = require('./routes/movieRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/moments', momentRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/music', musicRoutes);
+app.use('/api/movies', movieRoutes);
 
 
 // SOCKET.IO HANDLERS

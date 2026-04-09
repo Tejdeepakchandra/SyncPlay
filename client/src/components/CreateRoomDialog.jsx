@@ -71,12 +71,24 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
 
     setCreating(true);
     try {
+      const selectedFriendEntries = friends
+        .filter((friend) =>
+          selectedFriends.includes(friend.id || friend.userId || friend.clerkId)
+        )
+        .map((friend) => ({
+          userId: friend.userId || friend.clerkId || friend.id || null,
+          email: friend.email || friend.emailAddress || friend.primary_email_address || null,
+          name: friend.display_name || friend.displayName || friend.username || friend.name || null,
+        }));
+
       // Create room via REST API
       const response = await api.post('/rooms', {
         name: roomName,
         type,
+        invitedUsers: selectedFriendEntries,
         settings: {
           privacy: isPrivate ? 'private' : 'public',
+          requireApproval: isPrivate,
           allowGuests: true,
           allowChat: true,
           allowReactions: true,

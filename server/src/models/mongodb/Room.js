@@ -22,7 +22,7 @@ const participantSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['host', 'cohost', 'participant', 'guest'],
+    enum: ['host', 'cohost', 'co-host', 'participant', 'guest'],
     default: 'participant'
   },
   permissions: {
@@ -127,6 +127,11 @@ const roomSchema = new mongoose.Schema({
   // Ownership
   hostId: {
     type: String,  // Clerk user ID
+    required: true,
+    index: true
+  },
+  originalHostId: {
+    type: String,
     required: true,
     index: true
   },
@@ -279,8 +284,6 @@ const roomSchema = new mongoose.Schema({
 
 // INDEXES for Performance
 
-roomSchema.index({ roomCode: 1 });
-roomSchema.index({ hostId: 1 });
 roomSchema.index({ status: 1 });
 roomSchema.index({ 'participants.userId': 1 });
 roomSchema.index({ createdAt: -1 });
@@ -293,6 +296,11 @@ roomSchema.index({ 'stats.peakParticipants': -1 });
 roomSchema.pre('save', async function() {
   if (this.participants) {
     this.participantCount = this.participants.length;
+
+    // Keep coHosts array aligned with participant role assignments.
+    this.coHosts = this.participants
+      .filter((p) => p.role === 'co-host' || p.role === 'cohost')
+      .map((p) => p.userId);
   }
 });
 
@@ -336,7 +344,7 @@ roomSchema.methods.hasPermission = function(userId, permission) {
   
   if (!participant) return false;
   if (participant.role === 'host') return true;
-  if (participant.role === 'cohost') return true;
+  if (participant.role === 'cohost' || participant.role === 'co-host') return true;
   
   return participant.permissions[permission] || false;
 };
@@ -376,14 +384,20 @@ roomSchema.statics.findActive = function() {
 /**
  * Generate unique room code
  */
-roomSchema.statics.generateRoomCode = async function() {
+roomSchema.statics.generateRoomCode = async function(roomType = 'custom') {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const typePrefixMap = {
+    movie: 'V',
+    music: 'M',
+    custom: 'C',
+  };
+  const prefix = typePrefixMap[String(roomType || '').toLowerCase()] || 'C';
   let code;
   let exists;
   
   do {
-    code = '';
-    for (let i = 0; i < 6; i++) {
+    code = prefix;
+    for (let i = 0; i < 5; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     exists = await this.exists({ roomCode: code });

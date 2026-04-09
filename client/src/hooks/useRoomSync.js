@@ -12,6 +12,7 @@ export const useRoomSync = ({
   onSyncUpdate,
 }) => {
   const [ntpOffset, setNtpOffset] = useState(0);
+  const ntpOffsetRef = useRef(0);
   const canControl = isHost || isCoHost;
   const handlersRef = useRef({ onMediaChange, onPlay, onPause, onSeek, onSyncUpdate });
 
@@ -20,7 +21,7 @@ export const useRoomSync = ({
   }, [onMediaChange, onPlay, onPause, onSeek, onSyncUpdate]);
 
   useEffect(() => {
-    if (!roomCode || !socket.connected) return;
+    if (!roomCode) return;
 
     // Listen for sync events
     const handleMediaChange = (data) => {
@@ -29,18 +30,18 @@ export const useRoomSync = ({
 
     const handlePlay = (data) => {
       // Adjust time by NTP offset
-      const adjustedTime = data.timestamp ? (data.timestamp + ntpOffset) / 1000 : 0;
+      const adjustedTime = data.timestamp ? (data.timestamp + ntpOffsetRef.current) / 1000 : 0;
       handlersRef.current.onPlay?.(adjustedTime);
     };
 
     const handlePause = (data) => {
-      const adjustedTime = data.timestamp ? (data.timestamp + ntpOffset) / 1000 : 0;
+      const adjustedTime = data.timestamp ? (data.timestamp + ntpOffsetRef.current) / 1000 : 0;
       handlersRef.current.onPause?.(adjustedTime);
     };
 
     const handleSeek = (data) => {
-      const adjustedTime = data.timestamp ? (data.timestamp + ntpOffset) / 1000 : 0;
-      handlersRef.current.onSeek?.(adjustedTime);
+      const seekTime = typeof data.time === "number" ? data.time : 0;
+      handlersRef.current.onSeek?.(seekTime);
     };
 
     const handleSyncUpdate = (data) => {
@@ -48,6 +49,7 @@ export const useRoomSync = ({
       const serverTime = data.timestamp;
       const clientTime = Date.now();
       const offset = serverTime - clientTime;
+      ntpOffsetRef.current = offset;
       setNtpOffset(offset);
 
       handlersRef.current.onSyncUpdate?.({
@@ -56,6 +58,14 @@ export const useRoomSync = ({
         offset,
         currentPlayback: data.currentPlayback,
       });
+
+      const playback = data.currentPlayback;
+      if (playback?.media) {
+        handlersRef.current.onMediaChange?.(playback.media);
+      }
+      if (typeof playback?.time === "number") {
+        handlersRef.current.onSeek?.(playback.time);
+      }
     };
 
     socket.on("sync:media-change", handleMediaChange);
@@ -64,14 +74,22 @@ export const useRoomSync = ({
     socket.on("sync:seek", handleSeek);
     socket.on("sync:update", handleSyncUpdate);
 
+    // Pull current room media/sync snapshot on subscribe and reconnection.
+    socket.emit("sync:request-state", { roomCode });
+    const handleReconnect = () => {
+      socket.emit("sync:request-state", { roomCode });
+    };
+    socket.on("connect", handleReconnect);
+
     return () => {
       socket.off("sync:media-change", handleMediaChange);
       socket.off("sync:play", handlePlay);
       socket.off("sync:pause", handlePause);
       socket.off("sync:seek", handleSeek);
       socket.off("sync:update", handleSyncUpdate);
+      socket.off("connect", handleReconnect);
     };
-  }, [roomCode, ntpOffset]);
+  }, [roomCode]);
 
   const broadcast = useCallback((event) => {
     if (!canControl || !roomCode) return;

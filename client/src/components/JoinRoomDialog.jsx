@@ -4,7 +4,7 @@ import { X, LinkIcon, ArrowRight, Hash, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import api from "@/services/api";
 
 
 const JoinRoomDialog = ({ open, onClose }) => {
@@ -12,6 +12,12 @@ const JoinRoomDialog = ({ open, onClose }) => {
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(false);
+
+  const normalizeRoomCode = (value) =>
+    String(value || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 12);
 
   const handleJoin = async () => {
     const trimmed = link.trim();
@@ -23,20 +29,34 @@ const JoinRoomDialog = ({ open, onClose }) => {
     let roomId = "";
     let isMusic = false;
 
-    // Parse URL
-    if (trimmed.includes("/music/room/")) {
-      const match = trimmed.match(/\/music\/room\/([^/?#]+)/);
-      if (match) { roomId = match[1]; isMusic = true; }
-    } else if (trimmed.includes("/room/")) {
-      const match = trimmed.match(/\/room\/([^/?#]+)/);
-      if (match) roomId = match[1];
+    // Parse URL input (supports full link, path, or raw code)
+    try {
+      const url = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+        ? new URL(trimmed)
+        : new URL(trimmed, window.location.origin);
+
+      const path = url.pathname.toLowerCase();
+      if (path.includes("/music/room/")) {
+        const match = url.pathname.match(/\/music\/room\/([^/?#]+)/i);
+        if (match) {
+          roomId = normalizeRoomCode(match[1]);
+          isMusic = true;
+        }
+      } else if (path.includes("/room/")) {
+        const match = url.pathname.match(/\/room\/([^/?#]+)/i);
+        if (match) {
+          roomId = normalizeRoomCode(match[1]);
+        }
+      }
+    } catch {
+      // Not a URL - fallback to room code parsing below.
     }
 
     // If not a URL, treat as room code
     if (!roomId) {
-      const code = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const code = normalizeRoomCode(trimmed);
       if (code.length >= 4 && code.length <= 10) {
-        roomId = code.toLowerCase();
+        roomId = code;
       } else {
         setError("Invalid room code or link");
         setChecking(false);
@@ -44,47 +64,22 @@ const JoinRoomDialog = ({ open, onClose }) => {
       }
     }
 
-    // Check if room exists
-    const { data: room } = await supabase
-      .from("rooms")
-      .select("id, type, is_private")
-      .eq("id", roomId)
-      .single();
+    try {
+      // Resolve room type from backend to avoid music/movie route collisions.
+      const response = await api.get(`/rooms/${roomId}`);
+      const roomType = response?.data?.data?.type;
 
-    if (!room) {
-      setError("Room not found");
+      const targetIsMusic = roomType === "music" || isMusic;
+
+      onClose();
+      setLink("");
+      setError("");
       setChecking(false);
-      return;
+      navigate(targetIsMusic ? `/music/room/${roomId}` : `/room/${roomId}`);
+    } catch {
+      setError("Room not found or unavailable");
+      setChecking(false);
     }
-
-    // Check private room access
-    if (room.is_private) {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        setError("Sign in to join private rooms");
-        setChecking(false);
-        return;
-      }
-
-      const { data: participant } = await supabase
-        .from("room_participants")
-        .select("id")
-        .eq("room_id", roomId)
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (!participant) {
-        setError("This is a private room. You need an invite.");
-        setChecking(false);
-        return;
-      }
-    }
-
-    onClose();
-    setLink("");
-    setError("");
-    setChecking(false);
-    navigate(isMusic ? `/music/room/${roomId}` : `/room/${roomId}`);
   };
 
   if (!open) return null;

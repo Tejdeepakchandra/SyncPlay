@@ -5,6 +5,11 @@ const { socketRateLimiter } = require('../middleware/rateLimiter');
 const Room = require('../../models/mongodb/Room');
 
 module.exports = (socket, io) => {
+  const buildPermissionsForRole = (role) => {
+    if (role === 'host') return roomService.getHostPermissions();
+    if (role === 'co-host' || role === 'cohost') return roomService.getCoHostPermissions();
+    return roomService.getDefaultPermissions(true);
+  };
   
   
    // Join a room
@@ -14,6 +19,10 @@ module.exports = (socket, io) => {
       if (err) return callback({ success: false, error: err.message });
       
       try {
+        roomCode = String(roomCode || '').trim().toUpperCase();
+        if (!roomCode) {
+          return callback({ success: false, error: 'Missing room code' });
+        }
         console.log(`[ROOM:JOIN] 🚪 User ${socket.userId} attempting to join room ${roomCode} (guestName: "${guestName}")`);
         
         const result = await roomService.joinRoom(
@@ -76,6 +85,16 @@ module.exports = (socket, io) => {
           timestamp: Date.now()
         });
 
+        // If original host rejoined and reclaimed host role, notify everyone.
+        if (result.hostTransfer?.newHostId) {
+          io.to(roomCode).emit('room:new-host', {
+            newHostId: result.hostTransfer.newHostId,
+            previousHost: result.hostTransfer.previousHostId,
+            reason: result.hostTransfer.reason,
+            restored: !!result.hostTransfer.restored,
+          });
+        }
+
         // Analytics
         const room = await Room.findOne({ roomCode }).select('_id');
         if (room && !socket.isGuest) {
@@ -113,7 +132,7 @@ module.exports = (socket, io) => {
       if (err) return callback({ success: false, error: err.message });
       
       try {
-        const roomCode = socket.roomCode;
+        const roomCode = (data?.roomCode || socket.roomCode || '').toUpperCase();
         
         if (!roomCode) {
           return callback({ 
@@ -142,7 +161,9 @@ module.exports = (socket, io) => {
         if (result.newHostId) {
           io.to(roomCode).emit('room:new-host', {
             newHostId: result.newHostId,
-            previousHost: socket.userId
+            previousHost: socket.userId,
+            reason: 'host-left',
+            restored: false,
           });
         }
 
@@ -166,6 +187,10 @@ module.exports = (socket, io) => {
   // Host accepts a join request from a waiting guest
   socket.on('room:accept-join-request', async ({ roomCode, userId }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       console.log(`[ROOM] 🔔 Host ${socket.userId} accepting join request for guest ${userId} in room ${roomCode}`);
       
       const result = await roomService.acceptJoinRequest(roomCode, socket.userId, userId);
@@ -191,6 +216,10 @@ module.exports = (socket, io) => {
   // Host rejects a join request from a waiting guest
   socket.on('room:reject-join-request', async ({ roomCode, userId }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       const result = await roomService.rejectJoinRequest(roomCode, socket.userId, userId);
       
       console.log(`[ROOM] ❌ Host rejected join request for ${userId}`);
@@ -213,6 +242,10 @@ module.exports = (socket, io) => {
    
   socket.on('room:info', async ({ roomCode }, callback) => {
     try {
+      roomCode = String(roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       const room = await roomService.getRoomByCode(roomCode);
       const participants = await roomService.getRoomParticipants(roomCode);
 
@@ -235,6 +268,10 @@ module.exports = (socket, io) => {
    
   socket.on('room:update-settings', async ({ roomCode, settings }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       const room = await roomService.updateRoomSettings(
         roomCode,
         socket.userId,
@@ -262,6 +299,11 @@ module.exports = (socket, io) => {
    
   socket.on('room:end', async ({ roomCode }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
+
       const room = await roomService.endRoom(roomCode, socket.userId);
 
       // Notify all in room
@@ -270,19 +312,23 @@ module.exports = (socket, io) => {
         timestamp: Date.now()
       });
 
-      // Force disconnect all clients from this room after delay
-      setTimeout(() => {
-        const roomSockets = io.sockets.adapter.rooms.get(roomCode);
-        if (roomSockets) {
-          roomSockets.forEach(socketId => {
-            const clientSocket = io.sockets.sockets.get(socketId);
-            if (clientSocket) {
-              clientSocket.leave(roomCode);
-              clientSocket.emit('room:force-leave', { reason: 'room-ended' });
-            }
-          });
+      // Force disconnect all clients from this room immediately.
+      const roomSockets = io.sockets.adapter.rooms.get(roomCode);
+      if (roomSockets) {
+        const socketIds = Array.from(roomSockets);
+        for (const socketId of socketIds) {
+          const clientSocket = io.sockets.sockets.get(socketId);
+          if (!clientSocket) continue;
+
+          clientSocket.leave(roomCode);
+          if (clientSocket.roomCode === roomCode) {
+            clientSocket.roomCode = null;
+          }
+
+          await presenceService.updatePresence(clientSocket.userId, null);
+          clientSocket.emit('room:force-leave', { reason: 'room-ended', roomCode });
         }
-      }, 3000);
+      }
 
       callback({ success: true });
 
@@ -297,6 +343,7 @@ module.exports = (socket, io) => {
   // Get room state (before joining)
   socket.on('room:get-state', async ({ roomCode }, callback) => {
     try {
+      roomCode = String(roomCode || '').trim().toUpperCase();
       if (!roomCode) {
         return callback({ success: false, error: 'Missing roomCode' });
       }
@@ -304,6 +351,10 @@ module.exports = (socket, io) => {
       const room = await Room.findOne({ roomCode });
       if (!room) {
         return callback({ success: false, error: 'Room not found' });
+      }
+
+      if (room.status === 'ended') {
+        return callback({ success: false, error: 'Room has ended', code: 'ROOM_ENDED' });
       }
 
       const participants = await roomService.getRoomParticipants(roomCode);
@@ -336,6 +387,10 @@ module.exports = (socket, io) => {
   // Update participant permissions (host only)
   socket.on('room:update-participant-permissions', async ({ roomCode, targetUserId, restrictions }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       console.log(`[PERMISSIONS] 🔒 Host ${socket.userId} updating permissions for ${targetUserId}:`, restrictions);
 
       const room = await Room.findOne({ roomCode });
@@ -343,9 +398,11 @@ module.exports = (socket, io) => {
         return callback({ success: false, error: 'Room not found' });
       }
 
-      // Verify host
-      if (room.hostId !== socket.userId) {
-        return callback({ success: false, error: 'Only host can update permissions' });
+      // Verify moderator (host or co-host)
+      const actingParticipant = room.participants.find(p => p.userId === socket.userId);
+      const isModerator = room.hostId === socket.userId || actingParticipant?.role === 'co-host' || actingParticipant?.role === 'cohost';
+      if (!isModerator) {
+        return callback({ success: false, error: 'Only host/co-host can update permissions' });
       }
 
       // Find participant
@@ -354,11 +411,12 @@ module.exports = (socket, io) => {
         return callback({ success: false, error: 'Participant not found' });
       }
 
-      // Update restrictions
+      // Update restrictions (partial merge to preserve existing values)
+      const currentRestrictions = participant.restrictions || {};
       participant.restrictions = {
-        micDisabledByHost: restrictions.micDisabledByHost || false,
-        videoDisabledByHost: restrictions.videoDisabledByHost || false,
-        chatDisabledByHost: restrictions.chatDisabledByHost || false,
+        micDisabledByHost: restrictions.micDisabledByHost ?? currentRestrictions.micDisabledByHost ?? false,
+        videoDisabledByHost: restrictions.videoDisabledByHost ?? currentRestrictions.videoDisabledByHost ?? false,
+        chatDisabledByHost: restrictions.chatDisabledByHost ?? currentRestrictions.chatDisabledByHost ?? false,
         restrictedAt: new Date(),
         restrictedBy: socket.userId
       };
@@ -371,7 +429,9 @@ module.exports = (socket, io) => {
       // Notify the affected user about restriction
       io.to(roomCode).emit('room:participant-permissions-updated', {
         userId: targetUserId,
+        targetUserId,
         restrictions: participant.restrictions,
+        updatedBy: socket.userId,
         message: `Permissions have been changed by the host`
       });
 
@@ -392,7 +452,17 @@ module.exports = (socket, io) => {
   // Promote/Demote user to co-host (host only)
   socket.on('room:update-role', async ({ roomCode, targetUserId, newRole }, callback) => {
     try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
       console.log(`[ROLE] 👑 Host ${socket.userId} updating role for ${targetUserId} to ${newRole}`);
+
+      const normalizedRole = newRole === 'cohost' ? 'co-host' : newRole;
+
+      if (!['guest', 'participant', 'co-host'].includes(normalizedRole)) {
+        return callback({ success: false, error: 'Invalid role update target' });
+      }
 
       const room = await Room.findOne({ roomCode });
       if (!room) {
@@ -415,23 +485,45 @@ module.exports = (socket, io) => {
         return callback({ success: false, error: 'Cannot change host role' });
       }
 
-      participant.role = newRole;
+      participant.role = normalizedRole;
+      participant.permissions = buildPermissionsForRole(normalizedRole);
+
+      // Keep room.coHosts aligned with participant roles
+      const currentCoHosts = new Set(room.coHosts || []);
+      if (normalizedRole === 'co-host') {
+        currentCoHosts.add(targetUserId);
+      } else {
+        currentCoHosts.delete(targetUserId);
+      }
+      room.coHosts = Array.from(currentCoHosts);
+
       room.version += 1;
       await room.save();
 
-      console.log(`[ROLE] ✅ Role updated for ${targetUserId} to ${newRole}`);
+      console.log(`[ROLE] ✅ Role updated for ${targetUserId} to ${normalizedRole}`);
 
       // Broadcast role change to all users in room
       io.to(roomCode).emit('room:participant-role-updated', {
         userId: targetUserId,
-        newRole: newRole,
-        message: `${participant.displayName} is now a ${newRole}`
+        targetUserId,
+        newRole: normalizedRole,
+        updatedBy: socket.userId,
+        message: `${participant.displayName} is now a ${normalizedRole}`
+      });
+
+      // Backward-compatible event name used by some clients
+      io.to(roomCode).emit('room:role-updated', {
+        userId: targetUserId,
+        targetUserId,
+        newRole: normalizedRole,
+        updatedBy: socket.userId,
+        message: `${participant.displayName} is now a ${normalizedRole}`
       });
 
       callback({ 
         success: true, 
         message: 'Role updated',
-        newRole: newRole
+        newRole: normalizedRole
       });
     } catch (error) {
       console.error('[ROLE] ❌ Error updating role:', error);
@@ -439,6 +531,59 @@ module.exports = (socket, io) => {
         success: false,
         error: error.message,
       });
+    }
+  });
+
+  // Remove participant from room (host/co-host)
+  socket.on('room:remove-participant', async ({ roomCode, targetUserId }, callback) => {
+    try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return callback({ success: false, error: 'Missing room code' });
+      }
+      const room = await Room.findOne({ roomCode });
+      if (!room) {
+        return callback({ success: false, error: 'Room not found' });
+      }
+
+      if (room.hostId !== socket.userId) {
+        return callback({ success: false, error: 'Only host can remove participants' });
+      }
+
+      if (targetUserId === room.hostId) {
+        return callback({ success: false, error: 'Cannot remove host from room' });
+      }
+
+      const targetParticipant = room.participants.find(p => p.userId === targetUserId);
+      if (!targetParticipant) {
+        return callback({ success: false, error: 'Participant not found' });
+      }
+
+      await roomService.leaveRoom(roomCode, targetUserId);
+
+      // Force target user's socket(s) out of room and notify them
+      const roomSockets = await io.in(roomCode).fetchSockets();
+      roomSockets
+        .filter((s) => s.userId === targetUserId)
+        .forEach((s) => {
+          s.leave(roomCode);
+          s.roomCode = null;
+          s.emit('room:force-leave', {
+            reason: 'removed-by-host',
+            removedBy: socket.userId,
+            roomCode,
+          });
+        });
+
+      io.to(roomCode).emit('room:user-left', {
+        userId: targetUserId,
+        timestamp: Date.now(),
+        removedBy: socket.userId,
+      });
+
+      callback({ success: true, message: 'Participant removed' });
+    } catch (error) {
+      callback({ success: false, error: error.message });
     }
   });
 };

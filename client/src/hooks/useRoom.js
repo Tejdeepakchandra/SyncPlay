@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { socket, connectSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
+import { toast } from "sonner";
 
 export const useRoom = (roomCode) => {
   const { getToken, user, clerkUser } = useAuth();
+  const normalizedRoomCode = String(roomCode || "").trim().toUpperCase();
   const [room, setRoom] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [isHost, setIsHost] = useState(false);
@@ -15,10 +17,10 @@ export const useRoom = (roomCode) => {
   const [currentUserId, setCurrentUserId] = useState(null); // Track current user ID (Clerk ID or guest ID)
 
   useEffect(() => {
-    if (!roomCode) return;
+    if (!normalizedRoomCode) return;
 
     console.log('📍 [ROOM INIT] Starting room initialization:', {
-      roomCode,
+      normalizedRoomCode,
       hasUser: !!user,
       userClerkId: user?.clerkId,
       socketConnected: socket.connected,
@@ -46,10 +48,10 @@ export const useRoom = (roomCode) => {
           }
         }
 
-        console.log('✅ Socket connected, fetching room state...', roomCode);
+        console.log('✅ Socket connected, fetching room state...', normalizedRoomCode);
 
         // Request room state and try to join
-        socket.emit("room:get-state", { roomCode }, (response) => {
+        socket.emit("room:get-state", { roomCode: normalizedRoomCode }, (response) => {
           console.log('📨 Received room state response:', response);
           if (!response || !response.success) {
             console.error('Failed to get room state:', response?.error || 'No response');
@@ -81,16 +83,26 @@ export const useRoom = (roomCode) => {
             const displayName = user?.display_name || 
               (clerkUser ? `${clerkUser.firstName || ''} ${clerkUser.lastName || ''}`.trim() : null) ||
               user?.username || "User";
-            socket.emit("room:join", { roomCode, guestName: displayName }, (joinResponse) => {
+            socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: displayName }, (joinResponse) => {
               console.log('📨 Received room join response (auto-join):', joinResponse);
               if (joinResponse && joinResponse.success) {
                 if (joinResponse.userId) {
                   setCurrentUserId(joinResponse.userId);
                   console.log('🔐 [ROOM] Set currentUserId from room:join:', joinResponse.userId);
                 }
+
+                if (joinResponse.status === "waiting_for_approval") {
+                  setJoinStatus("waiting_for_approval");
+                  setRoom(joinResponse.room || response.room || null);
+                  setParticipants([]);
+                  setIsHost(false);
+                  return;
+                }
+
                 setJoinStatus("joined");
+                setRoom(joinResponse.room || response.room || null);
                 setParticipants(joinResponse.participants || []);
-                setIsHost(joinResponse.isHost);
+                setIsHost(!!joinResponse.isHost);
               } else {
                 console.error('Failed to auto-join room:', joinResponse?.error || 'No response');
               }
@@ -128,18 +140,30 @@ export const useRoom = (roomCode) => {
 
     socket.on('connect', handleSocketReconnect);
 
-    // Log currentUserId changes
-    console.log('📍 [ROOM] useEffect cleanup - currentUserId is now:', currentUserId);
-
     return () => {
       socket.off('socket:identify', handleSocketIdentify);
       socket.off('connect', handleSocketReconnect);
     };
-  }, [roomCode, getToken, user]);
+  }, [normalizedRoomCode, getToken, user, clerkUser]);
 
   // Wrap all handlers with useCallback so they can be used in listener dependencies
   const handleParticipantJoined = useCallback((data) => {
     setParticipants((prev) => {
+      const existingIndex = prev.findIndex((p) => p.userId === data.userId);
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        next[existingIndex] = {
+          ...next[existingIndex],
+          username: data.username,
+          displayName: data.displayName,
+          avatar: data.avatar,
+          avatar_emoji: data.avatar_emoji || next[existingIndex].avatar_emoji || '🧑',
+          role: data.role || next[existingIndex].role,
+          status: "online",
+        };
+        return next;
+      }
+
       const updated = [
         ...prev,
         {
@@ -164,10 +188,15 @@ export const useRoom = (roomCode) => {
       });
       return updated;
     });
-  }, []);
+
+    if (data.userId && data.userId !== currentUserId) {
+      toast(`${data.displayName || data.username || 'Someone'} joined`, { duration: 1600 });
+    }
+  }, [currentUserId]);
 
   const handleParticipantLeft = useCallback((data) => {
     setParticipants((prev) => {
+      const leavingParticipant = prev.find((p) => p.userId === data.userId);
       const updated = prev.filter((p) => p.userId !== data.userId);
       // Also update room participant count
       setRoom((prevRoom) => {
@@ -179,16 +208,54 @@ export const useRoom = (roomCode) => {
         }
         return prevRoom;
       });
+
+      if (data.userId && data.userId !== currentUserId) {
+        const name = leavingParticipant?.displayName || leavingParticipant?.username || 'A participant';
+        const message = data.removedBy ? `${name} was removed by host` : `${name} left the room`;
+        toast(message, { duration: 1800 });
+      }
+
       return updated;
     });
-  }, []);
+  }, [currentUserId]);
 
   const handleNewHost = useCallback((data) => {
-    if (data.newHostId === socket.userId) {
+    const newHostId = data.newHostId;
+    const previousHostId = data.previousHost;
+
+    if (newHostId === socket.userId) {
       setIsHost(true);
     } else {
       setIsHost(false);
     }
+
+    setRoom((prevRoom) => {
+      if (!prevRoom) return prevRoom;
+      return { ...prevRoom, hostId: newHostId };
+    });
+
+    setParticipants((prev) =>
+      prev.map((p) => {
+        if (p.userId === newHostId) {
+          return { ...p, role: 'host' };
+        }
+        if (previousHostId && p.userId === previousHostId && previousHostId !== newHostId) {
+          return { ...p, role: 'co-host' };
+        }
+        return p;
+      })
+    );
+
+    window.dispatchEvent(
+      new CustomEvent('room:host-changed', {
+        detail: {
+          newHostId,
+          previousHostId,
+          reason: data.reason,
+          restored: !!data.restored,
+        },
+      })
+    );
   }, []);
 
   const handleJoinRequest = useCallback((data) => {
@@ -216,7 +283,7 @@ export const useRoom = (roomCode) => {
   const handleJoinAccepted = useCallback((data) => {
     console.log('📥 [GUEST] Received room:join-accepted event:', {
       eventRoomCode: data.roomCode,
-      currentRoomCode: roomCode,
+      currentRoomCode: normalizedRoomCode,
       eventUserId: data.userId,
       currentUserId: currentUserId,
       guestNameStored: guestName,
@@ -224,7 +291,7 @@ export const useRoom = (roomCode) => {
     });
     
     // Check if this acceptance is for the current room
-    if (data.roomCode !== roomCode) {
+    if (String(data.roomCode || '').toUpperCase() !== normalizedRoomCode) {
       console.log('❌ [GUEST] Wrong room, ignoring acceptance');
       return;
     }
@@ -245,7 +312,7 @@ export const useRoom = (roomCode) => {
     const finalName = user ? (user?.display_name || 
       (clerkUser ? `${clerkUser.firstName || ''} ${clerkUser.lastName || ''}`.trim() : null) ||
       user?.username || "User") : joinName;
-    socket.emit("room:join", { roomCode, guestName: finalName }, (response) => {
+    socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: finalName }, (response) => {
       console.log('📨 [GUEST] Auto-join response after acceptance:', response);
       if (response?.success) {
         if (response.userId) {
@@ -271,11 +338,11 @@ export const useRoom = (roomCode) => {
         setJoinStatus("waiting_for_approval"); // Reset state if join failed
       }
     });
-  }, [roomCode, guestName, currentUserId]);
+  }, [normalizedRoomCode, guestName, currentUserId, user, clerkUser]);
 
   const handleJoinRejected = useCallback((data) => {
     // Check if this rejection is for the current room and user
-    if (data.roomCode !== roomCode) {
+    if (String(data.roomCode || '').toUpperCase() !== normalizedRoomCode) {
       return;
     }
     
@@ -286,14 +353,25 @@ export const useRoom = (roomCode) => {
     console.log('❌ Join request rejected:', data);
     setAccessStatus("rejected");
     setJoinStatus(null);
-  }, [roomCode, currentUserId]);
+  }, [normalizedRoomCode, currentUserId]);
 
   const handleParticipantPermissionsUpdated = useCallback((data) => {
     console.log('🔐 Participant permissions updated:', data);
+    const targetUserId = data.targetUserId || data.userId;
+
+    // Keep local participant state aligned for all UI sections.
+    setParticipants((prev) =>
+      prev.map((p) =>
+        p.userId === targetUserId
+          ? { ...p, restrictions: data.restrictions || p.restrictions }
+          : p
+      )
+    );
+
     // Notify component about permission changes
     window.dispatchEvent(new CustomEvent('permission:updated', {
       detail: {
-        targetUserId: data.targetUserId,
+        targetUserId,
         restrictions: data.restrictions,
         updatedBy: data.updatedBy
       }
@@ -302,21 +380,52 @@ export const useRoom = (roomCode) => {
 
   const handleRoleUpdated = useCallback((data) => {
     console.log('👑 User role updated:', data);
+    const targetUserId = data.targetUserId || data.userId;
+
     // Update participants list to reflect role change
     setParticipants((prev) =>
       prev.map((p) => 
-        p.userId === data.targetUserId 
+        p.userId === targetUserId 
           ? { ...p, role: data.newRole }
           : p
       )
     );
+
+    if (targetUserId === currentUserId) {
+      setIsHost(data.newRole === 'host');
+    }
+
     // Also dispatch custom event for UI updates
     window.dispatchEvent(new CustomEvent('permission:role-updated', {
       detail: {
-        targetUserId: data.targetUserId,
+        targetUserId,
         newRole: data.newRole
       }
     }));
+  }, [currentUserId]);
+
+  const handleForceLeave = useCallback((data) => {
+    console.warn('🚪 Forced to leave room:', data);
+    setJoinStatus(null);
+    setAccessStatus('not_found');
+    setRoom(null);
+    setParticipants([]);
+    setJoinRequests([]);
+    setWaitingUsers([]);
+    setGuestName(null);
+    setIsHost(false);
+  }, []);
+
+  const handleRoomEnded = useCallback((data) => {
+    console.warn('🛑 Room ended:', data);
+    setJoinStatus(null);
+    setAccessStatus('not_found');
+    setRoom(null);
+    setParticipants([]);
+    setJoinRequests([]);
+    setWaitingUsers([]);
+    setGuestName(null);
+    setIsHost(false);
   }, []);
 
   // Register socket event listeners - this runs whenever handlers change (which happens when dependencies change)
@@ -335,7 +444,10 @@ export const useRoom = (roomCode) => {
     socket.on("room:join-accepted", handleJoinAccepted);
     socket.on("room:join-rejected", handleJoinRejected);
     socket.on("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
+    socket.on("room:participant-role-updated", handleRoleUpdated);
     socket.on("room:role-updated", handleRoleUpdated);
+    socket.on("room:ended", handleRoomEnded);
+    socket.on("room:force-leave", handleForceLeave);
 
     return () => {
       console.log('📡 [LISTENERS] Unregistering socket event listeners...');
@@ -346,9 +458,12 @@ export const useRoom = (roomCode) => {
       socket.off("room:join-accepted", handleJoinAccepted);
       socket.off("room:join-rejected", handleJoinRejected);
       socket.off("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
+      socket.off("room:participant-role-updated", handleRoleUpdated);
       socket.off("room:role-updated", handleRoleUpdated);
+      socket.off("room:ended", handleRoomEnded);
+      socket.off("room:force-leave", handleForceLeave);
     };
-  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected, handleParticipantPermissionsUpdated, handleRoleUpdated]);
+  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected, handleParticipantPermissionsUpdated, handleRoleUpdated, handleRoomEnded, handleForceLeave]);
 
   // Function to join room with guest name
   const joinAsGuest = (guestNameInput) => {
@@ -356,7 +471,7 @@ export const useRoom = (roomCode) => {
       // Store the guest name for use if they're approved later and need to re-join
       setGuestName(guestNameInput);
       
-      socket.emit("room:join", { roomCode, guestName: guestNameInput }, (response) => {
+      socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: guestNameInput }, (response) => {
         console.log('📨 Join response:', response);
         
         if (!response.success) {
@@ -379,10 +494,6 @@ export const useRoom = (roomCode) => {
           setParticipants(response.participants || []);
           setIsHost(response.isHost);
           
-          // Join socket.io room
-          socket.join(roomCode);
-          socket.roomCode = roomCode;
-          
           resolve({ status: "joined" });
         }
       });
@@ -392,7 +503,7 @@ export const useRoom = (roomCode) => {
   // Function for host to accept join request
   const acceptJoinRequest = (userId) => {
     return new Promise((resolve, reject) => {
-      socket.emit("room:accept-join-request", { roomCode, userId }, (response) => {
+      socket.emit("room:accept-join-request", { roomCode: normalizedRoomCode, userId }, (response) => {
         if (response.success) {
           setJoinRequests((prev) => 
             prev.map(jr => jr.userId === userId ? { ...jr, status: 'accepted' } : jr)
@@ -408,7 +519,7 @@ export const useRoom = (roomCode) => {
   // Function for host to reject join request
   const rejectJoinRequest = (userId) => {
     return new Promise((resolve, reject) => {
-      socket.emit("room:reject-join-request", { roomCode, userId }, (response) => {
+      socket.emit("room:reject-join-request", { roomCode: normalizedRoomCode, userId }, (response) => {
         if (response.success) {
           setJoinRequests((prev) => 
             prev.map(jr => jr.userId === userId ? { ...jr, status: 'rejected' } : jr)
@@ -421,6 +532,46 @@ export const useRoom = (roomCode) => {
     });
   };
 
+  const leaveRoom = useCallback(() => {
+    return new Promise((resolve, reject) => {
+      socket.emit('room:leave', { roomCode: normalizedRoomCode }, (response) => {
+        if (response?.success) {
+          setJoinStatus(null);
+          setParticipants([]);
+          setJoinRequests([]);
+          setWaitingUsers([]);
+          setGuestName(null);
+          setRoom(null);
+          setIsHost(false);
+          setAccessStatus('loading');
+          resolve(response);
+        } else {
+          reject(new Error(response?.error || 'Failed to leave room'));
+        }
+      });
+    });
+  }, [normalizedRoomCode]);
+
+  const endRoom = useCallback(() => {
+    return new Promise((resolve, reject) => {
+      socket.emit('room:end', { roomCode: normalizedRoomCode }, (response) => {
+        if (response?.success) {
+          setJoinStatus(null);
+          setParticipants([]);
+          setJoinRequests([]);
+          setWaitingUsers([]);
+          setGuestName(null);
+          setRoom(null);
+          setIsHost(false);
+          setAccessStatus('loading');
+          resolve(response);
+        } else {
+          reject(new Error(response?.error || 'Failed to end room'));
+        }
+      });
+    });
+  }, [normalizedRoomCode]);
+
   return { 
     room, 
     participants, 
@@ -432,6 +583,8 @@ export const useRoom = (roomCode) => {
     currentUserId,
     joinAsGuest,
     acceptJoinRequest,
-    rejectJoinRequest
+    rejectJoinRequest,
+    leaveRoom,
+    endRoom,
   };
 };

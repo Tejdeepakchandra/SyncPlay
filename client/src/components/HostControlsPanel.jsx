@@ -16,16 +16,36 @@ const HostControlsPanel = ({
   onRemoveParticipant,
   roomSettings,
   onUpdateSettings,
+  isHost = false,
   hideVideoControls = false,
+  panelTheme = "movie",
 }) => {
   const [tab, setTab] = useState("participants");
   const [confirmRemove, setConfirmRemove] = useState(null);
 
+  const palette = panelTheme === "music"
+    ? {
+        panelBorder: "border-emerald-400/20",
+        panelBg: "from-emerald-950/65 to-emerald-900/35",
+        iconText: "text-emerald-300",
+        activeTabText: "text-emerald-300",
+        activeTabBorder: "border-emerald-300",
+        statsText: "text-emerald-300",
+      }
+    : {
+        panelBorder: "border-blue-400/20",
+        panelBg: "from-blue-950/65 to-blue-900/35",
+        iconText: "text-sky-300",
+        activeTabText: "text-sky-300",
+        activeTabBorder: "border-sky-300",
+        statsText: "text-sky-300",
+      };
+
   if (!open) return null;
 
   // Count stats
-  const guestCount = participants.filter(p => p.role === "guest").length;
-  const coHostCount = participants.filter(p => p.role === "co-host").length;
+  const guestCount = participants.filter((p) => p.role === "guest").length;
+  const coHostCount = participants.filter((p) => p.role === "co-host" || p.role === "cohost").length;
   const totalGuests = guestCount + coHostCount;
 
   const getRoleBadge = (role) => {
@@ -41,11 +61,11 @@ const HostControlsPanel = ({
       initial={{ width: 0, opacity: 0 }}
       animate={{ width: typeof window !== "undefined" && window.innerWidth < 768 ? "100%" : 320, opacity: 1 }}
       exit={{ width: 0, opacity: 0 }}
-      className="border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0"
+      className={`h-full border-l ${palette.panelBorder} bg-gradient-to-b ${palette.panelBg} backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0`}
     >
       <div className="p-4 border-b border-glass-border flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Settings className="w-4 h-4 text-primary" />
+          <Settings className={`w-4 h-4 ${palette.iconText}`} />
           <h3 className="text-sm font-semibold text-foreground">Host Controls</h3>
         </div>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -54,12 +74,12 @@ const HostControlsPanel = ({
       </div>
 
       <div className="flex border-b border-glass-border">
-        {["participants", "settings"].map((t) => (
+        {(["participants", ...(isHost ? ["settings"] : [])]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`flex-1 py-2.5 text-xs font-medium transition-colors capitalize ${
-              tab === t ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
+              tab === t ? `${palette.activeTabText} border-b-2 ${palette.activeTabBorder}` : "text-muted-foreground hover:text-foreground"
             }`}
           >
             {t}
@@ -74,7 +94,7 @@ const HostControlsPanel = ({
             <div className="grid grid-cols-2 gap-2">
               <div className="glass-panel p-3 text-center">
                 <p className="text-xs text-muted-foreground">Total</p>
-                <p className="text-lg font-bold text-primary">{participants.length}</p>
+                <p className={`text-lg font-bold ${palette.statsText}`}>{participants.length}</p>
               </div>
               <div className="glass-panel p-3 text-center">
                 <p className="text-xs text-muted-foreground">Guests</p>
@@ -129,7 +149,9 @@ const HostControlsPanel = ({
             <div className="space-y-2">
               {participants.map((p) => {
                 const badge = getRoleBadge(p.role);
-                const isHost = p.role === "host";
+                const isParticipantHost = p.role === "host";
+                const isParticipantCoHost = p.role === "co-host" || p.role === "cohost";
+                const restrictions = p.restrictions || {};
                 return (
                   <div key={p.name} className="glass-panel p-3 space-y-2.5">
                     <div className="flex items-center gap-2.5">
@@ -146,11 +168,18 @@ const HostControlsPanel = ({
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
                           {badge.label}
                         </span>
+                        {(restrictions.micDisabledByHost || restrictions.videoDisabledByHost || restrictions.chatDisabledByHost) && (
+                          <p className="text-[10px] text-destructive mt-1">
+                            {[restrictions.micDisabledByHost ? "Mic blocked" : null, restrictions.videoDisabledByHost ? "Video blocked" : null, restrictions.chatDisabledByHost ? "Chat blocked" : null]
+                              .filter(Boolean)
+                              .join(" • ")}
+                          </p>
+                        )}
                       </div>
-                      {isHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
+                      {isParticipantHost && <Crown className="w-4 h-4 text-primary flex-shrink-0" />}
                     </div>
 
-                    {!isHost && (
+                    {!isParticipantHost && (
                       <div className="flex items-center gap-1">
                         <Button
                           size="icon"
@@ -185,11 +214,12 @@ const HostControlsPanel = ({
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7 text-accent"
+                          disabled={!isHost}
                           onClick={() => onUpdateParticipant(p.name, {
-                            role: p.role === "co-host" ? "guest" : "co-host"
+                            role: isParticipantCoHost ? "guest" : "co-host"
                           })}
                         >
-                          {p.role === "co-host" ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                          {isParticipantCoHost ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
                         </Button>
 
                         {confirmRemove === p.name ? (
@@ -198,6 +228,7 @@ const HostControlsPanel = ({
                               size="sm"
                               variant="destructive"
                               className="h-7 text-xs px-2"
+                              disabled={!isHost}
                               onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
                             >
                               Remove
@@ -216,6 +247,7 @@ const HostControlsPanel = ({
                             size="icon"
                             variant="ghost"
                             className="h-7 w-7 text-destructive"
+                            disabled={!isHost}
                             onClick={() => setConfirmRemove(p.name)}
                           >
                             <UserMinus className="w-3.5 h-3.5" />

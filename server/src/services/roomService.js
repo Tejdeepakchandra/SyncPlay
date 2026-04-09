@@ -20,7 +20,7 @@ class RoomService {
       
       // Generate unique room code
       console.log(`[ROOM-SERVICE] 📝 Generating room code...`);
-      const roomCode = await Room.generateRoomCode();
+      const roomCode = await Room.generateRoomCode(roomData.type);
       console.log(`[ROOM-SERVICE] ✓ Room code: ${roomCode}`);
 
       // Create room with minimal participant info
@@ -31,11 +31,12 @@ class RoomService {
         type: roomData.type,
         description: roomData.description || '',
         hostId,
+        originalHostId: hostId,
         maxParticipants: roomData.settings?.maxParticipants || 20,
         participantCount: 1,  // Host is initial participant
         settings: {
           privacy: roomData.settings?.privacy || PRIVACY_LEVELS.PUBLIC,
-          requireApproval: roomData.settings?.requireApproval || false,
+          requireApproval: roomData.settings?.requireApproval || (roomData.settings?.privacy === PRIVACY_LEVELS.PRIVATE),
           allowGuests: roomData.settings?.allowGuests !== false,
           allowChat: roomData.settings?.allowChat !== false,
           allowReactions: roomData.settings?.allowReactions !== false,
@@ -43,6 +44,16 @@ class RoomService {
           allowQueue: roomData.settings?.allowQueue !== false,
           slowMode: roomData.settings?.slowMode || false
         },
+        invitedUsers: Array.isArray(roomData.invitedUsers)
+          ? roomData.invitedUsers
+              .map((inv) => ({
+                userId: inv?.userId || null,
+                email: inv?.email ? String(inv.email).toLowerCase() : null,
+                name: inv?.name || null,
+                invitedAt: new Date(),
+              }))
+              .filter((inv) => inv.userId || inv.email)
+          : [],
         participants: [{
           userId: hostId,
           username: `user_${hostId.slice(-6)}`, // Temp name, will update via webhook
@@ -147,13 +158,23 @@ class RoomService {
     try {
       const room = await Room.findOne({ roomCode });
       if (!room) throw new Error('Room not found');
+      if (room.status === ROOM_STATUS.ENDED) throw new Error('Room has ended');
 
       const isGuest = userId.startsWith('guest-');
       const isHost = room.hostId === userId;  // Check if this is the host
+      const isOriginalHost = room.originalHostId === userId;
       const isAlreadyParticipant = room.participants.some(p => p.userId === userId);  // Check if already approved
-      const isInvited = room.invitedUsers?.some(inv => 
-        inv.userId === userId || (isGuest && inv.email === userId)
-      );
+      let userEmail = null;
+      if (!isGuest) {
+        const userDoc = await User.findOne({ clerkId: userId }).select('email').lean();
+        userEmail = userDoc?.email ? String(userDoc.email).toLowerCase() : null;
+      }
+
+      const isInvited = room.invitedUsers?.some((inv) => {
+        const invitedEmail = inv?.email ? String(inv.email).toLowerCase() : null;
+        return inv?.userId === userId || (!!userEmail && invitedEmail === userEmail);
+      });
+      let hostTransfer = null;
 
       console.log(`[ROOM-SERVICE] 🔍 Join analysis for ${userId}:`, {
         isHost,
@@ -173,6 +194,29 @@ class RoomService {
           console.log(`[ROOM-SERVICE] ✏️ Updated host displayName to: "${guestName}"`);
         }
         // Skip all access control - host has all rights
+      }
+      // Original host reclaim: if creator returns, restore host role automatically.
+      else if (isOriginalHost) {
+        const previousHostId = room.hostId;
+        if (previousHostId && previousHostId !== userId) {
+          const previousHost = room.participants.find((p) => p.userId === previousHostId);
+          if (previousHost) {
+            previousHost.role = 'co-host';
+            previousHost.permissions = this.getCoHostPermissions();
+          }
+        }
+
+        room.hostId = userId;
+        room.coHosts = (room.coHosts || []).filter((id) => id !== userId);
+        if (previousHostId && previousHostId !== userId) {
+          room.coHosts.push(previousHostId);
+        }
+        hostTransfer = {
+          newHostId: userId,
+          previousHostId,
+          reason: 'original-host-rejoined',
+          restored: true,
+        };
       }
       // ALREADY APPROVED - If user is already in participants, they were approved and can join
       else if (isAlreadyParticipant) {
@@ -257,9 +301,11 @@ class RoomService {
           displayName: guestName || (isGuest ? 'Guest' : 'User'),
           avatar: isGuest ? null : 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
           avatar_emoji: '🧑',  // Default emoji for participant avatars
-          role: isGuest ? 'guest' : 'participant',
+          role: (isHost || isOriginalHost) ? 'host' : (isGuest ? 'guest' : 'participant'),
           joinedAt: new Date(),
-          permissions: this.getDefaultPermissions(isGuest)
+          permissions: (isHost || isOriginalHost)
+            ? this.getHostPermissions()
+            : this.getDefaultPermissions(isGuest)
         });
         
         // Remove from waiting area if they were there
@@ -297,7 +343,12 @@ class RoomService {
       }
 
       const finalCount = result && result[2] ? parseInt(result[2]) : room.participants.length;
-      return { room, status: 'joined', participantCount: isNaN(finalCount) ? room.participants.length : finalCount };
+      return {
+        room,
+        status: 'joined',
+        participantCount: isNaN(finalCount) ? room.participants.length : finalCount,
+        hostTransfer,
+      };
 
     } catch (error) {
       console.error('Join room error:', error);
@@ -399,7 +450,7 @@ class RoomService {
       if (isHost) {
         // Find next host (co-host first, then oldest participant)
         const coHost = room.participants.find(p => 
-          p.role === 'cohost' && p.userId !== userId  // Both are strings now
+          p.role === 'co-host' && p.userId !== userId  // Both are strings now
         );
         
         if (coHost) {
@@ -421,6 +472,9 @@ class RoomService {
             newHost.role = 'host';
             newHost.permissions = this.getHostPermissions();
           }
+
+          // Keep co-host list normalized after promotion.
+          room.coHosts = (room.coHosts || []).filter((id) => id !== userId && id !== newHostId);
         }
       }
 
@@ -440,9 +494,13 @@ class RoomService {
       );
       if (participantIndex !== -1) {
         room.participants.splice(participantIndex, 1);
+        room.coHosts = (room.coHosts || []).filter((id) => id !== userId);
         room.version += 1;
         await room.save();
       }
+
+      room.participantCount = room.participants.length;
+      await room.save();
 
       return { 
         room, 
@@ -533,6 +591,11 @@ async getRoomParticipants(roomCode) {
       // Update status
       room.status = ROOM_STATUS.ENDED;
       room.endedAt = new Date();
+      room.participants = [];
+      room.waitingUsers = [];
+      room.joinRequests = [];
+      room.coHosts = [];
+      room.participantCount = 0;
       room.version += 1;
       await room.save();
 
@@ -595,6 +658,18 @@ async getRoomParticipants(roomCode) {
     }
     return {
       canControl: false,
+      canAddToQueue: true,
+      canChat: true,
+      canReact: true,
+      canInvite: false,
+      canKick: false,
+      canPromote: false
+    };
+  }
+
+  getCoHostPermissions() {
+    return {
+      canControl: true,
       canAddToQueue: true,
       canChat: true,
       canReact: true,

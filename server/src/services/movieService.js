@@ -1,6 +1,6 @@
 /**
- * Music Service
- * YouTube Data API v3 integration for search and trending tracks.
+ * Movie Service
+ * YouTube Data API v3 integration aligned with the stable MusicRoom search flow.
  */
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -59,8 +59,8 @@ const mapYouTubeItems = (searchItems, detailsItems) => {
       return {
         id,
         title: snippet.title || 'Untitled',
-        artist: snippet.channelTitle || 'Unknown Artist',
-        channelTitle: snippet.channelTitle || 'Unknown Artist',
+        artist: snippet.channelTitle || 'Unknown Channel',
+        channelTitle: snippet.channelTitle || 'Unknown Channel',
         thumbnail:
           snippet.thumbnails?.medium?.url ||
           snippet.thumbnails?.high?.url ||
@@ -68,21 +68,30 @@ const mapYouTubeItems = (searchItems, detailsItems) => {
           `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
         duration,
         views: formatViews(detail?.statistics?.viewCount),
-        url: `https://music.youtube.com/watch?v=${id}`,
+        url: `https://www.youtube.com/watch?v=${id}`,
       };
     })
     .filter(Boolean);
 };
 
-const fetchYouTubeSearch = async (query, maxResults = 10) => {
+const fetchYouTubeSearch = async ({ query, maxResults = 24, pageToken = '', videoCategoryId = null }) => {
   const key = getYouTubeApiKey();
 
   const searchUrl = new URL(`${YOUTUBE_API_BASE}/search`);
   searchUrl.searchParams.set('part', 'snippet');
   searchUrl.searchParams.set('q', query);
   searchUrl.searchParams.set('type', 'video');
-  searchUrl.searchParams.set('videoCategoryId', '10');
-  searchUrl.searchParams.set('maxResults', String(maxResults));
+  searchUrl.searchParams.set('order', 'relevance');
+  searchUrl.searchParams.set('safeSearch', 'moderate');
+  searchUrl.searchParams.set('videoEmbeddable', 'true');
+  searchUrl.searchParams.set('videoSyndicated', 'true');
+  if (videoCategoryId) {
+    searchUrl.searchParams.set('videoCategoryId', String(videoCategoryId));
+  }
+  if (pageToken) {
+    searchUrl.searchParams.set('pageToken', pageToken);
+  }
+  searchUrl.searchParams.set('maxResults', String(Math.max(1, Math.min(50, Number(maxResults) || 24))));
   searchUrl.searchParams.set('key', key);
 
   const searchResponse = await fetch(searchUrl.toString());
@@ -95,7 +104,7 @@ const fetchYouTubeSearch = async (query, maxResults = 10) => {
   const videoIds = (searchData.items || []).map((i) => i?.id?.videoId).filter(Boolean);
 
   if (videoIds.length === 0) {
-    return [];
+    return { results: [], nextPageToken: null };
   }
 
   const videosUrl = new URL(`${YOUTUBE_API_BASE}/videos`);
@@ -110,25 +119,65 @@ const fetchYouTubeSearch = async (query, maxResults = 10) => {
   }
 
   const videosData = await videosResponse.json();
-  return mapYouTubeItems(searchData.items, videosData.items);
+  return {
+    results: mapYouTubeItems(searchData.items, videosData.items),
+    nextPageToken: searchData.nextPageToken || null,
+  };
 };
 
-const youtubeSearch = async (query) => {
+const youtubeMovieSearch = async (query, options = {}) => {
   try {
     const normalized = String(query || '').trim();
     if (!normalized) {
       return { success: false, error: 'Search query is required', results: [] };
     }
 
-    const results = await fetchYouTubeSearch(normalized, 10);
+    const lowered = normalized.toLowerCase();
+    const isMusicIntent = /\bsong\b|\bmusic\b|\blyrics\b|\baudio\b|\bost\b/.test(lowered);
+
+    const primary = await fetchYouTubeSearch({
+      query: normalized,
+      maxResults: options.maxResults || 24,
+      pageToken: options.pageToken || '',
+      videoCategoryId: isMusicIntent ? '10' : null,
+    });
+
+    // Fallback only on first page when primary is too sparse.
+    if ((!primary.results || primary.results.length < 8) && !options.pageToken) {
+      const fallback = await fetchYouTubeSearch({
+        query: isMusicIntent ? `${normalized} official song` : `${normalized} trailer`,
+        maxResults: options.maxResults || 24,
+        pageToken: '',
+        videoCategoryId: null,
+      });
+
+      const merged = [...(primary.results || []), ...(fallback.results || [])];
+      const seen = new Set();
+      const deduped = [];
+      for (const item of merged) {
+        if (!item?.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        deduped.push(item);
+      }
+
+      return {
+        success: true,
+        results: deduped.slice(0, options.maxResults || 24),
+        nextPageToken: fallback.nextPageToken || primary.nextPageToken || null,
+        query: normalized,
+        timestamp: Date.now(),
+      };
+    }
+
     return {
       success: true,
-      results,
+      results: primary.results,
+      nextPageToken: primary.nextPageToken,
       query: normalized,
       timestamp: Date.now(),
     };
   } catch (error) {
-    console.error('YouTube search error:', error);
+    console.error('Movie search error:', error);
     return {
       success: false,
       error: error.message,
@@ -137,17 +186,23 @@ const youtubeSearch = async (query) => {
   }
 };
 
-const getTrendingMusic = async () => {
+const getTrendingMovies = async () => {
   try {
-    const results = await fetchYouTubeSearch('trending music', 12);
+    const data = await fetchYouTubeSearch({
+      query: 'official movie trailer',
+      maxResults: 24,
+      videoCategoryId: null,
+    });
+
     return {
       success: true,
-      results,
-      category: 'Trending',
+      results: data.results,
+      nextPageToken: data.nextPageToken,
+      category: 'Trending Movies',
       timestamp: Date.now(),
     };
   } catch (error) {
-    console.error('Trending music fetch error:', error);
+    console.error('Trending movie fetch error:', error);
     return {
       success: false,
       error: error.message,
@@ -156,19 +211,27 @@ const getTrendingMusic = async () => {
   }
 };
 
-const getMusicByCategory = async (category) => {
+const getMoviesByCategory = async (category, options = {}) => {
   try {
     const normalized = String(category || '').trim().toLowerCase();
-    const query = normalized ? `${normalized} music` : 'music';
-    const results = await fetchYouTubeSearch(query, 10);
+    const query = normalized ? `${normalized} trailer` : 'movie trailer';
+
+    const data = await fetchYouTubeSearch({
+      query,
+      maxResults: options.maxResults || 24,
+      pageToken: options.pageToken || '',
+      videoCategoryId: null,
+    });
+
     return {
       success: true,
-      results,
-      category: normalized || 'music',
+      results: data.results,
+      nextPageToken: data.nextPageToken,
+      category: normalized || 'movies',
       timestamp: Date.now(),
     };
   } catch (error) {
-    console.error('Category music fetch error:', error);
+    console.error('Category movie fetch error:', error);
     return {
       success: false,
       error: error.message,
@@ -178,7 +241,7 @@ const getMusicByCategory = async (category) => {
 };
 
 module.exports = {
-  youtubeSearch,
-  getTrendingMusic,
-  getMusicByCategory
+  youtubeMovieSearch,
+  getTrendingMovies,
+  getMoviesByCategory,
 };

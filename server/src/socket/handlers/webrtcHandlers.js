@@ -6,6 +6,13 @@
 const Room = require('../../models/mongodb/Room');
 
 module.exports = (socket, io) => {
+  const emitToUserInRoom = async (roomCode, targetUserId, eventName, payload) => {
+    const socketsInRoom = await io.in(roomCode).fetchSockets();
+    socketsInRoom
+      .filter((roomSocket) => roomSocket.userId === targetUserId)
+      .forEach((roomSocket) => roomSocket.emit(eventName, payload));
+  };
+
   /**
    * Helper function to check if user has permission
    */
@@ -58,11 +65,10 @@ module.exports = (socket, io) => {
   });
 
   // Send offer to peer
-  socket.on('webrtc:offer', ({ roomCode, to, sdp, from }) => {
+  socket.on('webrtc:offer', async ({ roomCode, to, sdp, from }) => {
     try {
       if (!roomCode || !to) return;
-      // Send to specific peer
-      io.to(to).emit('webrtc:offer', {
+      await emitToUserInRoom(roomCode, to, 'webrtc:offer', {
         from,
         sdp,
         timestamp: Date.now(),
@@ -73,10 +79,10 @@ module.exports = (socket, io) => {
   });
 
   // Send answer to peer
-  socket.on('webrtc:answer', ({ roomCode, to, sdp, from }) => {
+  socket.on('webrtc:answer', async ({ roomCode, to, sdp, from }) => {
     try {
       if (!roomCode || !to) return;
-      io.to(to).emit('webrtc:answer', {
+      await emitToUserInRoom(roomCode, to, 'webrtc:answer', {
         from,
         sdp,
         timestamp: Date.now(),
@@ -87,10 +93,10 @@ module.exports = (socket, io) => {
   });
 
   // Send ICE candidate to peer
-  socket.on('webrtc:ice-candidate', ({ roomCode, to, candidate, from }) => {
+  socket.on('webrtc:ice-candidate', async ({ roomCode, to, candidate, from }) => {
     try {
       if (!roomCode || !to) return;
-      io.to(to).emit('webrtc:ice-candidate', {
+      await emitToUserInRoom(roomCode, to, 'webrtc:ice-candidate', {
         from,
         candidate,
         timestamp: Date.now(),
@@ -119,7 +125,7 @@ module.exports = (socket, io) => {
    */
 
   // Announce participant joining mesh
-  socket.on('webrtc-mesh:join', async ({ roomCode, from }) => {
+  socket.on('webrtc-mesh:join', async ({ roomCode }) => {
     try {
       if (!roomCode) return;
 
@@ -127,7 +133,7 @@ module.exports = (socket, io) => {
       // Video permission is checked when they actually try to share video tracks
 
       socket.to(roomCode).emit('webrtc-mesh:join', {
-        from,
+        from: socket.userId,
         timestamp: Date.now(),
       });
     } catch (error) {
@@ -135,13 +141,26 @@ module.exports = (socket, io) => {
     }
   });
 
+  // Announce participant leaving mesh
+  socket.on('webrtc-mesh:leave', async ({ roomCode }) => {
+    try {
+      if (!roomCode) return;
+
+      socket.to(roomCode).emit('webrtc-mesh:leave', {
+        from: socket.userId,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      console.error('webrtc-mesh:leave error:', error);
+    }
+  });
+
   // Send mesh offer
-  socket.on('webrtc-mesh:offer', ({ roomCode, to, sdp, from }) => {
+  socket.on('webrtc-mesh:offer', async ({ roomCode, to, sdp }) => {
     try {
       if (!roomCode || !to) return;
-      // Send to the room - recipients will filter by 'to' field
-      io.to(roomCode).emit('webrtc-mesh:offer', {
-        from,
+      await emitToUserInRoom(roomCode, to, 'webrtc-mesh:offer', {
+        from: socket.userId,
         to,
         sdp,
         timestamp: Date.now(),
@@ -152,12 +171,11 @@ module.exports = (socket, io) => {
   });
 
   // Send mesh answer
-  socket.on('webrtc-mesh:answer', ({ roomCode, to, sdp, from }) => {
+  socket.on('webrtc-mesh:answer', async ({ roomCode, to, sdp }) => {
     try {
       if (!roomCode || !to) return;
-      // Send to the room - recipients will filter by 'from' field
-      io.to(roomCode).emit('webrtc-mesh:answer', {
-        from,
+      await emitToUserInRoom(roomCode, to, 'webrtc-mesh:answer', {
+        from: socket.userId,
         to,
         sdp,
         timestamp: Date.now(),
@@ -168,12 +186,11 @@ module.exports = (socket, io) => {
   });
 
   // Send mesh ICE candidate
-  socket.on('webrtc-mesh:ice-candidate', ({ roomCode, to, candidate, from }) => {
+  socket.on('webrtc-mesh:ice-candidate', async ({ roomCode, to, candidate }) => {
     try {
       if (!roomCode || !to) return;
-      // Send to the room - recipients will filter by 'from' field
-      io.to(roomCode).emit('webrtc-mesh:ice-candidate', {
-        from,
+      await emitToUserInRoom(roomCode, to, 'webrtc-mesh:ice-candidate', {
+        from: socket.userId,
         to,
         candidate,
         timestamp: Date.now(),
