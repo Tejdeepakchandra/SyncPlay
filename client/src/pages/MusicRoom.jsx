@@ -11,6 +11,7 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { socket } from "@/services/socket";
 import { toast } from "sonner";
+import api from "@/services/api";
 
 // Hooks
 import { useRoom } from "@/hooks/useRoom";
@@ -196,6 +197,7 @@ const MusicRoom = () => {
   const reactionIdRef = useRef(0);
   const containerRef = useRef(null);
   const localAudioRef = useRef(null);
+  const youtubeErrorFallbackRef = useRef({ mediaKey: null, at: 0 });
   const remoteAudioRefs = useRef(new Map());
 
   const webrtc = useWebRTC();
@@ -226,16 +228,64 @@ const MusicRoom = () => {
     ? true
     : (!myRestrictions.mediaControlDisabledByHost && myParticipant?.permissions?.canControl !== false);
 
+  const resolveYoutubeVideoId = useCallback((media) => {
+    const direct = String(media?.videoId || media?.id || "").trim();
+    if (direct) return direct;
+
+    const rawUrl = String(media?.videoUrl || media?.url || "").trim();
+    if (!rawUrl) return "";
+
+    const watchMatch = rawUrl.match(/[?&]v=([^&]+)/);
+    const shortMatch = rawUrl.match(/youtu\.be\/([^?&/]+)/);
+    const embedMatch = rawUrl.match(/\/embed\/([^?&/]+)/);
+    return watchMatch?.[1] || shortMatch?.[1] || embedMatch?.[1] || "";
+  }, []);
+
+  const shouldFallbackOnYoutubeError = useCallback((errorCode) => {
+    if (!(isCurrentUserHost || userRole === "co-host")) return false;
+    if (!canControl || currentTrack?.sourceType !== "youtube") return false;
+
+    const unrecoverable = new Set([2, 5, 100, 101, 150]);
+    if (errorCode !== null && !unrecoverable.has(Number(errorCode))) return false;
+
+    const mediaKey = currentTrack?.videoId ? `youtube:${currentTrack.videoId}` : null;
+    const previous = youtubeErrorFallbackRef.current;
+    const now = Date.now();
+    if (mediaKey && previous.mediaKey === mediaKey && now - previous.at < 10000) {
+      return false;
+    }
+
+    youtubeErrorFallbackRef.current = { mediaKey, at: now };
+    return true;
+  }, [isCurrentUserHost, userRole, canControl, currentTrack]);
+
   // YouTube player for music (hidden)
   const ytPlayer = useYouTubePlayer({
     videoId: currentTrack?.videoId,
     controlsEnabled: canControl,
-    onStateChange: (state) => {
+    onStateChange: (state, meta) => {
       setIsPlaying(state === "playing");
       if (state === "ended") {
         // Track ended - show overlay
         setTrackEnded(true);
       }
+      if (state === "error") {
+        toast.error("Unable to play this YouTube track", {
+          description: meta?.errorCode
+            ? `Playback error (${meta.errorCode}). This track may be restricted.`
+            : "This track may be restricted. Try another result.",
+          duration: 3000,
+        });
+      }
+    },
+    onError: (errorCode) => {
+      if (!shouldFallbackOnYoutubeError(errorCode)) return;
+      roomSync.broadcastPause(ytPlayer.currentTime || 0, ytPlayer.duration || 0);
+      roomSync.broadcastMediaChange({ type: "none" });
+      toast("This YouTube track was cleared for the room", {
+        description: "Playback restriction detected. Pick another track.",
+        duration: 2800,
+      });
     },
     onReady: () => {
       if (isPlaying && currentTrack) {
@@ -260,9 +310,10 @@ const MusicRoom = () => {
     enableDriftCorrection: true,
     driftIntervalMs: 5000,
     onMediaChange: (media) => {
-      if (media?.type === "youtube" && media.videoId) {
+      const resolvedYoutubeId = resolveYoutubeVideoId(media);
+      if (media?.type === "youtube" && resolvedYoutubeId) {
         setCurrentTrack({
-          videoId: media.videoId,
+          videoId: resolvedYoutubeId,
           title: media.title || "YouTube Track",
           artist: media.artist || "Unknown",
           thumbnail: media.thumbnail || null,
@@ -711,27 +762,86 @@ const MusicRoom = () => {
     }
   }, [canControl, roomSync, ytPlayer.duration]);
 
-  const handleSelectLocalTrack = useCallback((file, audioUrl) => {
-    const nextTrack = {
-      title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
-      artist: "Uploaded",
-      thumbnail: null,
-      sourceType: "local",
-      audioUrl,
-    };
-
-    setCurrentTrack(nextTrack);
-    setShowSourcePicker(false);
-    setTrackEnded(false);
-    setIsPlaying(true);
-    setQueue((prev) => [...prev, nextTrack]);
-
-    if (canControl) {
-      toast("Local upload started", {
-        description: "This local file is only playable on your device.",
-      });
+  const handleSelectLocalTrack = useCallback(async (file, audioUrl) => {
+    if (!file) return;
+    if (!canControl) {
+      toast.error("You don't have media control permission");
+      if (audioUrl?.startsWith("blob:")) URL.revokeObjectURL(audioUrl);
+      return;
     }
-  }, [canControl]);
+
+    let usedLocalFallback = false;
+
+    try {
+      const formData = new FormData();
+      formData.append("video", file);
+      formData.append("title", file?.name || "Local Audio");
+
+      const response = await api.post(`/rooms/${roomCode}/media/upload`, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      const sharedMedia = response?.data?.data?.media;
+      const sharedUrl = sharedMedia?.audioUrl || sharedMedia?.videoUrl;
+      if (!sharedUrl) {
+        throw new Error("Invalid media upload response");
+      }
+
+      const nextTrack = {
+        title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
+        artist: "Uploaded",
+        thumbnail: null,
+        sourceType: "local",
+        audioUrl: sharedUrl,
+      };
+
+      setCurrentTrack(nextTrack);
+      setShowSourcePicker(false);
+      setTrackEnded(false);
+      setIsPlaying(true);
+      setQueue((prev) => [...prev, nextTrack]);
+
+      roomSync.broadcastMediaChange({
+        type: "local",
+        title: nextTrack.title,
+        artist: nextTrack.artist,
+        audioUrl: sharedUrl,
+        videoUrl: sharedUrl,
+        url: sharedUrl,
+      });
+      roomSync.broadcastPlay(0, 0);
+
+      toast.success("Audio uploaded", {
+        description: "Shared with everyone in the room.",
+      });
+    } catch (error) {
+      usedLocalFallback = true;
+      const localUrl = audioUrl || URL.createObjectURL(file);
+      const nextTrack = {
+        title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
+        artist: "Uploaded",
+        thumbnail: null,
+        sourceType: "local",
+        audioUrl: localUrl,
+      };
+
+      setCurrentTrack(nextTrack);
+      setShowSourcePicker(false);
+      setTrackEnded(false);
+      setIsPlaying(true);
+      setQueue((prev) => [...prev, nextTrack]);
+
+      toast("Upload failed, using local-only playback", {
+        description: error?.response?.data?.message || error?.message || "Only you can hear this file.",
+      });
+    } finally {
+      if (!usedLocalFallback && audioUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    }
+  }, [canControl, roomCode, roomSync]);
 
   const closeAllPanels = useCallback(() => {
     setShowChat(false);

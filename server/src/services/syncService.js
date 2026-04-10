@@ -337,8 +337,8 @@ class SyncService {
    
   async queueEvent(roomCode, event) {
     return new Promise((resolve, reject) => {
-      // Generate SINGLE eventId at entry
-      const eventId = generateEventId();
+      // Use caller eventId for idempotency across retries; fallback to generated ID.
+      const eventId = event.clientEventId || generateEventId();
       
       if (!this.eventQueues.has(roomCode)) {
         this.eventQueues.set(roomCode, []);
@@ -378,7 +378,9 @@ class SyncService {
       }
       
       if (processed) {
-        event.resolve({ success: true, state: null, duplicate: true });
+        this.getSyncState(roomCode)
+          .then((state) => event.resolve({ success: true, state, duplicate: true }))
+          .catch(() => event.resolve({ success: true, state: null, duplicate: true }));
       } else {
         const state = await this.processSyncEvent(roomCode, event);
         event.resolve({ success: true, state });
@@ -456,29 +458,31 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
   
    // Handle play event
    
-  async handlePlay(roomCode, userId, timestamp, latency = 100) {
+  async handlePlay(roomCode, userId, timestamp, latency = 100, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.PLAY,
       data: { timestamp, latency, playbackRate: 1.0 },
-      userId
+      userId,
+      clientEventId,
     });
   }
 
   
    // Handle pause event
    
-  async handlePause(roomCode, userId, timestamp) {
+  async handlePause(roomCode, userId, timestamp, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.PAUSE,
       data: { timestamp },
-      userId
+      userId,
+      clientEventId,
     });
   }
 
   
    // Handle seek event
    
-  async handleSeek(roomCode, userId, newTime, duration) {
+  async handleSeek(roomCode, userId, newTime, duration, clientEventId = null) {
     // Validate timestamp
     if (duration && (newTime < 0 || newTime > duration)) {
       throw new Error('Invalid seek position');
@@ -487,18 +491,20 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.SEEK,
       data: { newTime, latency: 100 },
-      userId
+      userId,
+      clientEventId,
     });
   }
 
   
    // Handle rate change
    
-  async handleRateChange(roomCode, userId, rate) {
+  async handleRateChange(roomCode, userId, rate, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.RATE_CHANGE,
       data: { rate },
-      userId
+      userId,
+      clientEventId,
     });
   }
 }

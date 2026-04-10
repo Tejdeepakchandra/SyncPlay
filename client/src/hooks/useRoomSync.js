@@ -21,6 +21,7 @@ export const useRoomSync = ({
 }) => {
   const [ntpOffset, setNtpOffset] = useState(0);
   const [controlPending, setControlPending] = useState(null);
+  const normalizedRoomCode = String(roomCode || "").trim().toUpperCase();
   const ntpOffsetRef = useRef(0);
   const canControl = typeof canControlOverride === "boolean" ? canControlOverride : (isHost || isCoHost);
   const handlersRef = useRef({ onMediaChange, onPlay, onPause, onSeek, onRateAdjust, onSyncUpdate, onSyncConflict });
@@ -34,23 +35,71 @@ export const useRoomSync = ({
   const seekCoalesceRef = useRef({ timer: null, payload: null });
   const pendingControlTimeoutRef = useRef(null);
   const pendingPlayTimeoutRef = useRef(null);
+  const startupConvergenceTimersRef = useRef([]);
   const driftSuppressUntilRef = useRef(0);
+  const clientEventSeqRef = useRef(0);
+  const lastDriftTickRef = useRef(0);
 
   const getMediaSig = useCallback((media) => {
     if (!media) return "none";
     return `${media.type || "none"}:${media.videoId || media.videoUrl || media.id || ""}`;
   }, []);
 
+  const nextClientEventId = useCallback((eventName) => {
+    clientEventSeqRef.current += 1;
+    return `${normalizedRoomCode || "room"}:${eventName}:${Date.now()}:${clientEventSeqRef.current}`;
+  }, [normalizedRoomCode]);
+
   const applyPlaybackState = useCallback((playback, options = {}) => {
     if (!playback) return;
+
+    const clearStartupConvergence = () => {
+      if (!startupConvergenceTimersRef.current?.length) return;
+      startupConvergenceTimersRef.current.forEach((timer) => clearTimeout(timer));
+      startupConvergenceTimersRef.current = [];
+    };
+
+    const scheduleStartupConvergence = (baseTime, startAt, playbackRate = 1) => {
+      clearStartupConvergence();
+      if (!Number.isFinite(baseTime) || !Number.isFinite(startAt)) return;
+
+      const safeRate = Number.isFinite(playbackRate) ? playbackRate : 1;
+      const scheduleAt = [760];
+      scheduleAt.forEach((delayMs) => {
+        const timer = setTimeout(() => {
+          const serverNow = Date.now() + ntpOffsetRef.current;
+          const elapsedSec = Math.max(0, (serverNow - startAt) / 1000);
+          const projected = baseTime + elapsedSec * safeRate;
+
+          // Avoid startup flicker: only apply if local drift is still meaningfully large.
+          const localPos = typeof getCurrentPosition === "function"
+            ? Number(getCurrentPosition())
+            : Number.NaN;
+          if (Number.isFinite(localPos) && Math.abs(projected - localPos) < 0.55) {
+            return;
+          }
+
+          handlersRef.current.onSeek?.(projected);
+          lastAppliedRef.current.time = projected;
+        }, delayMs);
+        startupConvergenceTimersRef.current.push(timer);
+      });
+    };
+
     const force = !!options.force;
+    const media = playback.media ?? lastMediaRef.current ?? null;
+    const mediaSig = getMediaSig(media);
     const hasVersion = Number.isFinite(playback.version);
-    if (hasVersion && !force && playback.version <= lastAppliedRef.current.version) {
+    const mediaChanged = mediaSig !== lastAppliedRef.current.mediaSig;
+    if (hasVersion && !force && playback.version < lastAppliedRef.current.version) {
       return;
     }
 
-    const media = playback.media ?? lastMediaRef.current ?? null;
-    const mediaSig = getMediaSig(media);
+    // Same-version updates can still carry authoritative media changes.
+    if (hasVersion && !force && playback.version === lastAppliedRef.current.version && !mediaChanged) {
+      return;
+    }
+
     if (mediaSig !== lastAppliedRef.current.mediaSig) {
       lastMediaRef.current = media;
       handlersRef.current.onMediaChange?.(media || { type: "none" });
@@ -62,6 +111,10 @@ export const useRoomSync = ({
     const estimatedServerNow = Date.now() + ntpOffsetRef.current;
     const msUntilStart = hasStartAt ? (playback.startAt - estimatedServerNow) : 0;
     const shouldScheduleStart = playback.isPlaying === true && msUntilStart > 35;
+
+    if (!playback.isPlaying) {
+      clearStartupConvergence();
+    }
 
     if (typeof playback.time === "number" && !shouldScheduleStart) {
       const threshold = timeUnit === "seconds" ? 0.2 : 0.5;
@@ -91,6 +144,9 @@ export const useRoomSync = ({
           const projectedTime = baseTime + elapsedSec;
           handlersRef.current.onSeek?.(projectedTime);
           handlersRef.current.onPlay?.(projectedTime);
+          if (hasStartAt) {
+            scheduleStartupConvergence(baseTime, playback.startAt, playback.playbackRate || 1);
+          }
           lastAppliedRef.current.time = projectedTime;
           lastAppliedRef.current.isPlaying = true;
         }, msUntilStart);
@@ -106,12 +162,16 @@ export const useRoomSync = ({
           const elapsedSec = hasStartAt ? Math.max(0, (estimatedServerNow - playback.startAt) / 1000) : 0;
           const projectedTime = baseTime + elapsedSec;
           handlersRef.current.onPlay?.(projectedTime);
+          if (hasStartAt) {
+            scheduleStartupConvergence(baseTime, playback.startAt, playback.playbackRate || 1);
+          }
           lastAppliedRef.current.time = projectedTime;
         } else {
           if (pendingPlayTimeoutRef.current) {
             clearTimeout(pendingPlayTimeoutRef.current);
             pendingPlayTimeoutRef.current = null;
           }
+          clearStartupConvergence();
           handlersRef.current.onPause?.(baseTime);
         }
         if (!shouldScheduleStart) {
@@ -124,7 +184,7 @@ export const useRoomSync = ({
       lastAppliedRef.current.version = playback.version;
       latestVersionRef.current = playback.version;
     }
-  }, [getMediaSig, timeUnit]);
+  }, [getMediaSig, timeUnit, getCurrentPosition]);
 
   useEffect(() => {
     handlersRef.current = { onMediaChange, onPlay, onPause, onSeek, onRateAdjust, onSyncUpdate, onSyncConflict };
@@ -134,6 +194,7 @@ export const useRoomSync = ({
     const seekCoalesce = seekCoalesceRef.current;
     const pendingControlTimeoutRefObj = pendingControlTimeoutRef;
     const pendingPlayTimeoutRefObj = pendingPlayTimeoutRef;
+    const startupConvergenceTimersRefObj = startupConvergenceTimersRef;
 
     return () => {
       const seekTimer = seekCoalesce?.timer;
@@ -147,6 +208,10 @@ export const useRoomSync = ({
       const playTimer = pendingPlayTimeoutRefObj.current;
       if (playTimer) {
         clearTimeout(playTimer);
+      }
+      if (startupConvergenceTimersRefObj.current?.length) {
+        startupConvergenceTimersRefObj.current.forEach((timer) => clearTimeout(timer));
+        startupConvergenceTimersRefObj.current = [];
       }
     };
   }, []);
@@ -190,6 +255,14 @@ export const useRoomSync = ({
       if (Number.isFinite(response?.state?.version)) {
         latestVersionRef.current = response.state.version;
       }
+
+       // Keep initiator aligned with the same authoritative timeline as everyone else.
+      if (response?.state) {
+        const playback = toPlaybackFromState(response.state);
+        if (playback) {
+          applyPlaybackState(playback, { force: true });
+        }
+      }
       return;
     }
 
@@ -219,12 +292,12 @@ export const useRoomSync = ({
   }, [applyPlaybackState, roomCode, toPlaybackFromState, clearControlPending]);
 
   useEffect(() => {
-    if (!roomCode) return;
+    if (!normalizedRoomCode) return;
 
     if (mode === "advanced") {
       const handleMediaChange = (data) => {
         const eventTs = Number(data?.timestamp) || Date.now();
-        if (eventTs <= lastMediaTimestampRef.current || eventTs <= lastSyncTimestampRef.current) {
+        if (eventTs <= lastMediaTimestampRef.current) {
           return;
         }
 
@@ -280,9 +353,9 @@ export const useRoomSync = ({
       socket.on("sync:update", handleSyncUpdate);
       socket.on("sync:state-update", handleStateUpdate);
 
-      socket.emit("sync:request-state", { roomCode });
+      socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
       const handleReconnect = () => {
-        socket.emit("sync:request-state", { roomCode });
+        socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
       };
       socket.on("connect", handleReconnect);
 
@@ -346,9 +419,9 @@ export const useRoomSync = ({
     socket.on("sync:update", handleSyncUpdate);
 
     // Pull current room media/sync snapshot on subscribe and reconnection.
-    socket.emit("sync:request-state", { roomCode });
+    socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
     const handleReconnect = () => {
-      socket.emit("sync:request-state", { roomCode });
+      socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
     };
     socket.on("connect", handleReconnect);
 
@@ -360,50 +433,109 @@ export const useRoomSync = ({
       socket.off("sync:update", handleSyncUpdate);
       socket.off("connect", handleReconnect);
     };
-  }, [roomCode, mode, applyPlaybackState, getMediaSig, toPlaybackFromState]);
+  }, [normalizedRoomCode, mode, applyPlaybackState, getMediaSig, toPlaybackFromState]);
+
+  const emitDriftCheck = useCallback(() => {
+    if (mode !== "advanced") return;
+    if (!enableDriftCorrection) return;
+    if (!normalizedRoomCode) return;
+    if (typeof getCurrentPosition !== "function") return;
+    if (controlPending) return;
+    if (Date.now() < driftSuppressUntilRef.current) return;
+
+    const clientPosition = Number(getCurrentPosition());
+    if (!Number.isFinite(clientPosition)) return;
+
+    socket.emit(
+      "sync:check-position",
+      {
+        roomCode: normalizedRoomCode,
+        clientPosition,
+        clientNow: Date.now(),
+        clientOffset: ntpOffsetRef.current,
+      },
+      (response) => {
+        if (!response?.success || !response?.correction) return;
+
+        const correction = response.correction;
+        if (correction.action === "hardSeek" || correction.action === "gradual") {
+          handlersRef.current.onSeek?.(correction.targetPosition);
+        } else if (correction.action === "rateAdjust") {
+          handlersRef.current.onRateAdjust?.(correction.rate, correction);
+        }
+      }
+    );
+  }, [mode, enableDriftCorrection, normalizedRoomCode, getCurrentPosition, controlPending]);
 
   useEffect(() => {
     if (mode !== "advanced") return;
     if (!enableDriftCorrection) return;
-    if (!roomCode) return;
+    if (!normalizedRoomCode) return;
     if (typeof getCurrentPosition !== "function") return;
 
+    lastDriftTickRef.current = Date.now();
     const timer = setInterval(() => {
-      if (controlPending) return;
-      if (Date.now() < driftSuppressUntilRef.current) return;
+      const now = Date.now();
+      const jumpMs = Math.abs(now - lastDriftTickRef.current - Math.max(1000, driftIntervalMs));
+      lastDriftTickRef.current = now;
 
-      const clientPosition = Number(getCurrentPosition());
-      if (!Number.isFinite(clientPosition)) return;
-
-      socket.emit(
-        "sync:check-position",
-        {
-          roomCode,
-          clientPosition,
-          clientNow: Date.now(),
-          clientOffset: ntpOffsetRef.current,
-        },
-        (response) => {
-          if (!response?.success || !response?.correction) return;
-
-          const correction = response.correction;
-          if (correction.action === "hardSeek" || correction.action === "gradual") {
-            handlersRef.current.onSeek?.(correction.targetPosition);
-          } else if (correction.action === "rateAdjust") {
-            handlersRef.current.onRateAdjust?.(correction.rate, correction);
+      // Large local clock jumps can invalidate offset math; force authoritative refresh.
+      if (jumpMs > 12000) {
+        const t1 = Date.now();
+        socket.emit("sync:clock-sync", {
+          samples: [{ t1, t2: t1, t3: Date.now(), t4: Date.now() }],
+        }, (resp) => {
+          if (resp?.success && Number.isFinite(resp.offset)) {
+            ntpOffsetRef.current = resp.offset;
+            setNtpOffset(resp.offset);
           }
-        }
-      );
+        });
+        socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
+      }
+
+      emitDriftCheck();
     }, Math.max(1000, driftIntervalMs));
 
     return () => clearInterval(timer);
-  }, [mode, enableDriftCorrection, roomCode, driftIntervalMs, getCurrentPosition, controlPending]);
+  }, [mode, enableDriftCorrection, normalizedRoomCode, driftIntervalMs, emitDriftCheck, getCurrentPosition]);
+
+  useEffect(() => {
+    if (mode !== "advanced") return;
+    if (!enableDriftCorrection) return;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
+        emitDriftCheck();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [mode, enableDriftCorrection, normalizedRoomCode, emitDriftCheck]);
 
   const broadcast = useCallback((event) => {
-    if (!canControl || !roomCode) return;
+    if (!canControl || !normalizedRoomCode) return;
     if (mode === "advanced") {
       if (event.event === "media_change") {
-        socket.emit("sync:media-change", { roomCode, media: event.media });
+        const payload = { roomCode: normalizedRoomCode, media: event.media };
+        socket.emit("sync:media-change", payload, (response) => {
+          if (response?.success) {
+            if (response.currentPlayback) {
+              applyPlaybackState(response.currentPlayback, { force: true });
+            }
+            return;
+          }
+
+          if (!response?.success) {
+            handlersRef.current.onSyncConflict?.({
+              event: "media_change",
+              attemptedPayload: payload,
+              error: response?.error || "Failed to apply media change",
+            });
+            socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
+          }
+        });
         return;
       }
       if (event.event === "play") {
@@ -415,11 +547,12 @@ export const useRoomSync = ({
         if (isDuplicateRapid) return;
 
         const payload = {
-          roomCode,
+          roomCode: normalizedRoomCode,
           timestamp: typeof event.time === "number" ? event.time : 0,
           duration: event.duration,
           latency: 100,
           clientVersion: latestVersionRef.current,
+          clientEventId: nextClientEventId("play"),
         };
         lastControlEmitRef.current = { event: "play", at: now, time: payload.timestamp };
         markControlPending("play");
@@ -435,10 +568,11 @@ export const useRoomSync = ({
         if (isDuplicateRapid) return;
 
         const payload = {
-          roomCode,
+          roomCode: normalizedRoomCode,
           timestamp: typeof event.time === "number" ? event.time : 0,
           duration: event.duration,
           clientVersion: latestVersionRef.current,
+          clientEventId: nextClientEventId("pause"),
         };
         lastControlEmitRef.current = { event: "pause", at: now, time: payload.timestamp };
         markControlPending("pause");
@@ -447,10 +581,11 @@ export const useRoomSync = ({
       }
       if (event.event === "seek") {
         const payload = {
-          roomCode,
+          roomCode: normalizedRoomCode,
           newTime: typeof event.time === "number" ? event.time : 0,
           duration: event.duration,
           clientVersion: latestVersionRef.current,
+          clientEventId: nextClientEventId("seek"),
         };
         seekCoalesceRef.current.payload = payload;
         if (seekCoalesceRef.current.timer) {
@@ -469,8 +604,8 @@ export const useRoomSync = ({
       }
     }
 
-    socket.emit("sync:broadcast", { roomCode, ...event });
-  }, [canControl, roomCode, mode, handleControlAck, markControlPending]);
+    socket.emit("sync:broadcast", { roomCode: normalizedRoomCode, ...event });
+  }, [canControl, normalizedRoomCode, mode, handleControlAck, markControlPending, nextClientEventId, applyPlaybackState]);
 
   const broadcastMediaChange = useCallback((media) => {
     const sig = getMediaSig(media);
@@ -507,8 +642,8 @@ export const useRoomSync = ({
   }, [broadcast, mode]);
 
   const requestSync = useCallback(() => {
-    socket.emit("sync:request-state", { roomCode });
-  }, [roomCode]);
+    socket.emit("sync:request-state", { roomCode: normalizedRoomCode });
+  }, [normalizedRoomCode]);
 
   return {
     broadcastMediaChange,

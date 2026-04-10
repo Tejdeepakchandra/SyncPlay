@@ -1,7 +1,46 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
 const roomService = require('../services/roomService');
+const Room = require('../models/mongodb/Room');
 const { validateRoomCreation } = require('../middleware/validation');
 const router = express.Router();
+
+const ROOM_MEDIA_DIR = path.resolve(__dirname, '../../../uploads/room-media');
+fs.mkdirSync(ROOM_MEDIA_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, ROOM_MEDIA_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase() || '.mp4';
+      const safeExt = /^[.][a-z0-9]+$/.test(ext) ? ext : '.mp4';
+      const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      cb(null, `${unique}${safeExt}`);
+    },
+  }),
+  limits: {
+    fileSize: 250 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, cb) => {
+    const mediaType = file?.mimetype || '';
+    if (!mediaType.startsWith('video/') && !mediaType.startsWith('audio/')) {
+      return cb(new Error('Only audio or video uploads are supported'));
+    }
+    cb(null, true);
+  },
+});
+
+function canControlMedia(room, userId) {
+  const participant = room?.participants?.find((p) => p.userId?.toString() === userId?.toString());
+  if (!participant) return false;
+  if (participant.restrictions?.mediaControlDisabledByHost) return false;
+  if (participant.role === 'host' || participant.role === 'cohost' || participant.role === 'co-host') {
+    return true;
+  }
+  return participant.permissions?.canControl !== false;
+}
 
 /**
  * Create new room
@@ -192,6 +231,88 @@ router.post('/:roomCode/end', async (req, res, next) => {
         status: room.status,
         endedAt: room.endedAt
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Upload room media and set as current upload source
+ * POST /api/rooms/:roomCode/media/upload
+ */
+router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No video file uploaded' });
+    }
+
+    const roomCode = req.params.roomCode;
+    const room = await Room.findOne({ roomCode });
+    if (!room) {
+      return res.status(404).json({ success: false, message: 'Room not found' });
+    }
+
+    if (room.status === 'ended') {
+      return res.status(400).json({ success: false, message: 'Room has ended' });
+    }
+
+    if (!canControlMedia(room, req.userId)) {
+      return res.status(403).json({ success: false, message: 'Permission denied' });
+    }
+
+    const isAudio = req.file.mimetype?.startsWith('audio/');
+    const title = String(
+      req.body?.title || req.file.originalname || (isAudio ? 'Uploaded Audio' : 'Uploaded Video')
+    ).slice(0, 160);
+    const mediaUrl = `${req.protocol}://${req.get('host')}/uploads/room-media/${req.file.filename}`;
+    const now = new Date();
+
+    room.media = room.media || {};
+    room.media.current = {
+      source: 'upload',
+      url: mediaUrl,
+      title,
+      duration: null,
+      currentTime: 0,
+      startTime: now,
+      pausedAt: now,
+      metadata: {
+        type: isAudio ? 'local' : 'upload',
+        videoUrl: mediaUrl,
+        audioUrl: isAudio ? mediaUrl : null,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        uploadedBy: req.userId,
+      },
+    };
+    room.status = 'active';
+    room.syncState = {
+      ...(room.syncState || {}),
+      isPlaying: false,
+      baseTimestamp: 0,
+      currentTime: 0,
+      startAt: null,
+      playbackRate: 1,
+      lastUpdated: now,
+      updatedBy: req.userId,
+    };
+
+    await room.save();
+
+    res.json({
+      success: true,
+      data: {
+        media: {
+          type: isAudio ? 'local' : 'upload',
+          videoUrl: mediaUrl,
+          audioUrl: isAudio ? mediaUrl : undefined,
+          url: mediaUrl,
+          title,
+          duration: null,
+        },
+      },
     });
   } catch (error) {
     next(error);

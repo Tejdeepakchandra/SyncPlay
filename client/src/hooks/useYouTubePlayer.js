@@ -53,7 +53,7 @@ const mapState = (code) => {
   }
 };
 
-export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChange, onReady, onVideoChange }) => {
+export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChange, onReady, onVideoChange, onError }) => {
   const playerRef = useRef(null);
   const wrapperRef = useRef(null);
   const [duration, setDuration] = useState(0);
@@ -72,12 +72,14 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
   const onStateChangeRef = useRef(onStateChange);
   const onReadyRef = useRef(onReady);
   const onVideoChangeRef = useRef(onVideoChange);
+  const onErrorRef = useRef(onError);
 
   useEffect(() => {
     onStateChangeRef.current = onStateChange;
     onReadyRef.current = onReady;
     onVideoChangeRef.current = onVideoChange;
-  }, [onStateChange, onReady, onVideoChange]);
+    onErrorRef.current = onError;
+  }, [onStateChange, onReady, onVideoChange, onError]);
 
   // Destroy player
   const destroyPlayer = useCallback(() => {
@@ -114,14 +116,17 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
 
     let cancelled = false;
     let retryCount = 0;
-    const maxRetries = 10;
+    const maxRetries = 120;
 
     const hasMountedIframe = !!wrapperRef.current?.querySelector("iframe");
     const controlsUnchanged = lastControlsEnabledRef.current === controlsEnabled;
     if (playerRef.current?.loadVideoById && hasMountedIframe && playerReadyRef.current && controlsUnchanged) {
       try {
-        playerRef.current.loadVideoById(videoId);
-        playerRef.current.playVideo?.();
+        if (typeof playerRef.current.cueVideoById === "function") {
+          playerRef.current.cueVideoById(videoId);
+        } else {
+          playerRef.current.loadVideoById(videoId);
+        }
         return;
       } catch {
         // Fallback to recreate flow below when player is in bad state.
@@ -135,6 +140,10 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
         if (retryCount < maxRetries) {
           retryCount++;
           setTimeout(tryCreate, 100);
+        } else {
+          setPlayerState("error");
+          onErrorRef.current?.("wrapper_timeout");
+          onStateChangeRef.current?.("error", { errorCode: "wrapper_timeout" });
         }
         return;
       }
@@ -153,12 +162,13 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
           width: "100%",
           height: "100%",
           playerVars: {
-            autoplay: 1,
+            autoplay: 0,
             rel: 0,
             modestbranding: 1,
             playsinline: 1,
-            controls: controlsEnabled ? 1 : 0,
-            disablekb: controlsEnabled ? 0 : 1,
+            // Keep controls visible for all viewers so autoplay-blocked browsers are never stuck on a black frame.
+            controls: 1,
+            disablekb: 0,
             iv_load_policy: 3,
             fs: 0,
             enablejsapi: 1,
@@ -169,23 +179,37 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
               if (cancelled) return;
               playerReadyRef.current = true;
               lastControlsEnabledRef.current = controlsEnabled;
+              if (typeof e.target.cueVideoById === "function") {
+                e.target.cueVideoById(videoId);
+              }
               setDuration(e.target.getDuration());
-              e.target.playVideo();
               onReadyRef.current?.();
             },
             onStateChange: (e) => {
               if (cancelled) return;
               const state = mapState(e.data);
               setPlayerState(state);
-              onStateChangeRef.current?.(state);
+              const playerTime = typeof e.target?.getCurrentTime === "function"
+                ? e.target.getCurrentTime()
+                : 0;
+              const playerDuration = typeof e.target?.getDuration === "function"
+                ? e.target.getDuration()
+                : 0;
+              onStateChangeRef.current?.(state, {
+                eventCode: e.data,
+                playerTime,
+                playerDuration,
+              });
               if (e.target.getDuration() > 0) {
                 setDuration(e.target.getDuration());
               }
             },
-            onError: () => {
+            onError: (e) => {
               if (cancelled) return;
+              const errorCode = Number.isFinite(e?.data) ? e.data : null;
               setPlayerState("error");
-              onStateChangeRef.current?.("error");
+              onErrorRef.current?.(errorCode);
+              onStateChangeRef.current?.("error", { errorCode });
             },
           },
         });
