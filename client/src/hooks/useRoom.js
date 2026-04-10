@@ -363,7 +363,11 @@ export const useRoom = (roomCode) => {
     setParticipants((prev) =>
       prev.map((p) =>
         p.userId === targetUserId
-          ? { ...p, restrictions: data.restrictions || p.restrictions }
+          ? {
+              ...p,
+              restrictions: data.restrictions || p.restrictions,
+              permissions: data.permissions || p.permissions,
+            }
           : p
       )
     );
@@ -373,6 +377,7 @@ export const useRoom = (roomCode) => {
       detail: {
         targetUserId,
         restrictions: data.restrictions,
+        permissions: data.permissions,
         updatedBy: data.updatedBy
       }
     }));

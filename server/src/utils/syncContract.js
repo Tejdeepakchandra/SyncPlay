@@ -32,18 +32,18 @@ const SYNC_CONTRACT = {
    
   driftThresholds: {
     ignore: 0.15,     // <150ms - do nothing
-    smooth: 0.4,      // 150-400ms - adjust playback rate
-    gradual: 1.5,     // 400ms-1.5s - gradual seek
-    hardSeek: 2.5     // >1.5s - immediate seek
+    smooth: 0.4,
+    gradual: 1.3,
+    hardSeek: 2.0
   },
 
   
    // Adaptive buffer based on latency (ms)
    
   adaptiveBuffer: (latencyMs) => {
-    if (latencyMs < 150) return 800;    // 800ms buffer
-    if (latencyMs < 400) return 1200;   // 1.2s buffer
-    return 2000;                         // 2s buffer for slow connections
+    if (latencyMs < 150) return 250;
+    if (latencyMs < 350) return 400;
+    return 700;
   }
 };
 

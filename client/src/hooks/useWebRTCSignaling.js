@@ -202,6 +202,13 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       }));
     };
 
+    const handleReconnect = () => {
+      if (isHostRef.current) return;
+      const id = userIdRef.current;
+      if (!id) return;
+      socket.emit("webrtc:request-stream", { roomCode, from: id });
+    };
+
     // Register listeners
     socket.on("webrtc:request-stream", handleRequestStream);
     socket.on("webrtc:offer", handleOffer);
@@ -210,6 +217,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
     socket.on("webrtc:stream-stopped", handleStreamStopped);
     socket.on("audio:permission-denied", handleAudioPermissionDenied);
     socket.on("video:permission-denied", handleVideoPermissionDenied);
+    socket.on("connect", handleReconnect);
 
     // If not host, request stream on connection and retry for late-join scenarios.
     if (!isHostRef.current) {
@@ -240,6 +248,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
         socket.off("webrtc:stream-stopped", handleStreamStopped);
         socket.off("audio:permission-denied", handleAudioPermissionDenied);
         socket.off("video:permission-denied", handleVideoPermissionDenied);
+        socket.off("connect", handleReconnect);
       };
     }
 
@@ -252,6 +261,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       socket.off("webrtc:stream-stopped", handleStreamStopped);
       socket.off("audio:permission-denied", handleAudioPermissionDenied);
       socket.off("video:permission-denied", handleVideoPermissionDenied);
+      socket.off("connect", handleReconnect);
     };
   }, [roomCode, userId, createPeerForParticipant, createPeerForHost, closeAllPeers]);
 

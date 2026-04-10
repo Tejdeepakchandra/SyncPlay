@@ -417,9 +417,24 @@ module.exports = (socket, io) => {
         micDisabledByHost: restrictions.micDisabledByHost ?? currentRestrictions.micDisabledByHost ?? false,
         videoDisabledByHost: restrictions.videoDisabledByHost ?? currentRestrictions.videoDisabledByHost ?? false,
         chatDisabledByHost: restrictions.chatDisabledByHost ?? currentRestrictions.chatDisabledByHost ?? false,
+        mediaControlDisabledByHost: restrictions.mediaControlDisabledByHost ?? currentRestrictions.mediaControlDisabledByHost ?? false,
         restrictedAt: new Date(),
         restrictedBy: socket.userId
       };
+
+      // Keep canControl in sync with media-control restriction for this participant.
+      if (participant.restrictions.mediaControlDisabledByHost) {
+        participant.permissions = {
+          ...(participant.permissions || {}),
+          canControl: false,
+        };
+      } else {
+        const rolePermissions = buildPermissionsForRole(participant.role);
+        participant.permissions = {
+          ...(participant.permissions || {}),
+          canControl: !!rolePermissions.canControl,
+        };
+      }
 
       room.version += 1;
       await room.save();
@@ -431,6 +446,7 @@ module.exports = (socket, io) => {
         userId: targetUserId,
         targetUserId,
         restrictions: participant.restrictions,
+        permissions: participant.permissions,
         updatedBy: socket.userId,
         message: `Permissions have been changed by the host`
       });
@@ -438,7 +454,8 @@ module.exports = (socket, io) => {
       callback({ 
         success: true, 
         message: 'Permissions updated',
-        restrictions: participant.restrictions
+        restrictions: participant.restrictions,
+        permissions: participant.permissions,
       });
     } catch (error) {
       console.error('[PERMISSIONS] ❌ Error updating permissions:', error);

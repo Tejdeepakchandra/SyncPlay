@@ -216,9 +216,20 @@ const MusicRoom = () => {
     isHost,
   });
 
+  // Determine user role and media-control permissions
+  const myRole = myParticipant?.role;
+  const isCurrentUserHost = Boolean(myUserId && room?.hostId === myUserId);
+  const userRole = isCurrentUserHost
+    ? "host"
+    : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
+  const canControl = isCurrentUserHost
+    ? true
+    : (!myRestrictions.mediaControlDisabledByHost && myParticipant?.permissions?.canControl !== false);
+
   // YouTube player for music (hidden)
   const ytPlayer = useYouTubePlayer({
     videoId: currentTrack?.videoId,
+    controlsEnabled: canControl,
     onStateChange: (state) => {
       setIsPlaying(state === "playing");
       if (state === "ended") {
@@ -239,18 +250,15 @@ const MusicRoom = () => {
     },
   });
 
-  // Determine user role
-  const myRole = myParticipant?.role;
-  const isCurrentUserHost = Boolean(myUserId && room?.hostId === myUserId);
-  const userRole = isCurrentUserHost
-    ? "host"
-    : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
-  const canControl = userRole === "host" || userRole === "co-host" || userRole === "cohost";
-
   const roomSync = useRoomSync({
     roomCode,
+    mode: "advanced",
     isHost,
     isCoHost: userRole === "co-host" || userRole === "cohost",
+    canControlOverride: canControl,
+    timeUnit: "seconds",
+    enableDriftCorrection: true,
+    driftIntervalMs: 5000,
     onMediaChange: (media) => {
       if (media?.type === "youtube" && media.videoId) {
         setCurrentTrack({
@@ -289,33 +297,80 @@ const MusicRoom = () => {
         setShowSourcePicker(true);
       }
     },
-    onPlay: () => {
+    onPlay: (timeSec = 0) => {
       setIsPlaying(true);
       if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+        if (Number.isFinite(timeSec) && localDuration > 0) {
+          localAudioRef.current.currentTime = Math.max(0, Math.min(localDuration, timeSec));
+          setLocalCurrentTime(localAudioRef.current.currentTime);
+        }
         localAudioRef.current.play().catch(() => {});
       } else {
+        if (Number.isFinite(timeSec)) {
+          ytPlayer.seekTo(timeSec, true);
+        }
         ytPlayer.play();
       }
     },
-    onPause: () => {
+    onPause: (timeSec = 0) => {
       setIsPlaying(false);
       if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+        if (Number.isFinite(timeSec) && localDuration > 0) {
+          localAudioRef.current.currentTime = Math.max(0, Math.min(localDuration, timeSec));
+          setLocalCurrentTime(localAudioRef.current.currentTime);
+        }
         localAudioRef.current.pause();
       } else {
+        if (Number.isFinite(timeSec)) {
+          ytPlayer.seekTo(timeSec, true);
+        }
         ytPlayer.pause();
       }
     },
-    onSeek: (pct) => {
-      if (typeof pct === "number") {
+    onSeek: (timeSec) => {
+      if (typeof timeSec === "number") {
         if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
-          localAudioRef.current.currentTime = (pct / 100) * localDuration;
+          localAudioRef.current.currentTime = Math.max(0, Math.min(localDuration, timeSec));
           setLocalCurrentTime(localAudioRef.current.currentTime);
         } else {
-          ytPlayer.seekToPercent(pct);
+          ytPlayer.seekTo(timeSec, true);
         }
       }
     },
+    onSyncUpdate: () => {
+      _setSyncStatus("synced");
+    },
+    onSyncConflict: ({ event, error }) => {
+      _setSyncStatus("syncing");
+      toast("Sync conflict resolved", {
+        description: error
+          ? `Your ${event} action was rejected (${error}). Room state was reapplied.`
+          : `Your ${event} action was stale and room state was reapplied.`,
+        duration: 2200,
+      });
+    },
   });
+
+  const getCurrentMediaTime = useCallback(() => {
+    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+      return localAudioRef.current.currentTime || 0;
+    }
+    return ytPlayer.currentTime || 0;
+  }, [currentTrack?.sourceType, ytPlayer.currentTime]);
+
+  const getCurrentMediaDuration = useCallback(() => {
+    if (currentTrack?.sourceType === "local") return localDuration || 0;
+    return ytPlayer.duration || 0;
+  }, [currentTrack?.sourceType, localDuration, ytPlayer.duration]);
+
+  useEffect(() => {
+    if (roomSync.controlPending) {
+      _setSyncStatus("syncing");
+      return;
+    }
+
+    _setSyncStatus("synced");
+  }, [roomSync.controlPending]);
 
   // Build participants list
   useEffect(() => {
@@ -455,6 +510,29 @@ const MusicRoom = () => {
     }));
   }, [room?.settings]);
 
+  useEffect(() => {
+    const handleConnected = () => {
+      _setSyncStatus("synced");
+      roomSync.requestSync?.();
+    };
+    const handleDisconnected = () => {
+      _setSyncStatus("syncing");
+    };
+    const handleHostChanged = () => {
+      roomSync.requestSync?.();
+    };
+
+    socket.on("connect", handleConnected);
+    socket.on("disconnect", handleDisconnected);
+    socket.on("room:new-host", handleHostChanged);
+
+    return () => {
+      socket.off("connect", handleConnected);
+      socket.off("disconnect", handleDisconnected);
+      socket.off("room:new-host", handleHostChanged);
+    };
+  }, [roomSync]);
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -471,27 +549,28 @@ const MusicRoom = () => {
 
   // Playback controls
   const togglePlayPause = useCallback(() => {
+    if (roomSync.controlPending) return;
     if (currentTrack?.sourceType === "local" && localAudioRef.current) {
       if (isPlaying) {
         localAudioRef.current.pause();
         setIsPlaying(false);
-        if (canControl) roomSync.broadcastPause();
+        if (canControl) roomSync.broadcastPause(getCurrentMediaTime(), getCurrentMediaDuration());
       } else {
         localAudioRef.current.play().catch(() => {});
         setIsPlaying(true);
-        if (canControl) roomSync.broadcastPlay();
+        if (canControl) roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
       }
       return;
     }
 
     if (isPlaying) {
       ytPlayer.pause();
-      if (canControl) roomSync.broadcastPause();
+      if (canControl) roomSync.broadcastPause(getCurrentMediaTime(), getCurrentMediaDuration());
     } else {
       ytPlayer.play();
-      if (canControl) roomSync.broadcastPlay();
+      if (canControl) roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
     }
-  }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType]);
+  }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType, getCurrentMediaTime, getCurrentMediaDuration]);
 
   const playNext = useCallback(() => {
     if (queue.length > 0) {
@@ -628,9 +707,9 @@ const MusicRoom = () => {
         artist: nextTrack.artist,
         thumbnail: nextTrack.thumbnail,
       });
-      roomSync.broadcastPlay();
+      roomSync.broadcastPlay(0, ytPlayer.duration || 0);
     }
-  }, [canControl, roomSync]);
+  }, [canControl, roomSync, ytPlayer.duration]);
 
   const handleSelectLocalTrack = useCallback((file, audioUrl) => {
     const nextTrack = {
@@ -662,17 +741,21 @@ const MusicRoom = () => {
   }, []);
 
   const handleSeek = useCallback((pct) => {
+    if (roomSync.controlPending) return;
     if (!canControl) return;
 
+    const duration = getCurrentMediaDuration();
+    const targetSec = duration > 0 ? (pct / 100) * duration : 0;
+
     if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
-      localAudioRef.current.currentTime = (pct / 100) * localDuration;
+      localAudioRef.current.currentTime = targetSec;
       setLocalCurrentTime(localAudioRef.current.currentTime);
     } else {
-      ytPlayer.seekToPercent(pct);
+      ytPlayer.seekTo(targetSec, true);
     }
 
-    roomSync.broadcastSeek(pct);
-  }, [canControl, ytPlayer, roomSync, currentTrack?.sourceType, localDuration]);
+    roomSync.broadcastSeek(targetSec, duration);
+  }, [canControl, ytPlayer, roomSync, currentTrack?.sourceType, localDuration, getCurrentMediaDuration]);
 
   const displayCurrentTime = currentTrack?.sourceType === "local" ? localCurrentTime : ytPlayer.currentTime;
   const displayDuration = currentTrack?.sourceType === "local" ? localDuration : ytPlayer.duration;
@@ -712,6 +795,14 @@ const MusicRoom = () => {
         roomCode,
         targetUserId: target.userId,
         restrictions: { chatDisabledByHost: !updates.chatEnabled },
+      });
+    }
+
+    if (updates.mediaControlEnabled !== undefined) {
+      socket.emit("room:update-participant-permissions", {
+        roomCode,
+        targetUserId: target.userId,
+        restrictions: { mediaControlDisabledByHost: !updates.mediaControlEnabled },
       });
     }
 

@@ -168,9 +168,14 @@ const HostControlsPanel = ({
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${badge.className}`}>
                           {badge.label}
                         </span>
-                        {(restrictions.micDisabledByHost || restrictions.videoDisabledByHost || restrictions.chatDisabledByHost) && (
+                        {(restrictions.micDisabledByHost || restrictions.videoDisabledByHost || restrictions.chatDisabledByHost || restrictions.mediaControlDisabledByHost) && (
                           <p className="text-[10px] text-destructive mt-1">
-                            {[restrictions.micDisabledByHost ? "Mic blocked" : null, restrictions.videoDisabledByHost ? "Video blocked" : null, restrictions.chatDisabledByHost ? "Chat blocked" : null]
+                            {[
+                              restrictions.micDisabledByHost ? "Mic blocked" : null,
+                              restrictions.videoDisabledByHost ? "Video blocked" : null,
+                              restrictions.chatDisabledByHost ? "Chat blocked" : null,
+                              restrictions.mediaControlDisabledByHost ? "Media blocked" : null,
+                            ]
                               .filter(Boolean)
                               .join(" • ")}
                           </p>
@@ -206,6 +211,15 @@ const HostControlsPanel = ({
                           onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
                         >
                           {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className={`h-7 w-7 ${restrictions.mediaControlDisabledByHost ? "text-destructive" : "text-foreground"}`}
+                          onClick={() => onUpdateParticipant(p.name, { mediaControlEnabled: !!restrictions.mediaControlDisabledByHost })}
+                          title={restrictions.mediaControlDisabledByHost ? "Allow media control" : "Block media control"}
+                        >
+                          {restrictions.mediaControlDisabledByHost ? <Ban className="w-3.5 h-3.5" /> : <Sliders className="w-3.5 h-3.5" />}
                         </Button>
 
                         <div className="flex-1" />

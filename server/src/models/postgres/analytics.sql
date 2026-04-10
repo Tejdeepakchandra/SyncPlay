@@ -1,13 +1,3 @@
-/**
- * PostgreSQL schema and migration SQL for analytics tables.
- *
- * Run this SQL in Supabase SQL Editor.
- * Notes:
- * - Uses TEXT ids so Mongo ObjectId and Clerk ids can be stored without UUID cast failures.
- * - Includes ALTER statements so existing installations can be migrated safely.
- */
-
-module.exports = `
 -- Required for gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -97,39 +87,6 @@ CREATE TABLE IF NOT EXISTS leaderboards (
     UNIQUE(period, user_id)
 );
 
--- Migration-safe fixes for older schemas
-ALTER TABLE rooms ALTER COLUMN id TYPE TEXT USING id::text;
-ALTER TABLE rooms ALTER COLUMN host_id TYPE TEXT USING host_id::text;
-
-ALTER TABLE room_events ALTER COLUMN room_id TYPE TEXT USING room_id::text;
-ALTER TABLE room_events ALTER COLUMN user_id TYPE TEXT USING user_id::text;
-ALTER TABLE room_events ALTER COLUMN data TYPE JSONB USING COALESCE(data::jsonb, '{}'::jsonb);
-
-ALTER TABLE room_analytics ALTER COLUMN room_id TYPE TEXT USING room_id::text;
-ALTER TABLE room_analytics ADD COLUMN IF NOT EXISTS participant_count INTEGER DEFAULT 0;
-ALTER TABLE room_analytics ADD COLUMN IF NOT EXISTS play_pause_count INTEGER DEFAULT 0;
-ALTER TABLE room_analytics ADD COLUMN IF NOT EXISTS seek_count INTEGER DEFAULT 0;
-ALTER TABLE room_analytics ADD COLUMN IF NOT EXISTS total_watch_time_minutes INTEGER DEFAULT 0;
-ALTER TABLE room_analytics ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-
--- Backfill from legacy column if present
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'room_analytics' AND column_name = 'total_participants'
-  ) THEN
-    EXECUTE 'UPDATE room_analytics SET participant_count = COALESCE(participant_count, total_participants)';
-  END IF;
-END $$;
-
-ALTER TABLE user_engagement ALTER COLUMN user_id TYPE TEXT USING user_id::text;
-ALTER TABLE user_engagement ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-
-ALTER TABLE moment_highlights ALTER COLUMN room_id TYPE TEXT USING room_id::text;
-ALTER TABLE moment_highlights ALTER COLUMN moment_id TYPE TEXT USING moment_id::text;
-ALTER TABLE leaderboards ALTER COLUMN user_id TYPE TEXT USING user_id::text;
-
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_rooms_room_code ON rooms(room_code);
 CREATE INDEX IF NOT EXISTS idx_room_events_room_id_created_at ON room_events(room_id, created_at DESC);
@@ -159,4 +116,3 @@ CREATE TRIGGER update_user_engagement_updated_at
     BEFORE UPDATE ON user_engagement
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-`;

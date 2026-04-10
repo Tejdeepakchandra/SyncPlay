@@ -31,6 +31,7 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
   const shouldInitiateRef = useRef(null);
   const createAndSendOfferRef = useRef(null);
   const closeAllPeersRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
   
   // Stable handler refs - these prevent socket.off() from failing due to stale references
   const handlersRef = useRef({
@@ -593,6 +594,36 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     socket.on("webrtc-mesh:answer", wrappedAnswerHandler);
     socket.on("webrtc-mesh:ice-candidate", wrappedCandidateHandler);
 
+    const handleReconnect = () => {
+      const reconnectUserId = userIdRef.current;
+      if (!roomCode || !reconnectUserId || !enabledRef.current) return;
+
+      console.log(`[WebRTC Mesh] 🔄 Socket reconnected, rejoining mesh for ${reconnectUserId}`);
+      closeAllPeersRef.current?.();
+      socket.emit("webrtc-mesh:join", { roomCode, from: reconnectUserId });
+
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      reconnectTimerRef.current = setTimeout(() => {
+        (participantIdsRef.current || []).forEach((participantId) => {
+          if (participantId === reconnectUserId) return;
+          if (shouldInitiateRef.current?.(reconnectUserId, participantId)) {
+            createAndSendOfferRef.current?.(participantId);
+          }
+        });
+      }, 180);
+    };
+
+    const handleDisconnect = () => {
+      if (!enabledRef.current) return;
+      console.log("[WebRTC Mesh] ⚠️ Socket disconnected, clearing peers for clean recovery");
+      closeAllPeersRef.current?.();
+    };
+
+    socket.on("connect", handleReconnect);
+    socket.on("disconnect", handleDisconnect);
+
     // Announce join to mesh
     console.log(`[WebRTC Mesh] 📢 Announcing join to mesh: ${myId}`);
     socket.emit("webrtc-mesh:join", { roomCode, from: myId });
@@ -623,6 +654,12 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       socket.off("webrtc-mesh:offer", wrappedOfferHandler);
       socket.off("webrtc-mesh:answer", wrappedAnswerHandler);
       socket.off("webrtc-mesh:ice-candidate", wrappedCandidateHandler);
+      socket.off("connect", handleReconnect);
+      socket.off("disconnect", handleDisconnect);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
   }, [roomCode, userId, enabled]);
 

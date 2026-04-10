@@ -47,6 +47,10 @@ module.exports = (socket, io) => {
         
         // If moment was detected, broadcast it from HANDLER
         if (result.detected && result.moment) {
+          const participantIds = (result.moment.participants || [])
+            .map((p) => String(p.userId || ''))
+            .filter(Boolean);
+
           io.to(roomCode).emit('moment:detected', {
             momentId: result.moment._id,
             type: result.moment.type,
@@ -56,6 +60,16 @@ module.exports = (socket, io) => {
           
           // If high intensity, trigger capture from HANDLER
           if (result.captureJobId) {
+            try {
+              await captureService.initializeCapture(
+                result.moment._id.toString(),
+                participantIds,
+                result.captureJobId
+              );
+            } catch (captureInitError) {
+              console.error('Capture init error:', captureInitError.message);
+            }
+
             io.to(roomCode).emit('moment:capture-start', {
               momentId: result.moment._id,
               captureJobId: result.captureJobId,
@@ -117,12 +131,36 @@ module.exports = (socket, io) => {
         });
         
         if (result.detected && result.moment) {
+          const participantIds = (result.moment.participants || [])
+            .map((p) => String(p.userId || ''))
+            .filter(Boolean);
+
           io.to(roomCode).emit('moment:detected', {
             momentId: result.moment._id,
             type: result.moment.type,
             timestamp: result.moment.timestamp,
             intensity: result.moment.intensity
           });
+
+          if (result.captureJobId) {
+            try {
+              await captureService.initializeCapture(
+                result.moment._id.toString(),
+                participantIds,
+                result.captureJobId
+              );
+            } catch (captureInitError) {
+              console.error('Capture init error:', captureInitError.message);
+            }
+
+            io.to(roomCode).emit('moment:capture-start', {
+              momentId: result.moment._id,
+              captureJobId: result.captureJobId,
+              timestamp: result.moment.timestamp,
+              duration: result.moment.duration,
+              intensity: result.moment.intensity
+            });
+          }
         }
         
         callback?.({
@@ -210,6 +248,45 @@ module.exports = (socket, io) => {
       
     } catch (error) {
       console.error('Moment upload error:', error);
+      callback?.({ success: false, error: error.message });
+    }
+  });
+
+  /**
+   * Participant upload pipeline (non-breaking addition).
+   * Stores participant upload metadata and finalizes when enough uploads are available.
+   */
+  socket.on('moment:capture-upload-participant', async ({
+    captureJobId,
+    userId,
+    videoData
+  }, callback) => {
+    try {
+      if (!captureJobId || !videoData) {
+        return callback?.({ success: false, error: 'Missing captureJobId or videoData' });
+      }
+
+      const uploadResult = await captureService.handleParticipantUpload(
+        captureJobId,
+        userId || socket.userId,
+        videoData
+      );
+
+      if (uploadResult.ready) {
+        const readyMoment = await captureService.processCapture(captureJobId);
+        io.to(readyMoment.roomCode).emit('moment:ready', {
+          momentId: readyMoment._id,
+          thumbnail: readyMoment.capturedVideo?.thumbnailUrl
+        });
+      }
+
+      callback?.({
+        success: true,
+        uploadsReceived: uploadResult.uploadsReceived,
+        ready: uploadResult.ready,
+      });
+    } catch (error) {
+      console.error('Participant capture upload error:', error);
       callback?.({ success: false, error: error.message });
     }
   });

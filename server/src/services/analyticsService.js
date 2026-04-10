@@ -74,10 +74,12 @@ async incrementSyncAction(roomId, actionType) {
 
     
     await pgPool.query(
-      `UPDATE room_analytics 
-       SET ${column} = ${column} + 1,
-           updated_at = NOW()
-       WHERE room_id = $1 AND date = CURRENT_DATE`,
+      `INSERT INTO room_analytics (room_id, date, ${column})
+       VALUES ($1, CURRENT_DATE, 1)
+       ON CONFLICT (room_id, date)
+       DO UPDATE SET
+         ${column} = room_analytics.${column} + 1,
+         updated_at = NOW()`,
       [roomId]
     );
   } catch (error) {
@@ -119,7 +121,9 @@ async incrementSyncAction(roomId, actionType) {
           `INSERT INTO user_engagement (user_id, date, ${column})
            VALUES ($1, CURRENT_DATE, $2)
            ON CONFLICT (user_id, date) 
-           DO UPDATE SET ${column} = user_engagement.${column} + $2`,
+           DO UPDATE SET 
+             ${column} = user_engagement.${column} + $2,
+             updated_at = NOW()`,
           values
         );
       } else {
@@ -127,13 +131,27 @@ async incrementSyncAction(roomId, actionType) {
           `INSERT INTO user_engagement (user_id, date, ${column})
            VALUES ($1, CURRENT_DATE, 1)
            ON CONFLICT (user_id, date) 
-           DO UPDATE SET ${column} = user_engagement.${column} + 1`,
+           DO UPDATE SET 
+             ${column} = user_engagement.${column} + 1,
+             updated_at = NOW()`,
           values
         );
       }
     } catch (error) {
       console.error('Log user action error:', error);
     }
+  }
+
+  // Backward-compatible alias used by some handlers.
+  async recordUserAction(userId, action, metadata = {}) {
+    const actionMap = {
+      send_message: 'message',
+      send_reaction: 'reaction',
+      join_room: 'join',
+      create_room: 'create',
+    };
+    const normalizedAction = actionMap[action] || action;
+    return this.logUserAction(userId, normalizedAction, metadata);
   }
 }
 

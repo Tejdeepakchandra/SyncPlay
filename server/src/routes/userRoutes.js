@@ -55,8 +55,8 @@ router.put('/me', authMiddleware, async (req, res, next) => {
     if (bio !== undefined) updateData.bio = bio;
     if (preferences) updateData.preferences = preferences;
 
-    const user = await User.findByIdAndUpdate(
-      req.userId,
+    const user = await User.findOneAndUpdate(
+      { clerkId: req.userId },
       { $set: updateData },
       { new: true, runValidators: true }
     ).select('-friends -__v');
