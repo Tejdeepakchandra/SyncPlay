@@ -180,6 +180,9 @@ const MusicRoom = () => {
   const [_showAudioBubbles, _setShowAudioBubbles] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isLeavingRoom, setIsLeavingRoom] = useState(false);
+  const [isUploadingTrack, setIsUploadingTrack] = useState(false);
+  const [uploadTrackProgress, setUploadTrackProgress] = useState(0);
+  const [uploadTrackStatus, setUploadTrackStatus] = useState("");
   const [isMuted, setIsMuted] = useState(false);
   const [syncStatus, _setSyncStatus] = useState("synced");
   const [localDuration, setLocalDuration] = useState(0);
@@ -338,6 +341,7 @@ const MusicRoom = () => {
         });
         setShowSourcePicker(false);
         setTrackEnded(false);
+        setIsPlaying(false);
       } else if (media?.type === "local" && !media.audioUrl) {
         toast("Host selected a local file", {
           description: "Local uploads are currently host-only in this version.",
@@ -506,9 +510,11 @@ const MusicRoom = () => {
       audio.addEventListener("durationchange", onDurationChange);
       audio.addEventListener("ended", onEnded);
 
-      audio.play().catch(() => {
-        setIsPlaying(false);
-      });
+      if (isPlaying) {
+        audio.play().catch(() => {
+          setIsPlaying(false);
+        });
+      }
 
       return () => {
         audio.removeEventListener("timeupdate", onTimeUpdate);
@@ -516,7 +522,7 @@ const MusicRoom = () => {
         audio.removeEventListener("ended", onEnded);
       };
     }
-  }, [currentTrack?.audioUrl, currentTrack?.sourceType, isMuted, musicVolume]);
+  }, [currentTrack?.audioUrl, currentTrack?.sourceType, isMuted, musicVolume, isPlaying]);
 
   useEffect(() => {
     if (currentTrack?.sourceType === "local" && localAudioRef.current) {
@@ -773,6 +779,10 @@ const MusicRoom = () => {
     let usedLocalFallback = false;
 
     try {
+      setIsUploadingTrack(true);
+      setUploadTrackProgress(0);
+      setUploadTrackStatus("Uploading audio to room");
+
       const formData = new FormData();
       formData.append("video", file);
       formData.append("title", file?.name || "Local Audio");
@@ -780,6 +790,17 @@ const MusicRoom = () => {
       const response = await api.post(`/rooms/${roomCode}/media/upload`, formData, {
         headers: {
           "Content-Type": "multipart/form-data",
+        },
+        timeout: 120000,
+        onUploadProgress: (evt) => {
+          if (!evt?.total) {
+            setUploadTrackProgress((prev) => Math.max(prev, 10));
+            setUploadTrackStatus("Uploading audio to room");
+            return;
+          }
+          const pct = Math.max(0, Math.min(95, Math.round((evt.loaded / evt.total) * 100)));
+          setUploadTrackProgress(pct);
+          setUploadTrackStatus(pct >= 95 ? "Processing in cloud..." : "Uploading audio to room");
         },
       });
 
@@ -800,7 +821,7 @@ const MusicRoom = () => {
       setCurrentTrack(nextTrack);
       setShowSourcePicker(false);
       setTrackEnded(false);
-      setIsPlaying(true);
+      setIsPlaying(false);
       setQueue((prev) => [...prev, nextTrack]);
 
       roomSync.broadcastMediaChange({
@@ -811,13 +832,17 @@ const MusicRoom = () => {
         videoUrl: sharedUrl,
         url: sharedUrl,
       });
-      roomSync.broadcastPlay(0, 0);
+      roomSync.broadcastPause(0, 0);
+
+      setUploadTrackProgress(100);
+      setUploadTrackStatus("Upload complete. Ready to play");
 
       toast.success("Audio uploaded", {
-        description: "Shared with everyone in the room.",
+        description: "Shared in paused state. Press play when everyone is ready.",
       });
     } catch (error) {
       usedLocalFallback = true;
+      setUploadTrackStatus("Upload failed, using local-only playback");
       const localUrl = audioUrl || URL.createObjectURL(file);
       const nextTrack = {
         title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
@@ -830,16 +855,27 @@ const MusicRoom = () => {
       setCurrentTrack(nextTrack);
       setShowSourcePicker(false);
       setTrackEnded(false);
-      setIsPlaying(true);
+      setIsPlaying(false);
       setQueue((prev) => [...prev, nextTrack]);
 
-      toast("Upload failed, using local-only playback", {
-        description: error?.response?.data?.message || error?.message || "Only you can hear this file.",
-      });
+      if (error?.code === "ECONNABORTED") {
+        toast.error("Upload is taking longer than expected", {
+          description: "Cloud processing timed out. Using local-only fallback for now.",
+        });
+      } else {
+        toast("Upload failed, using local-only playback", {
+          description: error?.response?.data?.message || error?.message || "Only you can hear this file.",
+        });
+      }
     } finally {
+      setIsUploadingTrack(false);
       if (!usedLocalFallback && audioUrl?.startsWith("blob:")) {
         URL.revokeObjectURL(audioUrl);
       }
+
+      setTimeout(() => {
+        setUploadTrackStatus("");
+      }, 2200);
     }
   }, [canControl, roomCode, roomSync]);
 
@@ -1118,7 +1154,14 @@ const MusicRoom = () => {
         <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-0">
           {showSourcePicker ? (
             canControl ? (
-              <MusicSourcePicker onSelectTrack={handleSelectTrack} onSelectLocal={handleSelectLocalTrack} onSourceChange={() => setShowSourcePicker(true)} />
+              <MusicSourcePicker
+                onSelectTrack={handleSelectTrack}
+                onSelectLocal={handleSelectLocalTrack}
+                onSourceChange={() => setShowSourcePicker(true)}
+                isUploading={isUploadingTrack}
+                uploadProgress={uploadTrackProgress}
+                uploadStatusText={uploadTrackStatus}
+              />
             ) : (
               <div className="text-center p-8">
                 <div className="w-20 h-20 rounded-full bg-muted/30 flex items-center justify-center mx-auto mb-4">

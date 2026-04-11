@@ -3,6 +3,8 @@ const User = require('../models/mongodb/User');
 const redisClient = require('../config/redis');
 const pgPool = require('../config/postgres');
 const analyticsService = require('./analyticsService');
+const mediaCleanupService = require('./mediaCleanupService');
+const cloudinary = require('../utils/cloudinary');
 const fs = require('fs').promises;
 const path = require('path');
 const { generateRoomCode, createRedisKey } = require('../utils/helpers');
@@ -614,6 +616,9 @@ async getRoomParticipants(roomCode) {
       }
 
       // Update status
+      const cloudinaryPublicId = room?.media?.current?.metadata?.cloudinary?.publicId;
+      const cloudinaryResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+
       room.status = ROOM_STATUS.ENDED;
       room.endedAt = new Date();
       room.participants = [];
@@ -621,8 +626,29 @@ async getRoomParticipants(roomCode) {
       room.joinRequests = [];
       room.coHosts = [];
       room.participantCount = 0;
+      room.media = {
+        current: null,
+        queue: [],
+        history: [],
+      };
       room.version += 1;
       await room.save();
+
+      if (cloudinaryPublicId) {
+        try {
+          const result = await cloudinary.deleteAsset(cloudinaryPublicId, cloudinaryResourceType);
+          const ok = result?.result === 'ok' || result?.result === 'not_found';
+          if (!ok) {
+            throw new Error(`Delete failed: ${result?.result || 'unknown'}`);
+          }
+        } catch (_error) {
+          await mediaCleanupService.enqueue(
+            cloudinaryPublicId,
+            cloudinaryResourceType,
+            'room-ended'
+          );
+        }
+      }
 
       // Calculate watch time for analytics
       if (room.startedAt) {

@@ -64,7 +64,7 @@ export const useRoomSync = ({
       if (!Number.isFinite(baseTime) || !Number.isFinite(startAt)) return;
 
       const safeRate = Number.isFinite(playbackRate) ? playbackRate : 1;
-      const scheduleAt = [760];
+      const scheduleAt = [340, 900];
       scheduleAt.forEach((delayMs) => {
         const timer = setTimeout(() => {
           const serverNow = Date.now() + ntpOffsetRef.current;
@@ -75,7 +75,7 @@ export const useRoomSync = ({
           const localPos = typeof getCurrentPosition === "function"
             ? Number(getCurrentPosition())
             : Number.NaN;
-          if (Number.isFinite(localPos) && Math.abs(projected - localPos) < 0.55) {
+          if (Number.isFinite(localPos) && Math.abs(projected - localPos) < 0.22) {
             return;
           }
 
@@ -87,6 +87,7 @@ export const useRoomSync = ({
     };
 
     const force = !!options.force;
+    const forceSeek = !!options.forceSeek;
     const media = playback.media ?? lastMediaRef.current ?? null;
     const mediaSig = getMediaSig(media);
     const hasVersion = Number.isFinite(playback.version);
@@ -110,15 +111,20 @@ export const useRoomSync = ({
     const hasStartAt = typeof playback.startAt === "number";
     const estimatedServerNow = Date.now() + ntpOffsetRef.current;
     const msUntilStart = hasStartAt ? (playback.startAt - estimatedServerNow) : 0;
-    const shouldScheduleStart = playback.isPlaying === true && msUntilStart > 35;
+    const shouldScheduleStart = playback.isPlaying === true && msUntilStart > 160;
 
     if (!playback.isPlaying) {
       clearStartupConvergence();
     }
 
     if (typeof playback.time === "number" && !shouldScheduleStart) {
-      const threshold = timeUnit === "seconds" ? 0.2 : 0.5;
-      if (force || lastAppliedRef.current.time == null || Math.abs(playback.time - lastAppliedRef.current.time) >= threshold) {
+      const threshold = timeUnit === "seconds" ? 0.12 : 0.3;
+      if (
+        forceSeek ||
+        force ||
+        lastAppliedRef.current.time == null ||
+        Math.abs(playback.time - lastAppliedRef.current.time) >= threshold
+      ) {
         handlersRef.current.onSeek?.(playback.time);
         lastAppliedRef.current.time = playback.time;
       }
@@ -224,8 +230,8 @@ export const useRoomSync = ({
     pendingControlTimeoutRef.current = setTimeout(() => {
       setControlPending(null);
       pendingControlTimeoutRef.current = null;
-    }, 1800);
-    driftSuppressUntilRef.current = Date.now() + 2400;
+    }, 900);
+    driftSuppressUntilRef.current = Date.now() + 650;
   }, []);
 
   const clearControlPending = useCallback(() => {
@@ -254,6 +260,12 @@ export const useRoomSync = ({
     if (response.success) {
       if (Number.isFinite(response?.state?.version)) {
         latestVersionRef.current = response.state.version;
+      }
+
+      // For seek, avoid optimistic initiator apply from ACK.
+      // Let authoritative room broadcast/update apply the same seek to everyone.
+      if (eventName === "seek") {
+        return;
       }
 
        // Keep initiator aligned with the same authoritative timeline as everyone else.
@@ -297,11 +309,16 @@ export const useRoomSync = ({
     if (mode === "advanced") {
       const handleMediaChange = (data) => {
         const eventTs = Number(data?.timestamp) || Date.now();
-        if (eventTs <= lastMediaTimestampRef.current) {
+        const media = data?.media || null;
+        const incomingSig = getMediaSig(media);
+        const currentSig = lastAppliedRef.current.mediaSig;
+        const hasRealMediaDelta = incomingSig !== currentSig;
+
+        // Do not drop actual media transitions due same/older timestamps.
+        if (eventTs <= lastMediaTimestampRef.current && !hasRealMediaDelta) {
           return;
         }
 
-        const media = data?.media || null;
         lastMediaTimestampRef.current = eventTs;
         lastMediaRef.current = media;
         handlersRef.current.onMediaChange?.(media);
@@ -310,7 +327,22 @@ export const useRoomSync = ({
 
       const handleSyncUpdate = (data) => {
         const serverTime = data.timestamp;
-        if (typeof serverTime === "number" && serverTime <= lastSyncTimestampRef.current) {
+        const action = data?.action;
+
+        const incomingPlayback = data?.currentPlayback || null;
+        const incomingMediaSig = getMediaSig(incomingPlayback?.media || null);
+        const mediaChanged = incomingMediaSig !== lastAppliedRef.current.mediaSig;
+        const incomingVersion = Number.isFinite(incomingPlayback?.version) ? incomingPlayback.version : null;
+        const versionAdvanced = Number.isFinite(incomingVersion)
+          ? incomingVersion > latestVersionRef.current
+          : false;
+
+        if (
+          typeof serverTime === "number" &&
+          serverTime <= lastSyncTimestampRef.current &&
+          !mediaChanged &&
+          !versionAdvanced
+        ) {
           return;
         }
 
@@ -331,22 +363,25 @@ export const useRoomSync = ({
           serverTime,
           clientTime,
           offset,
-          currentPlayback: data.currentPlayback,
+          currentPlayback: incomingPlayback,
         });
 
         const hasAppliedState = lastAppliedRef.current.version >= 0;
-        applyPlaybackState(data.currentPlayback, { force: !hasAppliedState });
+        applyPlaybackState(incomingPlayback, {
+          force: !hasAppliedState,
+          forceSeek: action === "seek",
+        });
       };
 
       const handleStateUpdate = (data) => {
         const state = data?.state;
         if (!state) return;
-        driftSuppressUntilRef.current = Date.now() + 1200;
+        driftSuppressUntilRef.current = Date.now() + 850;
         const playback = {
           ...toPlaybackFromState(state),
           media: data?.media || lastMediaRef.current,
         };
-        applyPlaybackState(playback);
+        applyPlaybackState(playback, { forceSeek: data?.action === "seek" });
       };
 
       socket.on("sync:media-change", handleMediaChange);
@@ -599,7 +634,7 @@ export const useRoomSync = ({
           lastControlEmitRef.current = { event: "seek", at: Date.now(), time: finalPayload.newTime };
           markControlPending("seek");
           socket.emit("sync:seek", finalPayload, (response) => handleControlAck("seek", finalPayload, response));
-        }, 120);
+        }, 20);
         return;
       }
     }

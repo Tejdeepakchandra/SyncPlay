@@ -282,10 +282,9 @@ class SyncService {
         // When seeking, set new base timestamp
         newState.baseTimestamp = data.newTime;
         
-        // If playing, reset startAt with appropriate buffer
+        // If playing, resume from current server time for seamless seek.
         if (newState.isPlaying) {
-          const buffer = SYNC_CONTRACT.adaptiveBuffer(data.latency || 100);
-          newState.startAt = now + buffer;
+          newState.startAt = now;
         }
         break;
       }

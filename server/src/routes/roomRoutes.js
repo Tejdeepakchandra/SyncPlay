@@ -1,25 +1,14 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
 const roomService = require('../services/roomService');
+const mediaCleanupService = require('../services/mediaCleanupService');
 const Room = require('../models/mongodb/Room');
+const cloudinary = require('../utils/cloudinary');
 const { validateRoomCreation } = require('../middleware/validation');
 const router = express.Router();
 
-const ROOM_MEDIA_DIR = path.resolve(__dirname, '../../../uploads/room-media');
-fs.mkdirSync(ROOM_MEDIA_DIR, { recursive: true });
-
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, ROOM_MEDIA_DIR),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname || '').toLowerCase() || '.mp4';
-      const safeExt = /^[.][a-z0-9]+$/.test(ext) ? ext : '.mp4';
-      const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      cb(null, `${unique}${safeExt}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: {
     fileSize: 250 * 1024 * 1024,
   },
@@ -247,6 +236,13 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
       return res.status(400).json({ success: false, message: 'No video file uploaded' });
     }
 
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Cloudinary is not configured on server',
+      });
+    }
+
     const roomCode = req.params.roomCode;
     const room = await Room.findOne({ roomCode });
     if (!room) {
@@ -265,7 +261,24 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
     const title = String(
       req.body?.title || req.file.originalname || (isAudio ? 'Uploaded Audio' : 'Uploaded Video')
     ).slice(0, 160);
-    const mediaUrl = `${req.protocol}://${req.get('host')}/uploads/room-media/${req.file.filename}`;
+
+    const previousPublicId = room?.media?.current?.metadata?.cloudinary?.publicId || null;
+    const previousResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+
+    const uploadResult = await cloudinary.uploadVideoBuffer(req.file.buffer, {
+      folder: `syncplay/rooms/${room.roomCode}`,
+      resource_type: isAudio ? 'video' : 'video',
+      public_id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      overwrite: false,
+      use_filename: false,
+    });
+
+    const mediaUrl = uploadResult?.secure_url;
+    const mediaPublicId = uploadResult?.public_id;
+    if (!mediaUrl || !mediaPublicId) {
+      throw new Error('Cloudinary upload failed');
+    }
+
     const now = new Date();
 
     room.media = room.media || {};
@@ -285,6 +298,12 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
         mimeType: req.file.mimetype,
         size: req.file.size,
         uploadedBy: req.userId,
+        cloudinary: {
+          publicId: mediaPublicId,
+          resourceType: 'video',
+          bytes: uploadResult?.bytes || req.file.size,
+          format: uploadResult?.format || null,
+        },
       },
     };
     room.status = 'active';
@@ -301,6 +320,10 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
 
     await room.save();
 
+    if (previousPublicId && previousPublicId !== mediaPublicId) {
+      await mediaCleanupService.enqueue(previousPublicId, previousResourceType, 'media-replaced');
+    }
+
     res.json({
       success: true,
       data: {
@@ -311,6 +334,7 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
           url: mediaUrl,
           title,
           duration: null,
+          publicId: mediaPublicId,
         },
       },
     });

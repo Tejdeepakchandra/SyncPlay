@@ -19,6 +19,7 @@ const { setupSocketHandlers } = require('./socket');
 const { authMiddleware } = require('./middleware/auth');
 const { rateLimiter } = require('./middleware/rateLimiter');
 const { startPresenceCleanup } = require('./jobs/presenceCleanup');
+const { startMediaCleanupJob } = require('./jobs/mediaCleanup');
 const { clerkWebhook } = require('./controllers/authController');
 
 // Initialize Express
@@ -26,6 +27,7 @@ const app = express();
 const server = http.createServer(app);
 
 startPresenceCleanup();
+startMediaCleanupJob();
 
 
 // SOCKET.IO SETUP

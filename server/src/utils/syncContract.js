@@ -31,19 +31,19 @@ const SYNC_CONTRACT = {
    // Drift correction thresholds (seconds)
    
   driftThresholds: {
-    ignore: 0.15,     // <150ms - do nothing
-    smooth: 0.4,
-    gradual: 1.3,
-    hardSeek: 2.0
+    ignore: 0.08,
+    smooth: 0.14,
+    gradual: 0.32,
+    hardSeek: 0.65
   },
 
   
    // Adaptive buffer based on latency (ms)
    
   adaptiveBuffer: (latencyMs) => {
-    if (latencyMs < 150) return 250;
-    if (latencyMs < 350) return 400;
-    return 700;
+    if (latencyMs < 120) return 80;
+    if (latencyMs < 260) return 130;
+    return 220;
   }
 };
 

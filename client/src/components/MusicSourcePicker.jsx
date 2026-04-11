@@ -10,6 +10,9 @@ const MusicSourcePicker = ({
   onSelectTrack = null,
   onSelectLocal = null,
   onSourceChange = null,
+  isUploading = false,
+  uploadProgress = 0,
+  uploadStatusText = "",
 }) => {
   const [mode, setMode] = useState("picker");
   const [searchQuery, setSearchQuery] = useState("");
@@ -154,7 +157,11 @@ const MusicSourcePicker = ({
             <motion.button
               whileHover={{ y: -2, scale: 1.01 }}
               whileTap={{ scale: 0.99 }}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (isUploading) return;
+                fileInputRef.current?.click();
+              }}
+              disabled={isUploading}
               className="group text-left rounded-2xl border border-emerald-400/20 bg-emerald-950/35 backdrop-blur p-4 md:p-5 shadow-xl hover:border-emerald-300/45"
             >
               <div className="flex items-center justify-between mb-2">
@@ -162,15 +169,37 @@ const MusicSourcePicker = ({
                 <Wand2 className="w-4 h-4 text-muted-foreground group-hover:text-emerald-300 transition-colors" />
               </div>
               <p className="text-sm font-semibold text-foreground">Upload Local Audio</p>
-              <p className="text-xs text-muted-foreground mt-1">MP3, WAV, M4A and more. Perfect for private demos and unreleased tracks.</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {isUploading
+                  ? `Uploading ${uploadProgress}%...`
+                  : "MP3, WAV, M4A and more. Perfect for private demos and unreleased tracks."}
+              </p>
             </motion.button>
           </div>
+
+          {(isUploading || uploadStatusText) && (
+            <div className="w-full max-w-2xl rounded-xl border border-emerald-300/30 bg-emerald-950/35 p-3">
+              <div className="flex items-center justify-between text-xs text-emerald-100/90 mb-1">
+                <span>{uploadStatusText || "Uploading audio"}</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-emerald-200/15 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-emerald-400 to-lime-400 transition-[width] duration-200" style={{ width: `${uploadProgress}%` }} />
+              </div>
+            </div>
+          )}
 
           <motion.div
             onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
             onDragLeave={() => setIsDragOver(false)}
-            onDrop={handleDrop}
-            className={`w-full max-w-2xl rounded-2xl border border-dashed p-4 text-center transition-colors ${isDragOver ? "border-emerald-300 bg-emerald-400/10" : "border-emerald-300/25 bg-emerald-950/25"}`}
+            onDrop={(e) => {
+              if (isUploading) {
+                e.preventDefault();
+                return;
+              }
+              handleDrop(e);
+            }}
+            className={`w-full max-w-2xl rounded-2xl border border-dashed p-4 text-center transition-colors ${isDragOver ? "border-emerald-300 bg-emerald-400/10" : "border-emerald-300/25 bg-emerald-950/25"} ${isUploading ? "opacity-70" : ""}`}
           >
             <p className="text-xs text-muted-foreground">Drag and drop audio files here to upload instantly</p>
           </motion.div>
@@ -180,6 +209,7 @@ const MusicSourcePicker = ({
             type="file"
             accept="audio/*"
             className="hidden"
+            disabled={isUploading}
             onChange={(e) => handlePickLocalFile(e.target.files?.[0])}
           />
 

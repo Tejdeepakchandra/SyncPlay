@@ -200,7 +200,7 @@ module.exports = (socket, io) => {
           } catch (error) {
             batch.waiters.forEach((w) => w.reject(error));
           }
-        }, 100);
+        }, 20);
       }
 
       pendingSeekByRoom.set(roomCode, existing);
@@ -431,13 +431,40 @@ module.exports = (socket, io) => {
           emitToRoom(roomCode, 'sync:state-update', {
             state: result.state,
             media: currentPlayback.media,
-            userId: socket.userId
+            userId: socket.userId,
+            action: 'seek',
           });
 
           emitToRoom(roomCode, 'sync:update', {
             timestamp: Date.now(),
+            action: 'seek',
             currentPlayback,
           });
+
+          setTimeout(async () => {
+            try {
+              const followupPlayback = await buildCurrentPlayback(roomCode, result.state);
+              emitToRoom(roomCode, 'sync:update', {
+                timestamp: Date.now(),
+                action: 'seek',
+                currentPlayback: followupPlayback,
+              });
+            } catch {
+              // Best-effort follow-up pulse
+            }
+          }, 140);
+
+          setTimeout(async () => {
+            try {
+              const followupPlayback = await buildCurrentPlayback(roomCode, result.state);
+              emitToRoom(roomCode, 'sync:update', {
+                timestamp: Date.now(),
+                currentPlayback: followupPlayback,
+              });
+            } catch {
+              // Best-effort follow-up pulse
+            }
+          }, 260);
 
           // Analytics
           const room = await Room.findOne({ roomCode }).select('_id');
@@ -516,6 +543,18 @@ module.exports = (socket, io) => {
             timestamp: Date.now(),
             currentPlayback,
           });
+
+          setTimeout(async () => {
+            try {
+              const followupPlayback = await buildCurrentPlayback(roomCode, result.state);
+              emitToRoom(roomCode, 'sync:update', {
+                timestamp: Date.now(),
+                currentPlayback: followupPlayback,
+              });
+            } catch {
+              // Best-effort follow-up pulse
+            }
+          }, 220);
 
           const room = await Room.findOne({ roomCode }).select('_id');
           if (room) {
