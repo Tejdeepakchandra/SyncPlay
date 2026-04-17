@@ -39,6 +39,7 @@ export const useRoomSync = ({
   const driftSuppressUntilRef = useRef(0);
   const clientEventSeqRef = useRef(0);
   const lastDriftTickRef = useRef(0);
+  const postSeekDriftTimersRef = useRef([]);
 
   const getMediaSig = useCallback((media) => {
     if (!media) return "none";
@@ -111,7 +112,7 @@ export const useRoomSync = ({
     const hasStartAt = typeof playback.startAt === "number";
     const estimatedServerNow = Date.now() + ntpOffsetRef.current;
     const msUntilStart = hasStartAt ? (playback.startAt - estimatedServerNow) : 0;
-    const shouldScheduleStart = playback.isPlaying === true && msUntilStart > 160;
+    const shouldScheduleStart = playback.isPlaying === true && msUntilStart > 60;
 
     if (!playback.isPlaying) {
       clearStartupConvergence();
@@ -219,19 +220,25 @@ export const useRoomSync = ({
         startupConvergenceTimersRefObj.current.forEach((timer) => clearTimeout(timer));
         startupConvergenceTimersRefObj.current = [];
       }
+      if (postSeekDriftTimersRef.current?.length) {
+        postSeekDriftTimersRef.current.forEach((timer) => clearTimeout(timer));
+        postSeekDriftTimersRef.current = [];
+      }
     };
   }, []);
 
   const markControlPending = useCallback((eventName) => {
     setControlPending(eventName);
+    const pendingMs = eventName === "seek" ? 360 : 420;
+    const suppressMs = eventName === "seek" ? 260 : 280;
     if (pendingControlTimeoutRef.current) {
       clearTimeout(pendingControlTimeoutRef.current);
     }
     pendingControlTimeoutRef.current = setTimeout(() => {
       setControlPending(null);
       pendingControlTimeoutRef.current = null;
-    }, 900);
-    driftSuppressUntilRef.current = Date.now() + 650;
+    }, pendingMs);
+    driftSuppressUntilRef.current = Date.now() + suppressMs;
   }, []);
 
   const clearControlPending = useCallback(() => {
@@ -371,6 +378,38 @@ export const useRoomSync = ({
           force: !hasAppliedState,
           forceSeek: action === "seek",
         });
+
+        if (action === "seek") {
+          if (postSeekDriftTimersRef.current?.length) {
+            postSeekDriftTimersRef.current.forEach((timer) => clearTimeout(timer));
+          }
+
+          const forceDriftCheck = () => {
+            const clientPosition = Number(getCurrentPosition?.());
+            if (!Number.isFinite(clientPosition)) return;
+
+            socket.emit(
+              "sync:check-position",
+              {
+                roomCode: normalizedRoomCode,
+                clientPosition,
+                clientNow: Date.now(),
+                clientOffset: ntpOffsetRef.current,
+              },
+              (response) => {
+                if (!response?.success || !response?.correction) return;
+                const correction = response.correction;
+                if (correction.action === "hardSeek" || correction.action === "gradual") {
+                  handlersRef.current.onSeek?.(correction.targetPosition);
+                } else if (correction.action === "rateAdjust") {
+                  handlersRef.current.onRateAdjust?.(correction.rate, correction);
+                }
+              }
+            );
+          };
+
+          postSeekDriftTimersRef.current = [220, 700, 1300].map((delayMs) => setTimeout(forceDriftCheck, delayMs));
+        }
       };
 
       const handleStateUpdate = (data) => {

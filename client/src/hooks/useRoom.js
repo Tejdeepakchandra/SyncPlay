@@ -409,6 +409,23 @@ export const useRoom = (roomCode) => {
     }));
   }, [currentUserId]);
 
+  const handleParticipantAudioState = useCallback((data) => {
+    const targetUserId = data?.userId;
+    if (!targetUserId) return;
+
+    setParticipants((prev) =>
+      prev.map((p) =>
+        p.userId === targetUserId
+          ? {
+              ...p,
+              audioEnabled: !!data.audioEnabled && !data.isMuted,
+              speaking: !!data.isSpeaking,
+            }
+          : p
+      )
+    );
+  }, []);
+
   const handleForceLeave = useCallback((data) => {
     console.warn('🚪 Forced to leave room:', data);
     setJoinStatus(null);
@@ -451,6 +468,7 @@ export const useRoom = (roomCode) => {
     socket.on("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
     socket.on("room:participant-role-updated", handleRoleUpdated);
     socket.on("room:role-updated", handleRoleUpdated);
+    socket.on("audio:participant-state", handleParticipantAudioState);
     socket.on("room:ended", handleRoomEnded);
     socket.on("room:force-leave", handleForceLeave);
 
@@ -465,10 +483,11 @@ export const useRoom = (roomCode) => {
       socket.off("room:participant-permissions-updated", handleParticipantPermissionsUpdated);
       socket.off("room:participant-role-updated", handleRoleUpdated);
       socket.off("room:role-updated", handleRoleUpdated);
+      socket.off("audio:participant-state", handleParticipantAudioState);
       socket.off("room:ended", handleRoomEnded);
       socket.off("room:force-leave", handleForceLeave);
     };
-  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected, handleParticipantPermissionsUpdated, handleRoleUpdated, handleRoomEnded, handleForceLeave]);
+  }, [handleParticipantJoined, handleParticipantLeft, handleNewHost, handleJoinRequest, handleJoinAccepted, handleJoinRejected, handleParticipantPermissionsUpdated, handleRoleUpdated, handleParticipantAudioState, handleRoomEnded, handleForceLeave]);
 
   // Function to join room with guest name
   const joinAsGuest = (guestNameInput) => {
@@ -583,6 +602,7 @@ export const useRoom = (roomCode) => {
     isHost, 
     accessStatus,
     joinStatus,
+    guestName,
     joinRequests,
     waitingUsers,
     currentUserId,

@@ -136,6 +136,7 @@ const MusicRoom = () => {
     isHost,
     accessStatus,
     joinStatus,
+    guestName,
     joinRequests,
     currentUserId,
     leaveRoom,
@@ -200,6 +201,8 @@ const MusicRoom = () => {
   const reactionIdRef = useRef(0);
   const containerRef = useRef(null);
   const localAudioRef = useRef(null);
+  const pendingLocalControlRef = useRef(null);
+  const pendingSyncActionRef = useRef(null);
   const youtubeErrorFallbackRef = useRef({ mediaKey: null, at: 0 });
   const remoteAudioRefs = useRef(new Map());
 
@@ -227,6 +230,7 @@ const MusicRoom = () => {
   const userRole = isCurrentUserHost
     ? "host"
     : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
+  const canOpenHostControls = userRole === "host" || userRole === "co-host";
   const canControl = isCurrentUserHost
     ? true
     : (!myRestrictions.mediaControlDisabledByHost && myParticipant?.permissions?.canControl !== false);
@@ -314,6 +318,9 @@ const MusicRoom = () => {
     driftIntervalMs: 5000,
     onMediaChange: (media) => {
       const resolvedYoutubeId = resolveYoutubeVideoId(media);
+      const resolvedLocalUrl = media?.audioUrl || media?.videoUrl || media?.url || null;
+      const pendingSync = pendingSyncActionRef.current;
+      const pendingFresh = pendingSync && Date.now() - (pendingSync.at || 0) <= 7000;
       if (media?.type === "youtube" && resolvedYoutubeId) {
         setCurrentTrack({
           videoId: resolvedYoutubeId,
@@ -324,35 +331,84 @@ const MusicRoom = () => {
         });
         setShowSourcePicker(false);
         setTrackEnded(false);
+        pendingLocalControlRef.current = null;
         if (localAudioRef.current) {
           localAudioRef.current.pause();
           localAudioRef.current = null;
           setLocalCurrentTime(0);
           setLocalDuration(0);
         }
+        ytPlayer.pause();
+
+        if (pendingFresh) {
+          const t = Number.isFinite(pendingSync.time) ? pendingSync.time : 0;
+          if (pendingSync.type === "play") {
+            ytPlayer.seekTo(t, true);
+            ytPlayer.play();
+            setIsPlaying(true);
+          } else if (pendingSync.type === "pause") {
+            ytPlayer.seekTo(t, true);
+            ytPlayer.pause();
+            setIsPlaying(false);
+          } else if (pendingSync.type === "seek") {
+            ytPlayer.seekTo(t, true);
+          }
+          pendingSyncActionRef.current = null;
+        }
       }
-      if (media?.type === "local" && media.audioUrl) {
+      if ((media?.type === "local" || media?.type === "upload") && resolvedLocalUrl) {
+        ytPlayer.pause();
         setCurrentTrack({
           title: media.title || "Local Audio",
           artist: media.artist || "Uploaded",
           thumbnail: null,
           sourceType: "local",
-          audioUrl: media.audioUrl,
+          audioUrl: resolvedLocalUrl,
         });
         setShowSourcePicker(false);
         setTrackEnded(false);
         setIsPlaying(false);
-      } else if (media?.type === "local" && !media.audioUrl) {
+
+        if (pendingFresh) {
+          const nextType = pendingSync.type === "seek"
+            ? (isPlaying ? "play" : "pause")
+            : pendingSync.type;
+          pendingLocalControlRef.current = {
+            type: nextType,
+            time: Number.isFinite(pendingSync.time) ? pendingSync.time : 0,
+            at: Date.now(),
+          };
+          pendingSyncActionRef.current = null;
+        }
+      } else if ((media?.type === "local" || media?.type === "upload") && !resolvedLocalUrl) {
         toast("Host selected a local file", {
           description: "Local uploads are currently host-only in this version.",
         });
       }
       if (!media || media.type === "none") {
+        pendingLocalControlRef.current = null;
+        if (localAudioRef.current) {
+          localAudioRef.current.pause();
+          localAudioRef.current = null;
+        }
+        ytPlayer.pause();
+        setLocalCurrentTime(0);
+        setLocalDuration(0);
+        setIsPlaying(false);
         setCurrentTrack(null);
         setShowSourcePicker(true);
       }
     },
     onPlay: (timeSec = 0) => {
+      if (!currentTrack) {
+        pendingSyncActionRef.current = {
+          type: "play",
+          time: Number.isFinite(timeSec) ? timeSec : 0,
+          at: Date.now(),
+        };
+        setIsPlaying(true);
+        return;
+      }
       setIsPlaying(true);
       if (currentTrack?.sourceType === "local" && localAudioRef.current) {
         if (Number.isFinite(timeSec) && localDuration > 0) {
@@ -360,6 +416,12 @@ const MusicRoom = () => {
           setLocalCurrentTime(localAudioRef.current.currentTime);
         }
         localAudioRef.current.play().catch(() => {});
+      } else if (currentTrack?.sourceType === "local") {
+        pendingLocalControlRef.current = {
+          type: "play",
+          time: Number.isFinite(timeSec) ? timeSec : 0,
+          at: Date.now(),
+        };
       } else {
         if (Number.isFinite(timeSec)) {
           ytPlayer.seekTo(timeSec, true);
@@ -368,6 +430,15 @@ const MusicRoom = () => {
       }
     },
     onPause: (timeSec = 0) => {
+      if (!currentTrack) {
+        pendingSyncActionRef.current = {
+          type: "pause",
+          time: Number.isFinite(timeSec) ? timeSec : 0,
+          at: Date.now(),
+        };
+        setIsPlaying(false);
+        return;
+      }
       setIsPlaying(false);
       if (currentTrack?.sourceType === "local" && localAudioRef.current) {
         if (Number.isFinite(timeSec) && localDuration > 0) {
@@ -375,6 +446,12 @@ const MusicRoom = () => {
           setLocalCurrentTime(localAudioRef.current.currentTime);
         }
         localAudioRef.current.pause();
+      } else if (currentTrack?.sourceType === "local") {
+        pendingLocalControlRef.current = {
+          type: "pause",
+          time: Number.isFinite(timeSec) ? timeSec : 0,
+          at: Date.now(),
+        };
       } else {
         if (Number.isFinite(timeSec)) {
           ytPlayer.seekTo(timeSec, true);
@@ -383,10 +460,24 @@ const MusicRoom = () => {
       }
     },
     onSeek: (timeSec) => {
+      if (!currentTrack) {
+        pendingSyncActionRef.current = {
+          type: "seek",
+          time: Number.isFinite(timeSec) ? timeSec : 0,
+          at: Date.now(),
+        };
+        return;
+      }
       if (typeof timeSec === "number") {
         if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
           localAudioRef.current.currentTime = Math.max(0, Math.min(localDuration, timeSec));
           setLocalCurrentTime(localAudioRef.current.currentTime);
+        } else if (currentTrack?.sourceType === "local") {
+          pendingLocalControlRef.current = {
+            type: isPlaying ? "play" : "pause",
+            time: Number.isFinite(timeSec) ? timeSec : 0,
+            at: Date.now(),
+          };
         } else {
           ytPlayer.seekTo(timeSec, true);
         }
@@ -439,6 +530,8 @@ const MusicRoom = () => {
 
         const isLocal = p.userId === myUserId;
         const remoteStream = !isLocal ? meshStreams.remoteStreams.get(p.userId) : null;
+        const remoteHasAudio = !!remoteStream?.getAudioTracks()?.some((t) => t.enabled);
+        const remoteAudioEnabled = typeof p.audioEnabled === "boolean" ? p.audioEnabled : remoteHasAudio;
 
         list.push({
           name: isLocal
@@ -448,8 +541,8 @@ const MusicRoom = () => {
           speaking: false,
           role: p.role || (isLocal && isHost ? "host" : "guest"),
           audioEnabled: isLocal
-            ? webrtc.audioEnabled
-            : !!remoteStream?.getAudioTracks()?.some((t) => t.enabled),
+            ? (webrtc.audioEnabled && !micBlockedByHost)
+            : (remoteAudioEnabled && !p?.restrictions?.micDisabledByHost),
           username: p.username || "",
           isOnline: true,
           userId: p.userId,
@@ -464,7 +557,7 @@ const MusicRoom = () => {
         emoji: "🎧",
         speaking: false,
         role: isHost ? "host" : userRole,
-        audioEnabled: webrtc.audioEnabled,
+        audioEnabled: webrtc.audioEnabled && !micBlockedByHost,
         username: clerkUser?.username || "",
         isOnline: true,
         userId: myUserId,
@@ -472,7 +565,26 @@ const MusicRoom = () => {
     }
 
     setParticipants(list);
-  }, [dbParticipants, clerkUser, userRole, myUserId, isHost, webrtc.audioEnabled, meshStreams.remoteStreams]);
+  }, [dbParticipants, clerkUser, userRole, myUserId, isHost, webrtc.audioEnabled, micBlockedByHost, meshStreams.remoteStreams]);
+
+  useEffect(() => {
+    if (!roomCode || !myUserId) return;
+
+    const audioEnabled = audioActive && webrtc.audioEnabled && !micBlockedByHost;
+    socket.emit("audio:state-change", {
+      roomCode,
+      userId: myUserId,
+      audioEnabled,
+      isMuted: !audioEnabled,
+      isSpeaking: false,
+    });
+  }, [roomCode, myUserId, audioActive, webrtc.audioEnabled, micBlockedByHost]);
+
+  useEffect(() => {
+    if (micBlockedByHost && webrtc.audioEnabled) {
+      webrtc.toggleAudio();
+    }
+  }, [micBlockedByHost, webrtc]);
 
   useEffect(() => {
     (meshStreams.remoteStreams || new Map()).forEach((stream, peerId) => {
@@ -490,39 +602,59 @@ const MusicRoom = () => {
   useEffect(() => {
     if (currentTrack?.sourceType !== "local" || !currentTrack?.audioUrl) return;
 
-    if (localAudioRef.current?.src !== currentTrack.audioUrl) {
-      if (localAudioRef.current) {
-        localAudioRef.current.pause();
-      }
+    let audio = localAudioRef.current;
+    const needsNewAudio = !audio || audio.src !== currentTrack.audioUrl;
 
-      const audio = new Audio(currentTrack.audioUrl);
-      audio.volume = isMuted ? 0 : musicVolume / 100;
+    if (needsNewAudio) {
+      if (audio) {
+        audio.pause();
+      }
+      audio = new Audio(currentTrack.audioUrl);
       localAudioRef.current = audio;
-
-      const onTimeUpdate = () => setLocalCurrentTime(audio.currentTime || 0);
-      const onDurationChange = () => setLocalDuration(audio.duration || 0);
-      const onEnded = () => {
-        setTrackEnded(true);
-        setIsPlaying(false);
-      };
-
-      audio.addEventListener("timeupdate", onTimeUpdate);
-      audio.addEventListener("durationchange", onDurationChange);
-      audio.addEventListener("ended", onEnded);
-
-      if (isPlaying) {
-        audio.play().catch(() => {
-          setIsPlaying(false);
-        });
-      }
-
-      return () => {
-        audio.removeEventListener("timeupdate", onTimeUpdate);
-        audio.removeEventListener("durationchange", onDurationChange);
-        audio.removeEventListener("ended", onEnded);
-      };
+      setLocalCurrentTime(0);
+      setLocalDuration(0);
     }
-  }, [currentTrack?.audioUrl, currentTrack?.sourceType, isMuted, musicVolume, isPlaying]);
+
+    audio.volume = isMuted ? 0 : musicVolume / 100;
+
+    const onTimeUpdate = () => setLocalCurrentTime(audio.currentTime || 0);
+    const onDurationChange = () => setLocalDuration(audio.duration || 0);
+    const onEnded = () => {
+      setTrackEnded(true);
+      setIsPlaying(false);
+    };
+
+    // Ensure listeners are attached exactly once per active source.
+    audio.removeEventListener("timeupdate", onTimeUpdate);
+    audio.removeEventListener("durationchange", onDurationChange);
+    audio.removeEventListener("ended", onEnded);
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("durationchange", onDurationChange);
+    audio.addEventListener("ended", onEnded);
+
+    const pending = pendingLocalControlRef.current;
+    const pendingFresh = pending && Date.now() - (pending.at || 0) <= 7000;
+    if (pendingFresh && Number.isFinite(pending.time) && Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = Math.max(0, Math.min(audio.duration, pending.time));
+    }
+
+    if (pendingFresh && pending.type === "pause") {
+      audio.pause();
+      setIsPlaying(false);
+    } else if (pendingFresh && pending.type === "play") {
+      audio.play().catch(() => {
+        setIsPlaying(false);
+      });
+    }
+
+    pendingLocalControlRef.current = null;
+
+    return () => {
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("durationchange", onDurationChange);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, [currentTrack?.audioUrl, currentTrack?.sourceType]);
 
   useEffect(() => {
     if (currentTrack?.sourceType === "local" && localAudioRef.current) {
@@ -607,13 +739,23 @@ const MusicRoom = () => {
   // Playback controls
   const togglePlayPause = useCallback(() => {
     if (roomSync.controlPending) return;
-    if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+    if (currentTrack?.sourceType === "local") {
+      const audio = localAudioRef.current;
+      const targetTime = Number.isFinite(localCurrentTime) ? localCurrentTime : 0;
       if (isPlaying) {
-        localAudioRef.current.pause();
+        if (audio) {
+          audio.pause();
+        } else {
+          pendingLocalControlRef.current = { type: "pause", time: targetTime, at: Date.now() };
+        }
         setIsPlaying(false);
         if (canControl) roomSync.broadcastPause(getCurrentMediaTime(), getCurrentMediaDuration());
       } else {
-        localAudioRef.current.play().catch(() => {});
+        if (audio) {
+          audio.play().catch(() => {});
+        } else {
+          pendingLocalControlRef.current = { type: "play", time: targetTime, at: Date.now() };
+        }
         setIsPlaying(true);
         if (canControl) roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
       }
@@ -627,7 +769,7 @@ const MusicRoom = () => {
       ytPlayer.play();
       if (canControl) roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
     }
-  }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType, getCurrentMediaTime, getCurrentMediaDuration]);
+  }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType, getCurrentMediaTime, getCurrentMediaDuration, localCurrentTime]);
 
   const playNext = useCallback(() => {
     if (queue.length > 0) {
@@ -753,9 +895,10 @@ const MusicRoom = () => {
     }
 
     setCurrentTrack(nextTrack);
+    pendingLocalControlRef.current = null;
     setShowSourcePicker(false);
     setTrackEnded(false);
-    setIsPlaying(true);
+    setIsPlaying(false);
     if (canControl) {
       roomSync.broadcastMediaChange({
         type: "youtube",
@@ -764,7 +907,7 @@ const MusicRoom = () => {
         artist: nextTrack.artist,
         thumbnail: nextTrack.thumbnail,
       });
-      roomSync.broadcastPlay(0, ytPlayer.duration || 0);
+      roomSync.broadcastPause(0, ytPlayer.duration || 0);
     }
   }, [canControl, roomSync, ytPlayer.duration]);
 
@@ -819,13 +962,14 @@ const MusicRoom = () => {
       };
 
       setCurrentTrack(nextTrack);
+      pendingLocalControlRef.current = null;
       setShowSourcePicker(false);
       setTrackEnded(false);
       setIsPlaying(false);
       setQueue((prev) => [...prev, nextTrack]);
 
       roomSync.broadcastMediaChange({
-        type: "local",
+        type: "upload",
         title: nextTrack.title,
         artist: nextTrack.artist,
         audioUrl: sharedUrl,
@@ -853,6 +997,7 @@ const MusicRoom = () => {
       };
 
       setCurrentTrack(nextTrack);
+      pendingLocalControlRef.current = null;
       setShowSourcePicker(false);
       setTrackEnded(false);
       setIsPlaying(false);
@@ -886,6 +1031,12 @@ const MusicRoom = () => {
     setShowPlaylist(false);
   }, []);
 
+  useEffect(() => {
+    if (!canOpenHostControls && showHostControls) {
+      setShowHostControls(false);
+    }
+  }, [canOpenHostControls, showHostControls]);
+
   const handleSeek = useCallback((pct) => {
     if (roomSync.controlPending) return;
     if (!canControl) return;
@@ -893,15 +1044,23 @@ const MusicRoom = () => {
     const duration = getCurrentMediaDuration();
     const targetSec = duration > 0 ? (pct / 100) * duration : 0;
 
-    if (currentTrack?.sourceType === "local" && localAudioRef.current && localDuration > 0) {
-      localAudioRef.current.currentTime = targetSec;
-      setLocalCurrentTime(localAudioRef.current.currentTime);
+    if (currentTrack?.sourceType === "local") {
+      if (localAudioRef.current && localDuration > 0) {
+        localAudioRef.current.currentTime = targetSec;
+        setLocalCurrentTime(localAudioRef.current.currentTime);
+      } else {
+        pendingLocalControlRef.current = {
+          type: isPlaying ? "play" : "pause",
+          time: targetSec,
+          at: Date.now(),
+        };
+      }
     } else {
       ytPlayer.seekTo(targetSec, true);
     }
 
     roomSync.broadcastSeek(targetSec, duration);
-  }, [canControl, ytPlayer, roomSync, currentTrack?.sourceType, localDuration, getCurrentMediaDuration]);
+  }, [canControl, ytPlayer, roomSync, currentTrack?.sourceType, localDuration, getCurrentMediaDuration, isPlaying]);
 
   const displayCurrentTime = currentTrack?.sourceType === "local" ? localCurrentTime : ytPlayer.currentTime;
   const displayDuration = currentTrack?.sourceType === "local" ? localDuration : ytPlayer.duration;
@@ -1001,7 +1160,7 @@ const MusicRoom = () => {
     return (
       <WaitingAreaDialog
         roomName={room?.name || "Music Room"}
-        guestName={user ? "You" : "Guest"}
+        guestName={guestName || user?.display_name || user?.username || "Guest"}
         onCancel={() => setIsJoiningAsGuest(false)}
         roomType="music"
       />
@@ -1125,7 +1284,7 @@ const MusicRoom = () => {
           >
             <Sliders className="w-4 h-4" />
           </Button>
-          {canControl && (
+          {canOpenHostControls && (
             <Button
               size="icon"
               variant="ghost"
@@ -1134,7 +1293,7 @@ const MusicRoom = () => {
                 setShowHostControls(!showHostControls);
               }}
               className={showHostControls ? "text-emerald-300" : "text-muted-foreground"}
-              title="Host Controls"
+              title={userRole === "host" ? "Host Controls" : "Co-Host Controls"}
             >
               <Settings className="w-4 h-4" />
             </Button>
@@ -1566,7 +1725,7 @@ const MusicRoom = () => {
             </motion.div>
           )}
 
-          {showHostControls && (
+          {showHostControls && canOpenHostControls && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}

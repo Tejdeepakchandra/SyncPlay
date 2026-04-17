@@ -386,29 +386,30 @@ module.exports = (socket, io) => {
 
   // Update participant permissions (host only)
   socket.on('room:update-participant-permissions', async ({ roomCode, targetUserId, restrictions }, callback) => {
+    const done = typeof callback === 'function' ? callback : () => {};
     try {
       roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
       if (!roomCode) {
-        return callback({ success: false, error: 'Missing room code' });
+        return done({ success: false, error: 'Missing room code' });
       }
       console.log(`[PERMISSIONS] 🔒 Host ${socket.userId} updating permissions for ${targetUserId}:`, restrictions);
 
       const room = await Room.findOne({ roomCode });
       if (!room) {
-        return callback({ success: false, error: 'Room not found' });
+        return done({ success: false, error: 'Room not found' });
       }
 
       // Verify moderator (host or co-host)
       const actingParticipant = room.participants.find(p => p.userId === socket.userId);
       const isModerator = room.hostId === socket.userId || actingParticipant?.role === 'co-host' || actingParticipant?.role === 'cohost';
       if (!isModerator) {
-        return callback({ success: false, error: 'Only host/co-host can update permissions' });
+        return done({ success: false, error: 'Only host/co-host can update permissions' });
       }
 
       // Find participant
       const participant = room.participants.find(p => p.userId === targetUserId);
       if (!participant) {
-        return callback({ success: false, error: 'Participant not found' });
+        return done({ success: false, error: 'Participant not found' });
       }
 
       // Update restrictions (partial merge to preserve existing values)
@@ -451,7 +452,19 @@ module.exports = (socket, io) => {
         message: `Permissions have been changed by the host`
       });
 
-      callback({ 
+      // If mic is blocked, force room-wide audio state to muted for immediate UI consistency.
+      if (participant.restrictions.micDisabledByHost) {
+        io.to(roomCode).emit('audio:participant-state', {
+          userId: targetUserId,
+          audioEnabled: false,
+          isMuted: true,
+          isSpeaking: false,
+          timestamp: Date.now(),
+          restricted: true,
+        });
+      }
+
+      done({ 
         success: true, 
         message: 'Permissions updated',
         restrictions: participant.restrictions,
@@ -459,7 +472,7 @@ module.exports = (socket, io) => {
       });
     } catch (error) {
       console.error('[PERMISSIONS] ❌ Error updating permissions:', error);
-      callback({
+      done({
         success: false,
         error: error.message,
       });
@@ -468,38 +481,39 @@ module.exports = (socket, io) => {
 
   // Promote/Demote user to co-host (host only)
   socket.on('room:update-role', async ({ roomCode, targetUserId, newRole }, callback) => {
+    const done = typeof callback === 'function' ? callback : () => {};
     try {
       roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
       if (!roomCode) {
-        return callback({ success: false, error: 'Missing room code' });
+        return done({ success: false, error: 'Missing room code' });
       }
       console.log(`[ROLE] 👑 Host ${socket.userId} updating role for ${targetUserId} to ${newRole}`);
 
       const normalizedRole = newRole === 'cohost' ? 'co-host' : newRole;
 
       if (!['guest', 'participant', 'co-host'].includes(normalizedRole)) {
-        return callback({ success: false, error: 'Invalid role update target' });
+        return done({ success: false, error: 'Invalid role update target' });
       }
 
       const room = await Room.findOne({ roomCode });
       if (!room) {
-        return callback({ success: false, error: 'Room not found' });
+        return done({ success: false, error: 'Room not found' });
       }
 
       // Verify host
       if (room.hostId !== socket.userId) {
-        return callback({ success: false, error: 'Only host can update roles' });
+        return done({ success: false, error: 'Only host can update roles' });
       }
 
       // Find participant
       const participant = room.participants.find(p => p.userId === targetUserId);
       if (!participant) {
-        return callback({ success: false, error: 'Participant not found' });
+        return done({ success: false, error: 'Participant not found' });
       }
 
       // Don't allow demoting the host
       if (participant.role === 'host' && newRole !== 'host') {
-        return callback({ success: false, error: 'Cannot change host role' });
+        return done({ success: false, error: 'Cannot change host role' });
       }
 
       participant.role = normalizedRole;
@@ -537,14 +551,14 @@ module.exports = (socket, io) => {
         message: `${participant.displayName} is now a ${normalizedRole}`
       });
 
-      callback({ 
+      done({ 
         success: true, 
         message: 'Role updated',
         newRole: normalizedRole
       });
     } catch (error) {
       console.error('[ROLE] ❌ Error updating role:', error);
-      callback({
+      done({
         success: false,
         error: error.message,
       });

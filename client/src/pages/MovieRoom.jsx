@@ -55,6 +55,7 @@ const MovieRoom = () => {
     isHost,
     accessStatus,
     joinStatus,
+    guestName,
     joinAsGuest,
     joinRequests,
     acceptJoinRequest,
@@ -154,6 +155,11 @@ const MovieRoom = () => {
     return `youtube:${activeYoutubeVideoId}`;
   }, [mediaSource, youtubeVideoId, fallbackYoutubeVideoId]);
 
+  const getUploadMediaKey = useCallback(() => {
+    if (mediaSource !== "upload" || !uploadedVideoUrl) return null;
+    return `upload:${uploadedVideoUrl}`;
+  }, [mediaSource, uploadedVideoUrl]);
+
   const activeYoutubeVideoId = useMemo(() => {
     if (mediaSource !== "youtube") return null;
     return youtubeVideoId || fallbackYoutubeVideoId || null;
@@ -232,6 +238,7 @@ const MovieRoom = () => {
   const userRole = isCurrentUserHost
     ? "host"
     : ((myRole === "co-host" || myRole === "cohost") ? "co-host" : "guest");
+  const canOpenHostControls = userRole === "host" || userRole === "co-host";
   const canControl = useMemo(() => {
     if (isCurrentUserHost) return true;
     if (!currentParticipant) return accessStatus === "granted";
@@ -484,11 +491,24 @@ const MovieRoom = () => {
           pendingRemoteActionSetAtRef.current = Date.now();
         }
         setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
-      } else if (mediaSource === "upload" && uploadVideoRef.current) {
-        if (Number.isFinite(timeSec) && uploadVideoRef.current.duration) {
-          uploadVideoRef.current.currentTime = Math.max(0, Math.min(uploadVideoRef.current.duration, timeSec));
+      } else if (mediaSource === "upload") {
+        const mediaKey = getUploadMediaKey();
+        const video = uploadVideoRef.current;
+        const canApplyImmediately = !!video && video.readyState >= 2;
+        if (canApplyImmediately) {
+          pendingRemoteActionRef.current = null;
+          if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
+            video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
+          }
+          video.play().catch(() => {});
+        } else {
+          pendingRemoteActionRef.current = {
+            type: "play",
+            time: Number.isFinite(timeSec) ? timeSec : 0,
+            mediaKey,
+          };
+          pendingRemoteActionSetAtRef.current = Date.now();
         }
-        uploadVideoRef.current.play();
         suppressRemoteSyncRef.current = false;
       } else {
         // Play can arrive before media-change; keep pending and apply when media becomes ready.
@@ -524,11 +544,24 @@ const MovieRoom = () => {
           pendingRemoteActionSetAtRef.current = Date.now();
         }
         setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
-      } else if (mediaSource === "upload" && uploadVideoRef.current) {
-        if (Number.isFinite(timeSec) && uploadVideoRef.current.duration) {
-          uploadVideoRef.current.currentTime = Math.max(0, Math.min(uploadVideoRef.current.duration, timeSec));
+      } else if (mediaSource === "upload") {
+        const mediaKey = getUploadMediaKey();
+        const video = uploadVideoRef.current;
+        if (video) {
+          pendingRemoteActionRef.current = null;
+          if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
+            video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
+          }
+          video.pause();
+          setTimeout(() => video.pause(), 0);
+        } else {
+          pendingRemoteActionRef.current = {
+            type: "pause",
+            time: Number.isFinite(timeSec) ? timeSec : 0,
+            mediaKey,
+          };
+          pendingRemoteActionSetAtRef.current = Date.now();
         }
-        uploadVideoRef.current.pause();
         suppressRemoteSyncRef.current = false;
       } else {
         pendingRemoteActionRef.current = {
@@ -569,17 +602,48 @@ const MovieRoom = () => {
           pendingRemoteActionSetAtRef.current = Date.now();
           suppressRemoteSyncRef.current = false;
         }
-      } else if (mediaSource === "upload" && uploadVideoRef.current && uploadVideoRef.current.duration) {
-        uploadVideoRef.current.currentTime = Math.max(0, Math.min(uploadVideoRef.current.duration, timeSec));
+      } else if (mediaSource === "upload") {
+        const mediaKey = getUploadMediaKey();
+        const video = uploadVideoRef.current;
+        if (video && Number.isFinite(video.duration) && video.duration > 0) {
+          pendingRemoteActionRef.current = null;
+          video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
+        } else {
+          pendingRemoteActionRef.current = {
+            type: desiredPlayingRef.current ? "play" : "pause",
+            time: Number.isFinite(timeSec) ? timeSec : 0,
+            mediaKey,
+          };
+          pendingRemoteActionSetAtRef.current = Date.now();
+        }
         suppressRemoteSyncRef.current = false;
       } else {
         suppressRemoteSyncRef.current = false;
       }
     },
-    onRateAdjust: (rate) => {
+    onRateAdjust: (rate, correction) => {
       if (!Number.isFinite(rate)) return;
       if (mediaSource === "youtube") {
-        ytPlayer.setPlaybackRate?.(rate);
+        const targetPosition = Number(correction?.targetPosition);
+        const current = Number(ytPlayer.currentTime || 0);
+        const hasTarget = Number.isFinite(targetPosition);
+        const drift = hasTarget ? (targetPosition - current) : 0;
+
+        // YouTube supports only discrete playback rates; use micro-seek for smooth sub-second drift fixes.
+        if (hasTarget && Math.abs(drift) >= 0.08) {
+          suppressRemoteSyncRef.current = true;
+          nativeBridgeMutedUntilRef.current = Date.now() + 700;
+          ytPlayer.seekTo(targetPosition, true);
+          if (desiredPlayingRef.current) {
+            ytPlayer.play();
+          } else {
+            ytPlayer.pause();
+          }
+          setTimeout(() => {
+            suppressRemoteSyncRef.current = false;
+          }, 220);
+        }
+        return;
       } else if (mediaSource === "upload" && uploadVideoRef.current) {
         uploadVideoRef.current.playbackRate = rate;
       }
@@ -623,6 +687,48 @@ const MovieRoom = () => {
   }, [mediaSource, youtubeVideoId, fallbackYoutubeVideoId]);
 
   useEffect(() => {
+    if (mediaSource !== "upload") return;
+    if (!isUploadMediaReady) return;
+    const video = uploadVideoRef.current;
+    if (!video) return;
+
+    const pending = pendingRemoteActionRef.current;
+    const currentMediaKey = getUploadMediaKey();
+
+    const pendingAgeMs = pending ? (Date.now() - pendingRemoteActionSetAtRef.current) : 0;
+    if (pending && pendingAgeMs > 7000) {
+      pendingRemoteActionRef.current = null;
+    }
+
+    if (pending && pendingAgeMs <= 7000) {
+      if (pending.mediaKey && currentMediaKey && pending.mediaKey !== currentMediaKey) {
+        pendingRemoteActionRef.current = null;
+      } else {
+        if (Number.isFinite(pending.time) && Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.max(0, Math.min(video.duration, pending.time));
+        }
+
+        if (pending.type === "play") {
+          video.play().catch(() => {});
+          setIsPlaying(true);
+          desiredPlayingRef.current = true;
+        } else {
+          video.pause();
+          setIsPlaying(false);
+          desiredPlayingRef.current = false;
+        }
+        pendingRemoteActionRef.current = null;
+        return;
+      }
+    }
+
+    if (!desiredPlayingRef.current) {
+      video.pause();
+      setIsPlaying(false);
+    }
+  }, [mediaSource, isUploadMediaReady, getUploadMediaKey]);
+
+  useEffect(() => {
     return () => {
       if (rateResetTimerRef.current) {
         clearTimeout(rateResetTimerRef.current);
@@ -661,6 +767,12 @@ const MovieRoom = () => {
 
     setSyncStatus("synced");
   }, [roomSync.controlPending]);
+
+  useEffect(() => {
+    if (!canOpenHostControls && showHostControls) {
+      setShowHostControls(false);
+    }
+  }, [canOpenHostControls, showHostControls]);
 
   useEffect(() => {
     const handleConnected = () => {
@@ -733,6 +845,7 @@ const MovieRoom = () => {
 
         const remoteHasVideo = remoteStream ? remoteStream.getVideoTracks().some((t) => t.enabled) : false;
         const remoteHasAudio = remoteStream ? remoteStream.getAudioTracks().some((t) => t.enabled) : true;
+        const remoteAudioEnabled = typeof p.audioEnabled === "boolean" ? p.audioEnabled : remoteHasAudio;
 
         list.push({
           name: isLocal
@@ -743,13 +856,14 @@ const MovieRoom = () => {
           role: p.role || (isLocal && isHost ? "host" : "guest"),
           audioEnabled: isLocal
             ? (webrtc.audioEnabled && !micBlockedByHost)
-            : (remoteHasAudio && !p?.restrictions?.micDisabledByHost),
+            : (remoteAudioEnabled && !p?.restrictions?.micDisabledByHost),
           videoEnabled: isLocal
             ? (webrtc.videoEnabled && !videoBlockedByHost)
             : (!!remoteStream && remoteHasVideo && !p?.restrictions?.videoDisabledByHost),
           chatEnabled: true,
           username: isLocal ? (profile?.username || user?.username || p.username || "You") : (p.username || ""),
           isOnline: true,
+          userId: p.userId,
           odlUserId: p.userId,
           restrictions: isLocal ? myRestrictions : (p.restrictions || {}),
           isLocalUser: isLocal,
@@ -770,6 +884,7 @@ const MovieRoom = () => {
         chatEnabled: true,
         username: profile?.username || user?.username || "You",
         isOnline: true,
+        userId: myUserId,
         odlUserId: myUserId,
         restrictions: myRestrictions,
         isLocalUser: true,
@@ -778,6 +893,31 @@ const MovieRoom = () => {
 
     setParticipants(list);
   }, [user, dbParticipants, profile, isHost, accessStatus, meshStreams.remoteStreams, myUserId, webrtc.audioEnabled, webrtc.videoEnabled, micBlockedByHost, videoBlockedByHost, myRestrictions]);
+
+  useEffect(() => {
+    if (!effectiveRoomId || !myUserId) return;
+
+    const audioEnabled = showVideoChat && webrtc.audioEnabled && !micBlockedByHost;
+    socket.emit("audio:state-change", {
+      roomCode: effectiveRoomId,
+      userId: myUserId,
+      audioEnabled,
+      isMuted: !audioEnabled,
+      isSpeaking: false,
+    });
+  }, [effectiveRoomId, myUserId, showVideoChat, webrtc.audioEnabled, micBlockedByHost]);
+
+  useEffect(() => {
+    if (micBlockedByHost && webrtc.audioEnabled) {
+      webrtc.toggleAudio();
+    }
+  }, [micBlockedByHost, webrtc]);
+
+  useEffect(() => {
+    if (videoBlockedByHost && webrtc.videoEnabled) {
+      webrtc.toggleVideo();
+    }
+  }, [videoBlockedByHost, webrtc]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -853,14 +993,23 @@ const MovieRoom = () => {
       return;
     }
     if (mediaSource === "upload" && uploadVideoRef.current) {
+      pendingRemoteActionRef.current = null;
       if (uploadVideoRef.current.paused) {
         desiredPlayingRef.current = true;
-        uploadVideoRef.current.play();
-        setIsPlaying(true);
+        uploadVideoRef.current.play().then(() => {
+          setIsPlaying(true);
+        }).catch(() => {
+          setIsPlaying(false);
+          desiredPlayingRef.current = false;
+        });
         roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
       } else {
         desiredPlayingRef.current = false;
         uploadVideoRef.current.pause();
+        // Some browsers can briefly re-enter playing state; enforce pause on next tick.
+        setTimeout(() => {
+          uploadVideoRef.current?.pause();
+        }, 0);
         setIsPlaying(false);
         roomSync.broadcastPause(getCurrentMediaTime(), getCurrentMediaDuration());
       }
@@ -1486,13 +1635,30 @@ const MovieRoom = () => {
     const onTime = () => {
       if (video.duration) setProgress((video.currentTime / video.duration) * 100);
     };
+    const onPlay = () => {
+      // Upload-only guard: if room authority says paused, do not allow local resumed playback.
+      if (!desiredPlayingRef.current) {
+        video.pause();
+        setIsPlaying(false);
+        return;
+      }
+      setIsPlaying(true);
+    };
+    const onPause = () => {
+      setIsPlaying(false);
+    };
     const onEnded = () => {
       setIsPlaying(false);
+      desiredPlayingRef.current = false;
       toast("🎬 Movie finished!");
     };
+    video.addEventListener("play", onPlay);
+    video.addEventListener("pause", onPause);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("ended", onEnded);
     return () => {
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("pause", onPause);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("ended", onEnded);
     };
@@ -1770,7 +1936,7 @@ const MovieRoom = () => {
     return (
       <WaitingAreaDialog
         roomName={room?.name || "Movie Room"}
-        guestName={user ? "You" : (isJoiningAsGuest ? "You" : "Guest")}
+        guestName={guestName || user?.display_name || user?.username || "Guest"}
         onCancel={handleCancelWaiting}
         roomType="movie"
       />
@@ -1937,7 +2103,7 @@ const MovieRoom = () => {
               >
                 <Sliders className="w-4 h-4" />
               </Button>
-              {canControl && (
+              {canOpenHostControls && (
                 <Button
                   size="icon"
                   variant="ghost"
@@ -1950,7 +2116,7 @@ const MovieRoom = () => {
                     }
                   }}
                   className={showHostControls ? "text-primary" : "text-muted-foreground"}
-                  title="Host Controls"
+                  title={userRole === "host" ? "Host Controls" : "Co-Host Controls"}
                 >
                   <Settings className="w-4 h-4" />
                 </Button>
@@ -1986,6 +2152,18 @@ const MovieRoom = () => {
             {mediaSource === "youtube" && activeYoutubeVideoId ? (
               <div className="w-full h-full relative">
                 <div ref={ytPlayer.wrapperRef} className="w-full h-full" />
+                {[
+                  "unstarted",
+                  "buffering",
+                  "unknown",
+                ].includes(ytPlayer.playerState) && Number(ytPlayer.currentTime || 0) <= 0.2 && (
+                  <img
+                    src={`https://i.ytimg.com/vi/${activeYoutubeVideoId}/hqdefault.jpg`}
+                    alt="YouTube preview"
+                    className="absolute inset-0 w-full h-full object-cover"
+                    draggable={false}
+                  />
+                )}
                 {ytPlayer.playerState === "ended" && (
                   <div className="absolute inset-0 z-10 cursor-pointer flex items-center justify-center bg-black/60" onClick={() => { ytPlayer.seekTo(0); ytPlayer.play(); }}>
                     <div className="text-center text-white space-y-3">
@@ -2008,10 +2186,41 @@ const MovieRoom = () => {
               <video
                 ref={uploadVideoRef}
                 src={uploadedVideoUrl}
-                autoPlay
+                playsInline
                 className="w-full h-full object-contain"
                 onLoadedData={() => {
                   setIsUploadMediaReady(true);
+                  const video = uploadVideoRef.current;
+                  const pending = pendingRemoteActionRef.current;
+                  const currentMediaKey = getUploadMediaKey();
+
+                  if (video && pending && Date.now() - pendingRemoteActionSetAtRef.current <= 7000) {
+                    if (!pending.mediaKey || !currentMediaKey || pending.mediaKey === currentMediaKey) {
+                      if (Number.isFinite(pending.time) && Number.isFinite(video.duration) && video.duration > 0) {
+                        video.currentTime = Math.max(0, Math.min(video.duration, pending.time));
+                      }
+
+                      if (pending.type === "play") {
+                        desiredPlayingRef.current = true;
+                        video.play().then(() => {
+                          setIsPlaying(true);
+                        }).catch(() => {
+                          setIsPlaying(false);
+                        });
+                      } else {
+                        desiredPlayingRef.current = false;
+                        video.pause();
+                        setIsPlaying(false);
+                      }
+                      pendingRemoteActionRef.current = null;
+                    } else {
+                      pendingRemoteActionRef.current = null;
+                    }
+                  }
+
+                  if (!desiredPlayingRef.current && video) {
+                    video.pause();
+                  }
                   if (!uploadReadyToastRef.current) {
                     uploadReadyToastRef.current = true;
                     toast("Upload is ready", {
@@ -2019,9 +2228,6 @@ const MovieRoom = () => {
                       duration: 2200,
                     });
                   }
-                }}
-                onClick={() => {
-                  handleTogglePlay();
                 }}
               />
             ) : showYoutubeSearch ? (
@@ -2036,7 +2242,7 @@ const MovieRoom = () => {
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </Button>
-                    <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                    <h2 className="text-xl font-semibold text-foreground flex items-center gap-2">
                       <Youtube className="w-5 h-5 text-destructive" />
                       Browse YouTube
                     </h2>
@@ -2823,7 +3029,7 @@ const MovieRoom = () => {
           )}
 
           {/* Host Controls Panel */}
-          {showHostControls && !showMixer && !showChat && !lightsOff && (
+          {showHostControls && canOpenHostControls && !showMixer && !showChat && !lightsOff && (
             <HostControlsPanel
               key="host-controls"
               open={showHostControls}

@@ -282,9 +282,11 @@ class SyncService {
         // When seeking, set new base timestamp
         newState.baseTimestamp = data.newTime;
         
-        // If playing, resume from current server time for seamless seek.
+        // If playing, resume from a short future server time so clients can align together.
         if (newState.isPlaying) {
-          newState.startAt = now;
+          const latency = data.latency || 100;
+          const buffer = SYNC_CONTRACT.adaptiveBuffer(latency);
+          newState.startAt = now + buffer;
         }
         break;
       }
@@ -445,6 +447,7 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
     correction = {
       action: 'rateAdjust',
       rate,
+      targetPosition: expectedPosition,
       reason: 'smooth_correction'
     };
   }

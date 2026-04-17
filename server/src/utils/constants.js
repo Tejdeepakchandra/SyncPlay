@@ -50,9 +50,9 @@ const RATE_LIMITS = {
 
 // Socket rate limits
 const SOCKET_RATE_LIMITS = {
-  'sync:play': { limit: 10, window: 60 },
-  'sync:pause': { limit: 10, window: 60 },
-  'sync:seek': { limit: 20, window: 60 },
+  'sync:play': { limit: 30, window: 10 },
+  'sync:pause': { limit: 30, window: 10 },
+  'sync:seek': { limit: 80, window: 10 },
   'sync:rate-change': { limit: 5, window: 60 },
   'room:join': { limit: 5, window: 60 },
   'room:leave': { limit: 10, window: 60 },

@@ -432,27 +432,14 @@ module.exports = (socket, io) => {
             state: result.state,
             media: currentPlayback.media,
             userId: socket.userId,
-            action: 'seek',
+            action: 'play',
           });
 
           emitToRoom(roomCode, 'sync:update', {
             timestamp: Date.now(),
-            action: 'seek',
+            action: 'play',
             currentPlayback,
           });
-
-          setTimeout(async () => {
-            try {
-              const followupPlayback = await buildCurrentPlayback(roomCode, result.state);
-              emitToRoom(roomCode, 'sync:update', {
-                timestamp: Date.now(),
-                action: 'seek',
-                currentPlayback: followupPlayback,
-              });
-            } catch {
-              // Best-effort follow-up pulse
-            }
-          }, 140);
 
           setTimeout(async () => {
             try {

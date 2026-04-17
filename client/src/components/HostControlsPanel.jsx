@@ -33,12 +33,12 @@ const HostControlsPanel = ({
         statsText: "text-emerald-300",
       }
     : {
-        panelBorder: "border-blue-400/20",
-        panelBg: "from-blue-950/65 to-blue-900/35",
-        iconText: "text-sky-300",
-        activeTabText: "text-sky-300",
-        activeTabBorder: "border-sky-300",
-        statsText: "text-sky-300",
+        panelBorder: "border-glass-border",
+        panelBg: "from-card/95 to-card/95",
+        iconText: "text-primary",
+        activeTabText: "text-primary",
+        activeTabBorder: "border-primary",
+        statsText: "text-primary",
       };
 
   if (!open) return null;
@@ -66,7 +66,7 @@ const HostControlsPanel = ({
       <div className="p-4 border-b border-glass-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Settings className={`w-4 h-4 ${palette.iconText}`} />
-          <h3 className="text-sm font-semibold text-foreground">Host Controls</h3>
+          <h3 className="text-sm font-semibold text-foreground">{isHost ? "Host Controls" : "Co-Host Controls"}</h3>
         </div>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
           <X className="w-4 h-4" />
@@ -113,7 +113,8 @@ const HostControlsPanel = ({
                   onClick={() => {
                     participants.forEach(p => {
                       if (p.role !== "host") {
-                        onUpdateParticipant(p.name, { audioEnabled: false });
+                        const participantId = p.userId || p.odlUserId || p.name;
+                        onUpdateParticipant(participantId, { audioEnabled: false });
                       }
                     });
                   }}
@@ -129,7 +130,8 @@ const HostControlsPanel = ({
                     onClick={() => {
                       participants.forEach(p => {
                         if (p.role !== "host") {
-                          onUpdateParticipant(p.name, { videoEnabled: false });
+                          const participantId = p.userId || p.odlUserId || p.name;
+                          onUpdateParticipant(participantId, { videoEnabled: false });
                         }
                       });
                     }}
@@ -149,11 +151,16 @@ const HostControlsPanel = ({
             <div className="space-y-2">
               {participants.map((p) => {
                 const badge = getRoleBadge(p.role);
+                const participantId = p.userId || p.odlUserId || p.name;
                 const isParticipantHost = p.role === "host";
                 const isParticipantCoHost = p.role === "co-host" || p.role === "cohost";
                 const restrictions = p.restrictions || {};
+                const isMicAllowed = !restrictions.micDisabledByHost;
+                const isVideoAllowed = !restrictions.videoDisabledByHost;
+                const isChatAllowed = !restrictions.chatDisabledByHost;
+                const isMediaControlAllowed = !restrictions.mediaControlDisabledByHost;
                 return (
-                  <div key={p.name} className="glass-panel p-3 space-y-2.5">
+                  <div key={participantId} className="glass-panel p-3 space-y-2.5">
                     <div className="flex items-center gap-2.5">
                       <div className="relative flex-shrink-0">
                         <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-lg">
@@ -189,37 +196,40 @@ const HostControlsPanel = ({
                         <Button
                           size="icon"
                           variant="ghost"
-                          className={`h-7 w-7 ${p.audioEnabled ? "text-foreground" : "text-destructive"}`}
-                          onClick={() => onUpdateParticipant(p.name, { audioEnabled: !p.audioEnabled })}
+                          className={`h-7 w-7 ${isMicAllowed ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(participantId, { audioEnabled: !isMicAllowed })}
+                          title={isMicAllowed ? "Block microphone" : "Allow microphone"}
                         >
-                          {p.audioEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+                          {isMicAllowed ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
                         </Button>
                         {!hideVideoControls && (
                           <Button
                             size="icon"
                             variant="ghost"
-                            className={`h-7 w-7 ${p.videoEnabled ? "text-foreground" : "text-destructive"}`}
-                            onClick={() => onUpdateParticipant(p.name, { videoEnabled: !p.videoEnabled })}
+                            className={`h-7 w-7 ${isVideoAllowed ? "text-foreground" : "text-destructive"}`}
+                            onClick={() => onUpdateParticipant(participantId, { videoEnabled: !isVideoAllowed })}
+                            title={isVideoAllowed ? "Block camera" : "Allow camera"}
                           >
-                            {p.videoEnabled ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
+                            {isVideoAllowed ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
                           </Button>
                         )}
                         <Button
                           size="icon"
                           variant="ghost"
-                          className={`h-7 w-7 ${p.chatEnabled ? "text-foreground" : "text-destructive"}`}
-                          onClick={() => onUpdateParticipant(p.name, { chatEnabled: !p.chatEnabled })}
+                          className={`h-7 w-7 ${isChatAllowed ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(participantId, { chatEnabled: !isChatAllowed })}
+                          title={isChatAllowed ? "Block chat" : "Allow chat"}
                         >
-                          {p.chatEnabled ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
+                          {isChatAllowed ? <MessageSquare className="w-3.5 h-3.5" /> : <MessageSquareOff className="w-3.5 h-3.5" />}
                         </Button>
                         <Button
                           size="icon"
                           variant="ghost"
-                          className={`h-7 w-7 ${restrictions.mediaControlDisabledByHost ? "text-destructive" : "text-foreground"}`}
-                          onClick={() => onUpdateParticipant(p.name, { mediaControlEnabled: !!restrictions.mediaControlDisabledByHost })}
-                          title={restrictions.mediaControlDisabledByHost ? "Allow media control" : "Block media control"}
+                          className={`h-7 w-7 ${isMediaControlAllowed ? "text-foreground" : "text-destructive"}`}
+                          onClick={() => onUpdateParticipant(participantId, { mediaControlEnabled: !isMediaControlAllowed })}
+                          title={isMediaControlAllowed ? "Block media control" : "Allow media control"}
                         >
-                          {restrictions.mediaControlDisabledByHost ? <Ban className="w-3.5 h-3.5" /> : <Sliders className="w-3.5 h-3.5" />}
+                          {isMediaControlAllowed ? <Sliders className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
                         </Button>
 
                         <div className="flex-1" />
@@ -229,21 +239,21 @@ const HostControlsPanel = ({
                           variant="ghost"
                           className="h-7 w-7 text-accent"
                           disabled={!isHost}
-                          onClick={() => onUpdateParticipant(p.name, {
+                          onClick={() => onUpdateParticipant(participantId, {
                             role: isParticipantCoHost ? "guest" : "co-host"
                           })}
                         >
                           {isParticipantCoHost ? <ShieldCheck className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
                         </Button>
 
-                        {confirmRemove === p.name ? (
+                        {confirmRemove === participantId ? (
                           <div className="flex items-center gap-1">
                             <Button
                               size="sm"
                               variant="destructive"
                               className="h-7 text-xs px-2"
                               disabled={!isHost}
-                              onClick={() => { onRemoveParticipant(p.name); setConfirmRemove(null); }}
+                              onClick={() => { onRemoveParticipant(participantId); setConfirmRemove(null); }}
                             >
                               Remove
                             </Button>
@@ -262,7 +272,7 @@ const HostControlsPanel = ({
                             variant="ghost"
                             className="h-7 w-7 text-destructive"
                             disabled={!isHost}
-                            onClick={() => setConfirmRemove(p.name)}
+                            onClick={() => setConfirmRemove(participantId)}
                           >
                             <UserMinus className="w-3.5 h-3.5" />
                           </Button>
