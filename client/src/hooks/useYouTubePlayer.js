@@ -53,7 +53,7 @@ const mapState = (code) => {
   }
 };
 
-export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChange }) => {
+export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChange, onReady, onVideoChange, onError }) => {
   const playerRef = useRef(null);
   const wrapperRef = useRef(null);
   const [duration, setDuration] = useState(0);
@@ -63,6 +63,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
   const suppressSyncRef = useRef(false);
   const [apiIsReady, setApiIsReady] = useState(apiReady);
   const currentVideoIdRef = useRef(videoId);
+  const lastControlsEnabledRef = useRef(controlsEnabled);
   const playerReadyRef = useRef(false);
   const lastTimeRef = useRef(0);
   const lastDurationRef = useRef(0);
@@ -71,12 +72,14 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
   const onStateChangeRef = useRef(onStateChange);
   const onReadyRef = useRef(onReady);
   const onVideoChangeRef = useRef(onVideoChange);
+  const onErrorRef = useRef(onError);
 
   useEffect(() => {
     onStateChangeRef.current = onStateChange;
     onReadyRef.current = onReady;
     onVideoChangeRef.current = onVideoChange;
-  }, [onStateChange, onReady, onVideoChange]);
+    onErrorRef.current = onError;
+  }, [onStateChange, onReady, onVideoChange, onError]);
 
   // Destroy player
   const destroyPlayer = useCallback(() => {
@@ -113,13 +116,17 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
 
     let cancelled = false;
     let retryCount = 0;
-    const maxRetries = 10;
+    const maxRetries = 120;
 
     const hasMountedIframe = !!wrapperRef.current?.querySelector("iframe");
-    if (playerRef.current?.loadVideoById && hasMountedIframe && playerReadyRef.current) {
+    const controlsUnchanged = lastControlsEnabledRef.current === controlsEnabled;
+    if (playerRef.current?.loadVideoById && hasMountedIframe && playerReadyRef.current && controlsUnchanged) {
       try {
-        playerRef.current.loadVideoById(videoId);
-        playerRef.current.playVideo?.();
+        if (typeof playerRef.current.cueVideoById === "function") {
+          playerRef.current.cueVideoById(videoId);
+        } else {
+          playerRef.current.loadVideoById(videoId);
+        }
         return;
       } catch {
         // Fallback to recreate flow below when player is in bad state.
@@ -133,6 +140,10 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
         if (retryCount < maxRetries) {
           retryCount++;
           setTimeout(tryCreate, 100);
+        } else {
+          setPlayerState("error");
+          onErrorRef.current?.("wrapper_timeout");
+          onStateChangeRef.current?.("error", { errorCode: "wrapper_timeout" });
         }
         return;
       }
@@ -147,14 +158,15 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
       try {
         playerRef.current = new window.YT.Player(target, {
           videoId,
-          host: "https://www.youtube-nocookie.com",
+          host: "https://www.youtube.com",
           width: "100%",
           height: "100%",
           playerVars: {
-            autoplay: 1,
+            autoplay: 0,
             rel: 0,
             modestbranding: 1,
             playsinline: 1,
+            // Keep controls visible for all viewers so autoplay-blocked browsers are never stuck on a black frame.
             controls: 1,
             disablekb: 0,
             iv_load_policy: 3,
@@ -166,23 +178,38 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
             onReady: (e) => {
               if (cancelled) return;
               playerReadyRef.current = true;
+              lastControlsEnabledRef.current = controlsEnabled;
+              if (typeof e.target.cueVideoById === "function") {
+                e.target.cueVideoById(videoId);
+              }
               setDuration(e.target.getDuration());
-              e.target.playVideo();
               onReadyRef.current?.();
             },
             onStateChange: (e) => {
               if (cancelled) return;
               const state = mapState(e.data);
               setPlayerState(state);
-              onStateChangeRef.current?.(state);
+              const playerTime = typeof e.target?.getCurrentTime === "function"
+                ? e.target.getCurrentTime()
+                : 0;
+              const playerDuration = typeof e.target?.getDuration === "function"
+                ? e.target.getDuration()
+                : 0;
+              onStateChangeRef.current?.(state, {
+                eventCode: e.data,
+                playerTime,
+                playerDuration,
+              });
               if (e.target.getDuration() > 0) {
                 setDuration(e.target.getDuration());
               }
             },
-            onError: () => {
+            onError: (e) => {
               if (cancelled) return;
+              const errorCode = Number.isFinite(e?.data) ? e.data : null;
               setPlayerState("error");
-              onStateChangeRef.current?.("error");
+              onErrorRef.current?.(errorCode);
+              onStateChangeRef.current?.("error", { errorCode });
             },
           },
         });
@@ -196,7 +223,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
     return () => {
       cancelled = true;
     };
-  }, [videoId, apiIsReady, destroyPlayer]);
+  }, [videoId, controlsEnabled, apiIsReady, destroyPlayer]);
 
   // Update video ID ref
   useEffect(() => {
@@ -245,21 +272,32 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
   }, []);
 
   // Player controls
-  const play = useCallback(() => {
-    playerRef.current?.playVideo?.();
+  const withReadyPlayer = useCallback((fn) => {
+    if (!playerRef.current || !playerReadyRef.current) return false;
+    try {
+      fn(playerRef.current);
+      return true;
+    } catch {
+      return false;
+    }
   }, []);
+
+  const play = useCallback(() => {
+    withReadyPlayer((player) => player.playVideo?.());
+  }, [withReadyPlayer]);
 
   const pause = useCallback(() => {
-    playerRef.current?.pauseVideo?.();
-  }, []);
+    withReadyPlayer((player) => player.pauseVideo?.());
+  }, [withReadyPlayer]);
 
   const seekTo = useCallback((seconds, allowSeekAhead = true) => {
+    const didSeek = withReadyPlayer((player) => player.seekTo?.(seconds, allowSeekAhead));
+    if (!didSeek) return;
     suppressSyncRef.current = true;
-    playerRef.current?.seekTo?.(seconds, allowSeekAhead);
     setTimeout(() => {
       suppressSyncRef.current = false;
     }, 500);
-  }, []);
+  }, [withReadyPlayer]);
 
   const seekToPercent = useCallback((pct) => {
     if (duration > 0) {
@@ -268,16 +306,20 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
   }, [duration, seekTo]);
 
   const setVolume = useCallback((vol) => {
-    playerRef.current?.setVolume?.(vol);
-  }, []);
+    withReadyPlayer((player) => player.setVolume?.(vol));
+  }, [withReadyPlayer]);
+
+  const setPlaybackRate = useCallback((rate) => {
+    withReadyPlayer((player) => player.setPlaybackRate?.(rate));
+  }, [withReadyPlayer]);
 
   const mute = useCallback(() => {
-    playerRef.current?.mute?.();
-  }, []);
+    withReadyPlayer((player) => player.mute?.());
+  }, [withReadyPlayer]);
 
   const unmute = useCallback(() => {
-    playerRef.current?.unMute?.();
-  }, []);
+    withReadyPlayer((player) => player.unMute?.());
+  }, [withReadyPlayer]);
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
@@ -289,6 +331,7 @@ export const useYouTubePlayer = ({ videoId, onStateChange, onReady, onVideoChang
     seekTo,
     seekToPercent,
     setVolume,
+    setPlaybackRate,
     mute,
     unmute,
     duration,

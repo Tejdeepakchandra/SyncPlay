@@ -1,7 +1,35 @@
 const express = require('express');
+const multer = require('multer');
 const roomService = require('../services/roomService');
+const mediaCleanupService = require('../services/mediaCleanupService');
+const Room = require('../models/mongodb/Room');
+const cloudinary = require('../utils/cloudinary');
 const { validateRoomCreation } = require('../middleware/validation');
 const router = express.Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 250 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, cb) => {
+    const mediaType = file?.mimetype || '';
+    if (!mediaType.startsWith('video/') && !mediaType.startsWith('audio/')) {
+      return cb(new Error('Only audio or video uploads are supported'));
+    }
+    cb(null, true);
+  },
+});
+
+function canControlMedia(room, userId) {
+  const participant = room?.participants?.find((p) => p.userId?.toString() === userId?.toString());
+  if (!participant) return false;
+  if (participant.restrictions?.mediaControlDisabledByHost) return false;
+  if (participant.role === 'host' || participant.role === 'cohost' || participant.role === 'co-host') {
+    return true;
+  }
+  return participant.permissions?.canControl !== false;
+}
 
 /**
  * Create new room
@@ -192,6 +220,123 @@ router.post('/:roomCode/end', async (req, res, next) => {
         status: room.status,
         endedAt: room.endedAt
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Upload room media and set as current upload source
+ * POST /api/rooms/:roomCode/media/upload
+ */
+router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No video file uploaded' });
+    }
+
+    if (!cloudinary.isConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Cloudinary is not configured on server',
+      });
+    }
+
+    const roomCode = req.params.roomCode;
+    const room = await Room.findOne({ roomCode });
+    if (!room) {
+      return res.status(404).json({ success: false, message: 'Room not found' });
+    }
+
+    if (room.status === 'ended') {
+      return res.status(400).json({ success: false, message: 'Room has ended' });
+    }
+
+    if (!canControlMedia(room, req.userId)) {
+      return res.status(403).json({ success: false, message: 'Permission denied' });
+    }
+
+    const isAudio = req.file.mimetype?.startsWith('audio/');
+    const title = String(
+      req.body?.title || req.file.originalname || (isAudio ? 'Uploaded Audio' : 'Uploaded Video')
+    ).slice(0, 160);
+
+    const previousPublicId = room?.media?.current?.metadata?.cloudinary?.publicId || null;
+    const previousResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+
+    const uploadResult = await cloudinary.uploadVideoBuffer(req.file.buffer, {
+      folder: `syncplay/rooms/${room.roomCode}`,
+      resource_type: isAudio ? 'video' : 'video',
+      public_id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      overwrite: false,
+      use_filename: false,
+    });
+
+    const mediaUrl = uploadResult?.secure_url;
+    const mediaPublicId = uploadResult?.public_id;
+    if (!mediaUrl || !mediaPublicId) {
+      throw new Error('Cloudinary upload failed');
+    }
+
+    const now = new Date();
+
+    room.media = room.media || {};
+    room.media.current = {
+      source: 'upload',
+      url: mediaUrl,
+      title,
+      duration: null,
+      currentTime: 0,
+      startTime: now,
+      pausedAt: now,
+      metadata: {
+        type: isAudio ? 'local' : 'upload',
+        videoUrl: mediaUrl,
+        audioUrl: isAudio ? mediaUrl : null,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        uploadedBy: req.userId,
+        cloudinary: {
+          publicId: mediaPublicId,
+          resourceType: 'video',
+          bytes: uploadResult?.bytes || req.file.size,
+          format: uploadResult?.format || null,
+        },
+      },
+    };
+    room.status = 'active';
+    room.syncState = {
+      ...(room.syncState || {}),
+      isPlaying: false,
+      baseTimestamp: 0,
+      currentTime: 0,
+      startAt: null,
+      playbackRate: 1,
+      lastUpdated: now,
+      updatedBy: req.userId,
+    };
+
+    await room.save();
+
+    if (previousPublicId && previousPublicId !== mediaPublicId) {
+      await mediaCleanupService.enqueue(previousPublicId, previousResourceType, 'media-replaced');
+    }
+
+    res.json({
+      success: true,
+      data: {
+        media: {
+          type: isAudio ? 'local' : 'upload',
+          videoUrl: mediaUrl,
+          audioUrl: isAudio ? mediaUrl : undefined,
+          url: mediaUrl,
+          title,
+          duration: null,
+          publicId: mediaPublicId,
+        },
+      },
     });
   } catch (error) {
     next(error);

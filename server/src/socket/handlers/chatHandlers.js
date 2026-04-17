@@ -58,8 +58,9 @@ module.exports = (socket, io) => {
           return callback({ success: false, error: 'Not in room' });
         }
 
-        // Check if chat is enabled
-        if (!room.settings.allowChat) {
+        // Check if room-level chat is enabled. Keep fallback for legacy docs.
+        const isChatEnabled = room.settings?.chatEnabled ?? room.settings?.allowChat ?? true;
+        if (!isChatEnabled) {
           return callback({ success: false, error: 'Chat disabled in this room' });
         }
 
@@ -107,7 +108,7 @@ module.exports = (socket, io) => {
 
         // Analytics - async, non-blocking
         analyticsService
-          .recordUserAction(socket.userId, 'send_message')
+          .logUserAction(socket.userId, 'message')
           .catch(() => {});
 
         callback({

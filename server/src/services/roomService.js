@@ -2,6 +2,9 @@ const Room = require('../models/mongodb/Room');
 const User = require('../models/mongodb/User');
 const redisClient = require('../config/redis');
 const pgPool = require('../config/postgres');
+const analyticsService = require('./analyticsService');
+const mediaCleanupService = require('./mediaCleanupService');
+const cloudinary = require('../utils/cloudinary');
 const fs = require('fs').promises;
 const path = require('path');
 const { generateRoomCode, createRedisKey } = require('../utils/helpers');
@@ -38,8 +41,8 @@ class RoomService {
           privacy: roomData.settings?.privacy || PRIVACY_LEVELS.PUBLIC,
           requireApproval: roomData.settings?.requireApproval || (roomData.settings?.privacy === PRIVACY_LEVELS.PRIVATE),
           allowGuests: roomData.settings?.allowGuests !== false,
-          allowChat: roomData.settings?.allowChat !== false,
-          allowReactions: roomData.settings?.allowReactions !== false,
+          chatEnabled: roomData.settings?.chatEnabled ?? roomData.settings?.allowChat ?? true,
+          reactionsEnabled: roomData.settings?.reactionsEnabled ?? roomData.settings?.allowReactions ?? true,
           allowScreenShare: roomData.settings?.allowScreenShare !== false,
           allowQueue: roomData.settings?.allowQueue !== false,
           slowMode: roomData.settings?.slowMode || false
@@ -66,6 +69,19 @@ class RoomService {
 
       await room.save();
       console.log(`[ROOM-SERVICE] ✓ Room saved (${Date.now() - startTime}ms)`);
+
+      // Initialize PostgreSQL analytics rows for this room/day.
+      await analyticsService.ensureRoom(
+        room._id.toString(),
+        room.roomCode,
+        room.type,
+        room.hostId,
+        room.createdAt || new Date()
+      );
+      await analyticsService.updateRoomStats(room._id.toString(), {
+        participantCount: 1,
+        peakParticipants: 1,
+      });
 
       // Store in Redis for quick access
       console.log(`[ROOM-SERVICE] 📤 Caching in Redis...`);
@@ -343,6 +359,12 @@ class RoomService {
       }
 
       const finalCount = result && result[2] ? parseInt(result[2]) : room.participants.length;
+
+      await analyticsService.updateRoomStats(room._id.toString(), {
+        participantCount: isNaN(finalCount) ? room.participants.length : finalCount,
+        peakParticipants: room.stats?.peakParticipants || room.participantCount || 0,
+      });
+
       return {
         room,
         status: 'joined',
@@ -502,6 +524,11 @@ class RoomService {
       room.participantCount = room.participants.length;
       await room.save();
 
+      await analyticsService.updateRoomStats(room._id.toString(), {
+        participantCount: room.participantCount,
+        peakParticipants: room.stats?.peakParticipants || room.participantCount || 0,
+      });
+
       return { 
         room, 
         newHostId,
@@ -589,6 +616,9 @@ async getRoomParticipants(roomCode) {
       }
 
       // Update status
+      const cloudinaryPublicId = room?.media?.current?.metadata?.cloudinary?.publicId;
+      const cloudinaryResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+
       room.status = ROOM_STATUS.ENDED;
       room.endedAt = new Date();
       room.participants = [];
@@ -596,8 +626,29 @@ async getRoomParticipants(roomCode) {
       room.joinRequests = [];
       room.coHosts = [];
       room.participantCount = 0;
+      room.media = {
+        current: null,
+        queue: [],
+        history: [],
+      };
       room.version += 1;
       await room.save();
+
+      if (cloudinaryPublicId) {
+        try {
+          const result = await cloudinary.deleteAsset(cloudinaryPublicId, cloudinaryResourceType);
+          const ok = result?.result === 'ok' || result?.result === 'not_found';
+          if (!ok) {
+            throw new Error(`Delete failed: ${result?.result || 'unknown'}`);
+          }
+        } catch (_error) {
+          await mediaCleanupService.enqueue(
+            cloudinaryPublicId,
+            cloudinaryResourceType,
+            'room-ended'
+          );
+        }
+      }
 
       // Calculate watch time for analytics
       if (room.startedAt) {
@@ -606,11 +657,15 @@ async getRoomParticipants(roomCode) {
         );
         
         await pgPool.query(
-          `UPDATE room_analytics 
-           SET total_watch_time_minutes = $1,
-               peak_concurrent = $2
-           WHERE room_id = $3 AND date = CURRENT_DATE`,
-          [watchTimeMinutes, room.stats.peakParticipants, room._id.toString()]
+          `INSERT INTO room_analytics (room_id, date, total_watch_time_minutes, peak_concurrent, participant_count)
+           VALUES ($1, CURRENT_DATE, $2, $3, $4)
+           ON CONFLICT (room_id, date)
+           DO UPDATE SET
+             total_watch_time_minutes = EXCLUDED.total_watch_time_minutes,
+             peak_concurrent = GREATEST(room_analytics.peak_concurrent, EXCLUDED.peak_concurrent),
+             participant_count = EXCLUDED.participant_count,
+             updated_at = NOW()`,
+          [room._id.toString(), watchTimeMinutes, room.stats.peakParticipants || 0, room.participantCount || 0]
         );
       }
 
@@ -647,7 +702,7 @@ async getRoomParticipants(roomCode) {
   getDefaultPermissions(isGuest) {
     if (isGuest) {
       return {
-        canControl: false,
+        canControl: true,
         canAddToQueue: true,
         canChat: true,
         canReact: true,
@@ -657,7 +712,7 @@ async getRoomParticipants(roomCode) {
       };
     }
     return {
-      canControl: false,
+      canControl: true,
       canAddToQueue: true,
       canChat: true,
       canReact: true,

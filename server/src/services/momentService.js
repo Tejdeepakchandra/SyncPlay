@@ -270,7 +270,13 @@ class MomentService {
           moment = result.moment;
         }
         
-        return { detected: true, moment, count: parsedCount, intensity };
+        return {
+          detected: true,
+          moment,
+          count: parsedCount,
+          intensity,
+          captureJobId: moment?.captureJobId,
+        };
       }
       
       return { detected: false, count: parsedCount, intensity };
@@ -315,22 +321,21 @@ class MomentService {
     const { roomCode, type, timestamp, intensity, participants = [] } = momentData;
     
     // Get room info
-    const room = await Room.findOne({ roomCode })
-      .populate('hostId', 'username displayName avatar');
+    const room = await Room.findOne({ roomCode });
     
     if (!room) throw new Error('Room not found');
     
     // BATCH FETCH all user data — FIXED N+1
     const realUserIds = participants.filter(id => id && !id.startsWith('guest-'));
     const users = realUserIds.length > 0 
-      ? await User.find({ _id: { $in: realUserIds } })
-          .select('username displayName avatar')
+      ? await User.find({ clerkId: { $in: realUserIds } })
+        .select('clerkId username displayName avatar')
           .lean()
       : [];
     
     const userMap = {};
     users.forEach(user => {
-      userMap[user._id.toString()] = user;
+      userMap[user.clerkId] = user;
     });
 
     // Build participant list
@@ -347,7 +352,7 @@ class MomentService {
         } else {
           const user = userMap[id];
           return user ? {
-            userId: user._id,
+            userId: user.clerkId,
             username: user.username,
             displayName: user.displayName,
             avatar: user.avatar,
@@ -358,11 +363,11 @@ class MomentService {
 
     // Get media source info
     const mediaSource = {
-      type: room.media?.source || 'unknown',
-      url: room.media?.url,
-      title: room.media?.title,
-      thumbnail: room.media?.thumbnail,
-      duration: room.media?.duration
+      type: room.media?.current?.source || 'unknown',
+      url: room.media?.current?.url,
+      title: room.media?.current?.title,
+      thumbnail: room.media?.current?.thumbnail,
+      duration: room.media?.current?.duration
     };
 
     // Generate capture job ID
@@ -402,6 +407,16 @@ class MomentService {
         intensity
       } : null
     };
+  }
+
+  // Compatibility method used by chat handlers.
+  async processComment(roomCode, userId, text, videoTimestamp = 0, username = 'Guest') {
+    return this.addComment(roomCode, userId, text, videoTimestamp, username);
+  }
+
+  // Compatibility method for future non-socket pipelines.
+  async processReaction(roomCode, userId, reaction, videoTimestamp = 0, username = 'Guest') {
+    return this.addReaction(roomCode, userId, reaction, videoTimestamp, username);
   }
 
   /**

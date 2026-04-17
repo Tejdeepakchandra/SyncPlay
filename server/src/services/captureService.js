@@ -15,9 +15,9 @@ class CaptureService {
   /**
    * Initialize capture for a moment
    */
-  async initializeCapture(momentId, participants) {
+  async initializeCapture(momentId, participants, captureIdOverride = null) {
     try {
-      const captureId = uuidv4();
+      const captureId = captureIdOverride || uuidv4();
       const now = Date.now();
       
       // Store capture metadata in Redis only

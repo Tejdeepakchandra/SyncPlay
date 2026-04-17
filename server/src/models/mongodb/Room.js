@@ -43,6 +43,7 @@ const participantSchema = new mongoose.Schema({
     micDisabledByHost: { type: Boolean, default: false },
     videoDisabledByHost: { type: Boolean, default: false },
     chatDisabledByHost: { type: Boolean, default: false },
+    mediaControlDisabledByHost: { type: Boolean, default: false },
     restrictedAt: Date,
     restrictedBy: String // Host ID who applied restriction
   },
@@ -230,7 +231,7 @@ const roomSchema = new mongoose.Schema({
     history: [{
       media: mediaSchema,
       playedAt: Date,
-      playedBy: mongoose.Schema.Types.ObjectId
+      playedBy: String
     }]
   },
   
@@ -238,10 +239,13 @@ const roomSchema = new mongoose.Schema({
   syncState: {
     version: { type: Number, default: 0 },
     isPlaying: { type: Boolean, default: false },
+    baseTimestamp: { type: Number, default: 0 },
     currentTime: { type: Number, default: 0 },
+    startAt: Date,
     playbackRate: { type: Number, default: 1.0 },
     lastUpdated: Date,
-    updatedBy: String
+    updatedBy: String,
+    eventId: String,
   },
   
 
