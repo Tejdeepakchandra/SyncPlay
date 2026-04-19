@@ -1,6 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Home, Film, Music, Users, MessageSquare } from "lucide-react";
-import NotificationDropdown from "@/components/NotificationDropdown";
+import { Home, Film, Music, Users, User, LogIn } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 
 const tabs = [
@@ -8,20 +7,23 @@ const tabs = [
   { to: "/movies", icon: Film, label: "Movies" },
   { to: "/music", icon: Music, label: "Music" },
   { to: "/friends", icon: Users, label: "Friends" },
-  { to: "/messages", icon: MessageSquare, label: "Messages" },
 ];
 
 export default function MobileNav() {
   const location = useLocation();
-  const { user } = useAuth();
+  const { isAuthenticated } = useAuth();
+  const profileTab = isAuthenticated
+    ? { to: "/profile", icon: User, label: "Profile" }
+    : { to: "/sign-in", icon: LogIn, label: "Sign In" };
+  const allTabs = [...tabs, profileTab];
 
   return (
     <nav
-      className="fixed left-0 right-0 bottom-0 z-50 md:hidden glass-nav border-t border-border"
+      className="fixed left-0 right-0 bottom-0 z-50 md:hidden glass-nav border-t border-border mobile-nav-fixed nav-fixed-stable nav-fixed-bottom"
       style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
     >
-      <div className="flex items-center justify-around h-16">
-        {tabs.map((tab) => {
+      <div className="grid grid-cols-5 items-center h-16">
+        {allTabs.map((tab) => {
           const active = location.pathname === tab.to;
           return (
             <Link
@@ -39,7 +41,6 @@ export default function MobileNav() {
             </Link>
           );
         })}
-        {user && <NotificationDropdown variant="mobile" />}
       </div>
     </nav>
   );

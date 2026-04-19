@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Bell, Check, Film, Music, UserPlus, ExternalLink } from "lucide-react";
+import { Bell, Check, Film, MessageSquare, Music, UserPlus, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNotifications } from "@/hooks/useNotifications";
 import { useNavigate } from "react-router-dom";
@@ -18,6 +18,10 @@ function getIcon(type) {
       return <Film className="w-4 h-4 text-primary" />;
     case "music_invite":
       return <Music className="w-4 h-4 text-secondary" />;
+    case "dm_message":
+      return <MessageSquare className="w-4 h-4 text-primary" />;
+    case "room_story":
+      return <Film className="w-4 h-4 text-accent" />;
     case "friend_request":
       return <UserPlus className="w-4 h-4 text-friends" />;
     default:
@@ -41,13 +45,15 @@ export default function NotificationDropdown({ variant = "desktop" }) {
 
   const handleClick = (notif) => {
     markRead(notif.id);
-    if (notif.metadata?.room_path) {
-      navigate(notif.metadata.room_path);
+    const destination = notif.metadata?.path || notif.metadata?.room_path || null;
+    if (destination) {
+      navigate(destination);
       setOpen(false);
     }
   };
 
   const isMobile = variant === "mobile";
+  const isTopMobile = variant === "top-mobile";
 
   return (
     <div className="relative" ref={ref}>
@@ -56,6 +62,8 @@ export default function NotificationDropdown({ variant = "desktop" }) {
         className={`relative transition-colors ${
           isMobile
             ? "flex flex-col items-center gap-0.5 text-[10px] font-medium text-muted-foreground"
+            : isTopMobile
+              ? "p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50"
             : "p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50"
         }`}
       >
@@ -66,6 +74,8 @@ export default function NotificationDropdown({ variant = "desktop" }) {
             className={`absolute bg-primary rounded-full ${
               isMobile
                 ? "top-0 right-1 w-2 h-2"
+                : isTopMobile
+                  ? "top-1.5 right-1.5 w-2 h-2 animate-pulse"
                 : "top-1.5 right-1.5 w-2 h-2 animate-pulse"
             }`}
           />
@@ -81,6 +91,8 @@ export default function NotificationDropdown({ variant = "desktop" }) {
             className={`absolute z-50 bg-card border border-border rounded-2xl shadow-2xl shadow-background/60 overflow-hidden ${
               isMobile
                 ? "bottom-full mb-2 right-0 w-72"
+                : isTopMobile
+                  ? "right-0 top-full mt-2 w-[min(22rem,calc(100vw-1rem))]"
                 : "right-0 top-full mt-2 w-80"
             }`}
           >
@@ -121,7 +133,7 @@ export default function NotificationDropdown({ variant = "desktop" }) {
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       <span className="text-[10px] text-muted-foreground">{timeAgo(notif.created_at)}</span>
-                      {notif.metadata?.room_path && <ExternalLink className="w-3 h-3 text-muted-foreground/50" />}
+                      {(notif.metadata?.path || notif.metadata?.room_path) && <ExternalLink className="w-3 h-3 text-muted-foreground/50" />}
                     </div>
                   </button>
                 ))

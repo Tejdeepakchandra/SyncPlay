@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useAuth as useClerkAuth, useUser } from "@clerk/clerk-react";
 import api from "@/services/api";
 import { connectSocket, disconnectSocket } from "@/services/socket";
@@ -18,24 +18,35 @@ export function useAuthSync() {
   const syncedRef = useRef(false);
   const previousSignInStateRef = useRef(null);
 
-  // ✅ FIX 1: Axios interceptor setup (unchanged)
-  useEffect(() => {
-    if (!isLoaded || !isSignedIn) return;
+  const syncUserProfile = useCallback((token) => {
+    if (!token || !clerkUser || syncedRef.current) return;
 
-    const id = api.interceptors.request.use(async (config) => {
-      try {
-        const token = await getToken();
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
+    syncedRef.current = true;
+    console.log('🔄 Syncing user to MongoDB (background)...');
+
+    api
+      .post(
+        "/auth/sync",
+        {
+          email: clerkUser.emailAddresses?.[0]?.emailAddress,
+          username: clerkUser.username,
+          displayName: clerkUser.fullName,
+          imageUrl: clerkUser.imageUrl,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         }
-      } catch {
-        // Token fetch failed — request proceeds without auth header
-      }
-      return config;
-    });
-
-    return () => api.interceptors.request.eject(id);
-  }, [isLoaded, isSignedIn, getToken]);
+      )
+      .then((res) => {
+        console.log('✅ User synced to MongoDB:', res.data?.user?.username);
+      })
+      .catch((err) => {
+        console.warn("⚠️ Auth sync failed (non-blocking):", err.message);
+        syncedRef.current = false;
+      });
+  }, [clerkUser]);
 
   // ✅ FIX 2: Main socket management flow
   // Handles:
@@ -47,42 +58,23 @@ export function useAuthSync() {
 
     const currentSignInState = isSignedIn;
 
-    // ✅ CASE 1: User just signed in
-    if (currentSignInState && !previousSignInStateRef.current) {
-      console.log('🔄 User signed in - transitioning to authenticated socket');
-      
-      // Get token and connect authenticated socket (DON'T WAIT FOR SYNC)
+    const connectAuthenticated = () => {
       getToken()
         .then((token) => {
-          if (token) {
-            console.log('🔌 Connecting authenticated socket...');
-            connectSocket(token);
-          }
+          if (!token) return;
+          console.log('🔌 Connecting authenticated socket...');
+          connectSocket(token);
+          syncUserProfile(token);
         })
         .catch((err) => {
           console.error('Failed to get token:', err.message);
         });
+    };
 
-      // Sync user to MongoDB in background (non-blocking)
-      if (clerkUser && !syncedRef.current) {
-        syncedRef.current = true;
-        console.log('🔄 Syncing user to MongoDB (background)...');
-        
-        api
-          .post("/auth/sync", {
-            email: clerkUser.emailAddresses?.[0]?.emailAddress,
-            username: clerkUser.username,
-            displayName: clerkUser.fullName,
-            imageUrl: clerkUser.imageUrl,
-          })
-          .then((res) => {
-            console.log('✅ User synced to MongoDB:', res.data?.user?.username);
-          })
-          .catch((err) => {
-            console.warn("⚠️ Auth sync failed (non-blocking):", err.message);
-            syncedRef.current = false; // allow retry
-          });
-      }
+    // ✅ CASE 1: User just signed in
+    if (currentSignInState && !previousSignInStateRef.current) {
+      console.log('🔄 User signed in - transitioning to authenticated socket');
+      connectAuthenticated();
     }
 
     // ✅ CASE 2: User just signed out
@@ -103,8 +95,12 @@ export function useAuthSync() {
     // ✅ CASE 3: Initial load (before any sign in/out)
     if (isLoaded && previousSignInStateRef.current === null) {
       console.log('🔄 Initial app load');
-      
-      if (!isSignedIn) {
+
+      if (isSignedIn) {
+        // First load while already signed in - connect authenticated socket immediately.
+        console.log('🔌 Connecting authenticated socket (initial signed-in load)...');
+        connectAuthenticated();
+      } else {
         // First time user - create guest socket immediately
         console.log('🔌 Connecting guest socket (first visit)...');
         connectSocket(null); // null token = guest mode
@@ -113,7 +109,7 @@ export function useAuthSync() {
 
     previousSignInStateRef.current = currentSignInState;
 
-  }, [isLoaded, isSignedIn, clerkUser, getToken]);
+  }, [isLoaded, isSignedIn, clerkUser, getToken, syncUserProfile]);
 
   // ✅ FIX 3: Cleanup on unmount
   useEffect(() => {

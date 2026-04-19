@@ -11,6 +11,48 @@ const { generateRoomCode, createRedisKey } = require('../utils/helpers');
 const { REDIS_KEYS, CACHE_TTL, ROOM_STATUS, PRIVACY_LEVELS } = require('../utils/constants');
 
 class RoomService {
+
+  upsertParticipantHistory(room, participant, leftAt = new Date()) {
+    if (!room || !participant?.userId) return;
+
+    if (!Array.isArray(room.participantHistory)) {
+      room.participantHistory = [];
+    }
+
+    const joinedAtMs = participant?.joinedAt ? new Date(participant.joinedAt).getTime() : Number.NaN;
+    const leftAtMs = leftAt ? new Date(leftAt).getTime() : Date.now();
+    const computedMinutes = Number.isFinite(joinedAtMs)
+      ? Math.max(0, Math.round((leftAtMs - joinedAtMs) / 60000))
+      : 0;
+
+    const existing = room.participantHistory.find((entry) => String(entry.userId) === String(participant.userId));
+
+    if (existing) {
+      existing.username = participant.username || existing.username || '';
+      existing.displayName = participant.displayName || existing.displayName || participant.username || 'Participant';
+      existing.avatar = participant.avatar || existing.avatar || '';
+      existing.avatar_emoji = participant.avatar_emoji || existing.avatar_emoji || '🧑';
+      existing.role = participant.role || existing.role || 'participant';
+      existing.joinedAt = existing.joinedAt || participant.joinedAt || leftAt;
+      existing.lastActive = participant.lastActive || existing.lastActive || leftAt;
+      existing.leftAt = leftAt;
+      existing.timeSpentMinutes = Math.max(Number(existing.timeSpentMinutes || 0), computedMinutes);
+      return;
+    }
+
+    room.participantHistory.push({
+      userId: participant.userId,
+      username: participant.username || '',
+      displayName: participant.displayName || participant.username || 'Participant',
+      avatar: participant.avatar || '',
+      avatar_emoji: participant.avatar_emoji || '🧑',
+      role: participant.role || 'participant',
+      joinedAt: participant.joinedAt || leftAt,
+      lastActive: participant.lastActive || leftAt,
+      leftAt,
+      timeSpentMinutes: computedMinutes,
+    });
+  }
   
  
   async createRoom(roomData, hostId) {
@@ -515,6 +557,8 @@ class RoomService {
         p => p.userId === userId  // Both are strings now
       );
       if (participantIndex !== -1) {
+        const leavingParticipant = room.participants[participantIndex];
+        this.upsertParticipantHistory(room, leavingParticipant, new Date());
         room.participants.splice(participantIndex, 1);
         room.coHosts = (room.coHosts || []).filter((id) => id !== userId);
         room.version += 1;
@@ -621,6 +665,11 @@ async getRoomParticipants(roomCode) {
 
       room.status = ROOM_STATUS.ENDED;
       room.endedAt = new Date();
+
+      (room.participants || []).forEach((participant) => {
+        this.upsertParticipantHistory(room, participant, room.endedAt);
+      });
+
       room.participants = [];
       room.waitingUsers = [];
       room.joinRequests = [];

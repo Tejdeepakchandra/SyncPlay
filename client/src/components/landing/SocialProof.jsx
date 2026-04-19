@@ -50,7 +50,7 @@ export default function SocialProof() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.6 }}
-          className="glass-panel p-8 lg:p-12"
+          className="landing-panel p-8 lg:p-12"
         >
           <div className="grid sm:grid-cols-3 gap-8 text-center">
             {stats.map((stat, i) => (

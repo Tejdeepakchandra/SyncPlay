@@ -3,11 +3,15 @@ import { useEffect } from 'react';
 import api from './api';
 
 export const useApiAuth = () => {
-  const { getToken, isSignedIn } = useClerkAuth();
+  const { getToken, isSignedIn, isLoaded } = useClerkAuth();
 
   useEffect(() => {
-    if (!isSignedIn) {
-      console.log('🔐 useApiAuth: Not signed in, skipping interceptor setup');
+    if (!isLoaded || !isSignedIn) {
+      if (!isLoaded) {
+        console.log('🔐 useApiAuth: Waiting for Clerk auth to load');
+      } else {
+        console.log('🔐 useApiAuth: Not signed in, skipping interceptor setup');
+      }
       return;
     }
 
@@ -33,5 +37,5 @@ export const useApiAuth = () => {
       console.log('🔐 useApiAuth: Removing request interceptor');
       api.interceptors.request.eject(interceptor);
     };
-  }, [getToken, isSignedIn]);
+  }, [getToken, isLoaded, isSignedIn]);
 };

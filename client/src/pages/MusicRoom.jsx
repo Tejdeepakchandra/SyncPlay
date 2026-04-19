@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -20,6 +20,7 @@ import { useYouTubePlayer } from "@/hooks/useYouTubePlayer";
 import { useRoomSync } from "@/hooks/useRoomSync";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { useWebRTCMesh } from "@/hooks/useWebRTCMesh";
+import { useMediaSession } from "@/hooks/useMediaSession";
 
 // Components
 import RoomAccessGate from "@/components/RoomAccessGate";
@@ -129,6 +130,13 @@ const MusicRoom = () => {
   const { roomCode } = useParams();
   const { user, clerkUser } = useAuth();
 
+  useEffect(() => {
+    const normalized = String(roomCode || "").trim().toUpperCase();
+    if (normalized) {
+      localStorage.setItem("syncplay:last-room-code", normalized);
+    }
+  }, [roomCode]);
+
   // Room data from backend
   const {
     room,
@@ -164,6 +172,8 @@ const MusicRoom = () => {
   const [_trackProgress, _setTrackProgress] = useState(0);
   const [_trackDuration, _setTrackDuration] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
+  const [isTablet, setIsTablet] = useState(false);
+  const [isLandscape, setIsLandscape] = useState(() => window.innerWidth > window.innerHeight);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [floatingReactions, setFloatingReactions] = useState([]);
   const [musicVolume, setMusicVolume] = useState(80);
@@ -181,6 +191,19 @@ const MusicRoom = () => {
   const [_showAudioBubbles, _setShowAudioBubbles] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isLeavingRoom, setIsLeavingRoom] = useState(false);
+  const uniqueParticipantCount = useMemo(() => {
+    if (!Array.isArray(participants) || participants.length === 0) {
+      return Math.max(Number(room?.participantCount || 0), 1);
+    }
+
+    const seen = new Set();
+    participants.forEach((p, index) => {
+      const key = String(p?.userId || p?.id || p?.username || p?.name || `idx:${index}`);
+      seen.add(key);
+    });
+
+    return Math.max(seen.size, 1);
+  }, [participants, room?.participantCount]);
   const [isUploadingTrack, setIsUploadingTrack] = useState(false);
   const [uploadTrackProgress, setUploadTrackProgress] = useState(0);
   const [uploadTrackStatus, setUploadTrackStatus] = useState("");
@@ -191,7 +214,6 @@ const MusicRoom = () => {
   const [roomSettings, setRoomSettings] = useState({
     chatEnabled: true,
     reactionsEnabled: true,
-    isPrivate: false,
     allowScreenShare: false,
     slowMode: false,
   });
@@ -205,6 +227,10 @@ const MusicRoom = () => {
   const pendingSyncActionRef = useRef(null);
   const youtubeErrorFallbackRef = useRef({ mediaKey: null, at: 0 });
   const remoteAudioRefs = useRef(new Map());
+  const lastWatchHeartbeatAtRef = useRef(Date.now());
+  const autoBackgroundDeafenRef = useRef(false);
+  const previousDeafenStateRef = useRef(false);
+  const lastBackgroundYoutubeToastAtRef = useRef(0);
 
   const webrtc = useWebRTC();
   const myUserId = currentUserId || socket.userId || user?.id;
@@ -654,7 +680,7 @@ const MusicRoom = () => {
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [currentTrack?.audioUrl, currentTrack?.sourceType]);
+  }, [currentTrack?.audioUrl, currentTrack?.sourceType, isMuted, musicVolume]);
 
   useEffect(() => {
     if (currentTrack?.sourceType === "local" && localAudioRef.current) {
@@ -693,7 +719,6 @@ const MusicRoom = () => {
     setRoomSettings((prev) => ({
       chatEnabled: room?.settings?.chatEnabled ?? prev.chatEnabled,
       reactionsEnabled: room?.settings?.reactionsEnabled ?? prev.reactionsEnabled,
-      isPrivate: room?.settings?.isPrivate ?? prev.isPrivate,
       allowScreenShare: room?.settings?.allowScreenShare ?? prev.allowScreenShare,
       slowMode: room?.settings?.slowMode ?? prev.slowMode,
     }));
@@ -722,6 +747,70 @@ const MusicRoom = () => {
     };
   }, [roomSync]);
 
+  useEffect(() => {
+    const handleRoomReaction = (data) => {
+      const emoji = String(data?.emoji || "").trim();
+      if (!emoji) return;
+
+      const id = reactionIdRef.current++;
+      const randomX = 20 + Math.random() * 60;
+      setFloatingReactions((prev) => [...prev, { id, emoji, x: randomX }]);
+      setTimeout(() => {
+        setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+      }, 2000);
+    };
+
+    socket.on("room:reaction", handleRoomReaction);
+    return () => socket.off("room:reaction", handleRoomReaction);
+  }, []);
+
+  useEffect(() => {
+    if (!roomCode) return undefined;
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        lastWatchHeartbeatAtRef.current = Date.now();
+      }
+    };
+
+    lastWatchHeartbeatAtRef.current = Date.now();
+
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+      const canTrack =
+        !document.hidden &&
+        isPlaying &&
+        !!currentTrack &&
+        (accessStatus === "granted" || joinStatus === "joined");
+
+      if (!canTrack) {
+        lastWatchHeartbeatAtRef.current = now;
+        return;
+      }
+
+      const watchedSeconds = Math.max(
+        0,
+        Math.min(120, (now - lastWatchHeartbeatAtRef.current) / 1000)
+      );
+      lastWatchHeartbeatAtRef.current = now;
+
+      if (watchedSeconds < 5) return;
+
+      socket.emit("room:watch-heartbeat", {
+        roomCode,
+        watchedSeconds,
+        isPlaying: true,
+      });
+    }, 15000);
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(intervalId);
+    };
+  }, [roomCode, isPlaying, currentTrack, accessStatus, joinStatus]);
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -729,12 +818,66 @@ const MusicRoom = () => {
 
   // Handle mobile detection
   useEffect(() => {
-    const isMobileView = window.innerWidth < 768;
-    setIsMobile(isMobileView);
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    const updateViewport = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      setIsMobile(width < 768);
+      setIsTablet(width >= 768 && width < 1024);
+      setIsLandscape(width > height);
+    };
+
+    updateViewport();
+
+    const handleResize = () => updateViewport();
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!(isMobile || isTablet)) return undefined;
+
+    const handleVisibility = () => {
+      const hidden = document.hidden;
+
+      if (hidden) {
+        if (currentTrack?.sourceType === "youtube" && isPlaying) {
+          const now = Date.now();
+          if (now - lastBackgroundYoutubeToastAtRef.current > 12000) {
+            lastBackgroundYoutubeToastAtRef.current = now;
+            toast("YouTube background limit", {
+              description: "YouTube may pause in background on mobile. Uploaded/local tracks continue more reliably.",
+              duration: 3200,
+            });
+          }
+        }
+
+        if (audioActive && !deafenVoiceChat) {
+          previousDeafenStateRef.current = deafenVoiceChat;
+          autoBackgroundDeafenRef.current = true;
+          setDeafenVoiceChat(true);
+        }
+        return;
+      }
+
+      if (autoBackgroundDeafenRef.current) {
+        setDeafenVoiceChat(previousDeafenStateRef.current);
+        autoBackgroundDeafenRef.current = false;
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isMobile, isTablet, currentTrack?.sourceType, isPlaying, audioActive, deafenVoiceChat]);
+
+  const useTouchSizedControls = isMobile || isTablet;
+  const roomTopButtonClass = useTouchSizedControls ? "h-10 w-10" : "h-9 w-9";
+  const isPortraitPhone = isMobile && !isLandscape;
 
   // Playback controls
   const togglePlayPause = useCallback(() => {
@@ -809,13 +952,23 @@ const MusicRoom = () => {
   }, [repeat]);
 
   const handleAddReaction = useCallback((emoji) => {
+    if (!roomSettings.reactionsEnabled) {
+      toast.error("Reactions are disabled by the host");
+      return;
+    }
+
     const id = reactionIdRef.current++;
     const randomX = 20 + Math.random() * 60;
     setFloatingReactions(prev => [...prev, { id, emoji, x: randomX }]);
+    socket.emit("room:reaction", { roomCode, emoji }, (response) => {
+      if (response && response.success === false) {
+        toast.error(response.error || "Failed to send reaction");
+      }
+    });
     setTimeout(() => {
       setFloatingReactions(prev => prev.filter(r => r.id !== id));
     }, 2000);
-  }, []);
+  }, [roomCode, roomSettings.reactionsEnabled]);
 
   const handleToggleAudio = useCallback(async () => {
     if (!audioActive && micBlockedByHost) {
@@ -877,6 +1030,30 @@ const MusicRoom = () => {
       setShowLeaveConfirm(false);
     }
   }, [isLeavingRoom, endRoom, navigate]);
+
+  const handleMediaPlay = useCallback(() => {
+    if (!isPlaying) {
+      togglePlayPause();
+    }
+  }, [isPlaying, togglePlayPause]);
+
+  const handleMediaPause = useCallback(() => {
+    if (isPlaying) {
+      togglePlayPause();
+    }
+  }, [isPlaying, togglePlayPause]);
+
+  useMediaSession({
+    title: currentTrack?.title || room?.name || "SyncPlay Music Room",
+    artist: currentTrack?.artist || "SyncPlay",
+    artwork: currentTrack?.thumbnail || undefined,
+    isPlaying,
+    mediaElement: currentTrack?.sourceType === "local" ? localAudioRef.current : null,
+    onPlay: handleMediaPlay,
+    onPause: handleMediaPause,
+    onNextTrack: playNext,
+    onPreviousTrack: playPrevious,
+  });
 
   const handleSelectTrack = useCallback((track) => {
     const nextTrack = {
@@ -1172,7 +1349,7 @@ const MusicRoom = () => {
   }
 
   return (
-    <div ref={containerRef} className="h-screen bg-[radial-gradient(circle_at_12%_15%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_88%_80%,rgba(34,197,94,0.16),transparent_36%),hsl(224,40%,6%)] flex flex-col overflow-hidden">
+    <div ref={containerRef} className="h-screen bg-[radial-gradient(circle_at_12%_15%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_88%_80%,rgba(34,197,94,0.16),transparent_36%),hsl(224,40%,6%)] flex flex-col overflow-hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       {/* Join Request Notifications for Host */}
       {isHost && joinRequests.length > 0 && (
         <JoinRequestNotification
@@ -1206,18 +1383,18 @@ const MusicRoom = () => {
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-nav px-4 py-3 flex items-center justify-between z-30 relative border-b border-emerald-400/20 bg-emerald-950/20"
+        className="glass-nav px-3 sm:px-4 py-2.5 sm:py-3 flex items-start sm:items-center justify-between gap-2 z-30 relative border-b border-emerald-400/20 bg-emerald-950/20"
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button onClick={handleRequestLeave} className="text-muted-foreground hover:text-foreground transition-colors">
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <div>
-            <h1 className="font-display text-sm font-semibold text-foreground">
+          <div className="min-w-0">
+            <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[10rem] sm:max-w-none">
               {currentTrack?.title || "Chill Vibes Session"}
             </h1>
             <div className="flex items-center gap-2">
-              <p className="text-xs text-muted-foreground">{participants.length} listening · Room {roomCode?.slice(0, 6)}</p>
+              <p className={`text-xs text-muted-foreground truncate ${isTablet && !isLandscape ? "max-w-[9rem]" : "max-w-[11rem] sm:max-w-none"}`}>{uniqueParticipantCount} listening · Room {roomCode?.slice(0, 6)}</p>
               <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
                 syncStatus === "synced" ? "bg-emerald-400/20 text-emerald-300" : "bg-amber-400/20 text-amber-300"
               }`}>
@@ -1228,13 +1405,14 @@ const MusicRoom = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 relative">
-          {(room?.participantCount || participants.length) > 0 && (
+        <div className={`flex items-center gap-1 relative ${isPortraitPhone ? "max-w-[56vw] flex-wrap justify-end" : "max-w-[48vw] sm:max-w-none overflow-x-auto no-scrollbar"}`}>
+          {uniqueParticipantCount > 0 && (
             <RoomInfoBar
               roomId={roomCode}
               roomType="music"
+              roomName={room?.name || "Music Room"}
               host={participants.find(p => p.role === "host")?.name || participants[0]?.name || "Host"}
-              participantCount={room?.participantCount || participants.length}
+              participantCount={uniqueParticipantCount}
               isHost={isHost}
             />
           )}
@@ -1255,7 +1433,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowPlaylist(!showPlaylist);
             }}
-            className={showPlaylist ? "text-emerald-300" : "text-muted-foreground"}
+            className={`${roomTopButtonClass} ${showPlaylist ? "text-emerald-300" : "text-muted-foreground"}`}
             title="Queue"
           >
             <ListMusic className="w-4 h-4" />
@@ -1267,7 +1445,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowChat(!showChat);
             }}
-            className={showChat ? "text-emerald-300" : "text-muted-foreground"}
+            className={`${roomTopButtonClass} ${showChat ? "text-emerald-300" : "text-muted-foreground"}`}
             title="Chat"
           >
             <MessageSquare className="w-4 h-4" />
@@ -1279,7 +1457,7 @@ const MusicRoom = () => {
               closeAllPanels();
               setShowMixer(!showMixer);
             }}
-            className={showMixer ? "text-emerald-300" : "text-muted-foreground"}
+            className={`${roomTopButtonClass} ${showMixer ? "text-emerald-300" : "text-muted-foreground"}`}
             title="Volume Mixer"
           >
             <Sliders className="w-4 h-4" />
@@ -1292,7 +1470,7 @@ const MusicRoom = () => {
                 closeAllPanels();
                 setShowHostControls(!showHostControls);
               }}
-              className={showHostControls ? "text-emerald-300" : "text-muted-foreground"}
+              className={`${roomTopButtonClass} ${showHostControls ? "text-emerald-300" : "text-muted-foreground"}`}
               title={userRole === "host" ? "Host Controls" : "Co-Host Controls"}
             >
               <Settings className="w-4 h-4" />
@@ -1302,7 +1480,7 @@ const MusicRoom = () => {
             size="sm"
             variant="outline"
             onClick={handleRequestLeave}
-            className="ml-2 border-emerald-300/30 text-emerald-200 hover:bg-emerald-500/10"
+            className={`ml-2 border-emerald-300/30 text-emerald-200 hover:bg-emerald-500/10 ${isPortraitPhone ? "basis-full ml-0 mt-1" : ""}`}
           >
             Leave
           </Button>
@@ -1407,7 +1585,7 @@ const MusicRoom = () => {
                   <Button size="icon" variant="ghost" onClick={cycleRepeat} className={repeat !== "off" ? "text-emerald-300" : "text-muted-foreground"}><Repeat className="w-4 h-4" /></Button>
                 </div>
 
-                <div className="flex items-center justify-between w-full max-w-sm gap-2">
+                <div className="flex items-center justify-between w-full max-w-sm gap-2 pb-[calc(env(safe-area-inset-bottom,0px)+0.25rem)]">
                   <div className="flex items-center gap-1">
                     <Button size="icon" variant="ghost" onClick={() => setIsLiked(!isLiked)} className={isLiked ? "text-destructive" : "text-muted-foreground"}><Heart className={`w-4 h-4 ${isLiked ? "fill-current" : ""}`} /></Button>
                     <Button size="icon" variant="ghost" onClick={() => setIsBookmarked(!isBookmarked)} className={isBookmarked ? "text-emerald-300" : "text-muted-foreground"}><Bookmark className="w-4 h-4" /></Button>
@@ -1600,7 +1778,7 @@ const MusicRoom = () => {
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <div className="p-3 border-t border-glass-border flex items-center gap-2">
+              <div className="p-3 border-t border-glass-border flex items-center gap-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.5rem)" }}>
                 <Input
                   placeholder="Say something..."
                   value={chatMessage}

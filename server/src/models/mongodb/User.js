@@ -36,6 +36,11 @@ const userSchema = new mongoose.Schema({
         type: String,
         default: 'https://res.cloudinary.com/demo/image/upload/v1/avatar/default-avatar.png',
     },
+    avatar_emoji: {
+        type: String,
+        default: '🧑',
+        maxlength: 8,
+    },
     bio: {
         type: String,
         maxlength: 200,
@@ -44,13 +49,27 @@ const userSchema = new mongoose.Schema({
     preferences: {
         theme: {
             type: String,
-            enum : ['light', 'dark'],
-            default: 'dark'
+            enum : ['midnight-cinema', 'sunset-lounge', 'arctic-frost', 'dark', 'light'],
+            default: 'midnight-cinema'
         },
         notifications: {
             email: {type: Boolean, default: true},
             push: {type: Boolean, default: true},
             storyRemainders: {type: Boolean, default: true},
+            roomInvites: { type: Boolean, default: true },
+            friendRequests: { type: Boolean, default: true },
+            messages: { type: Boolean, default: true },
+            marketing: { type: Boolean, default: false },
+        },
+        privacy: {
+            showOnline: { type: Boolean, default: true },
+            showActivity: { type: Boolean, default: true },
+            allowInvites: { type: Boolean, default: true },
+        },
+        discovery: {
+            movieGenres: [{ type: String }],
+            musicGenres: [{ type: String }],
+            languages: [{ type: String }],
         },
         autoStory: {
             type: Boolean,
@@ -62,9 +81,35 @@ const userSchema = new mongoose.Schema({
         roomsCreated: { type: Number, default: 0 },
         roomsJoined: { type: Number, default: 0 },
         watchTimeMinutes: { type: Number, default: 0 },
+        watchedStreakDays: { type: Number, default: 0 },
         friendsCount: { type: Number, default: 0 },
         momentCreated: { type: Number, default: 0 },
         storiesCreated: { type: Number, default: 0 },
+        cupsWon: { type: Number, default: 0 },
+    },
+
+    favorites: {
+        rooms: [{
+            roomCode: { type: String, trim: true, uppercase: true },
+            name: { type: String, trim: true, maxlength: 120 },
+            type: { type: String, enum: ['movie', 'music', 'custom'] },
+            addedAt: { type: Date, default: Date.now },
+            _id: false,
+        }],
+        moments: [{
+            momentId: { type: String, trim: true },
+            title: { type: String, trim: true, maxlength: 120 },
+            roomCode: { type: String, trim: true, uppercase: true },
+            addedAt: { type: Date, default: Date.now },
+            _id: false,
+        }],
+        activities: [{
+            activityId: { type: String, trim: true },
+            label: { type: String, trim: true, maxlength: 160 },
+            type: { type: String, trim: true, maxlength: 40 },
+            addedAt: { type: Date, default: Date.now },
+            _id: false,
+        }],
     },
 
     friends: [{

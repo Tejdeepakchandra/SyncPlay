@@ -12,7 +12,7 @@ export default function MoviePreview() {
 
   return (
     <section className="py-24 lg:py-32 relative overflow-hidden">
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-primary/5 blur-[120px] pointer-events-none" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[460px] h-[460px] rounded-full bg-primary/6 blur-[80px] pointer-events-none" />
 
       <div className="container mx-auto px-4 lg:px-8">
         <div className="grid lg:grid-cols-2 gap-16 items-center">
@@ -25,7 +25,7 @@ export default function MoviePreview() {
             viewport={{ once: true, amount: 0.3 }}
             className="order-2 lg:order-1"
           >
-            <div className="glass-panel p-4 glow-movie">
+            <div className="landing-panel p-4">
               {/* Fake player */}
               <div className="aspect-video rounded-xl bg-muted/30 relative overflow-hidden group">
                 <div className="absolute inset-0 bg-gradient-to-t from-background/80 via-transparent to-transparent" />
@@ -44,8 +44,8 @@ export default function MoviePreview() {
                 <div className="absolute bottom-0 left-0 right-0 p-4">
                   <div className="w-full h-1 rounded-full bg-muted/50 mb-3 overflow-hidden">
                     <motion.div
-                      animate={{ width: ["30%", "35%", "30%"] }}
-                      transition={{ duration: 3, repeat: Infinity }}
+                      initial={{ width: "34%" }}
+                      animate={{ width: "34%" }}
                       className="h-full rounded-full gradient-movie"
                     />
                   </div>
@@ -65,21 +65,19 @@ export default function MoviePreview() {
 
               {/* Chat peek */}
               <motion.div
-                animate={{ y: [0, -2, 0] }}
-                transition={{ duration: 2, repeat: Infinity }}
+                initial={{ opacity: 0, y: 6 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.35 }}
                 className="mt-3 flex items-center gap-2 px-2"
               >
                 <MessageCircle className="w-4 h-4 text-muted-foreground" />
                 <div className="flex-1 h-8 rounded-lg bg-muted/30 px-3 flex items-center">
                   <span className="text-xs text-muted-foreground">Type a message...</span>
                 </div>
-                <motion.span 
-                  animate={{ scale: [1, 1.2, 1] }}
-                  transition={{ duration: 1, repeat: Infinity }}
-                  className="text-lg"
-                >
+                <span className="text-lg">
                   😂
-                </motion.span>
+                </span>
               </motion.div>
             </div>
           </motion.div>
@@ -125,7 +123,7 @@ export default function MoviePreview() {
                   className="flex items-center gap-3"
                 >
                   <motion.div
-                    whileHover={{ scale: 1.2, rotate: 360 }}
+                    whileHover={{ scale: 1.12 }}
                     transition={{ duration: 0.3 }}
                     className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0"
                   >

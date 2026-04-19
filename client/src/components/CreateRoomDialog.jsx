@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Lock, Globe, Check, Copy, Share2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,10 +11,10 @@ import { toast } from "sonner";
 
 const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
   const navigate = useNavigate();
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading, clerkLoaded, sessionLoaded } = useAuth();
   const [step, setStep] = useState(1);
   const [roomName, setRoomName] = useState("");
-  const [isPrivate, setIsPrivate] = useState(true);
+  const [isPrivate, setIsPrivate] = useState(false);
   const [friends, setFriends] = useState([]);
   const [selectedFriends, setSelectedFriends] = useState([]);
   const [copied, setCopied] = useState(false);
@@ -38,6 +39,30 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
       }, 500);
     }
   }, [open, isAuthenticated, onClose]);
+
+  useEffect(() => {
+    if (!open || !isAuthenticated || !clerkLoaded || !sessionLoaded) return;
+
+    const loadFriends = async () => {
+      try {
+        const response = await api.get('/friends');
+        const rows = response?.data?.data?.friends || [];
+        const mapped = rows.map((row) => ({
+          id: row?.friendProfile?.id,
+          userId: row?.friendProfile?.id,
+          display_name: row?.friendProfile?.display_name,
+          username: row?.friendProfile?.username,
+          avatar_emoji: row?.friendProfile?.avatar_emoji || '🧑',
+          is_online: !!row?.friendProfile?.is_online,
+        }));
+        setFriends(mapped.filter((f) => !!f.id));
+      } catch {
+        setFriends([]);
+      }
+    };
+
+    loadFriends();
+  }, [open, isAuthenticated, clerkLoaded, sessionLoaded]);
 
   const toggleFriend = (id) => {
     setSelectedFriends(prev =>
@@ -121,28 +146,53 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
   const handleClose = () => {
     setStep(1);
     setRoomName("");
+    setIsPrivate(false);
     setSelectedFriends([]);
     setGeneratedRoomCode("");
     setCopied(false);
     onClose();
   };
 
-  if (!open) return null;
+  useEffect(() => {
+    if (!open) return undefined;
 
-  return (
+    const previous = {
+      bodyOverflow: document.body.style.overflow,
+      bodyTouchAction: document.body.style.touchAction,
+      htmlOverflow: document.documentElement.style.overflow,
+      htmlTouchAction: document.documentElement.style.touchAction,
+    };
+
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+    document.documentElement.style.overflow = "hidden";
+    document.documentElement.style.touchAction = "none";
+
+    return () => {
+      document.body.style.overflow = previous.bodyOverflow;
+      document.body.style.touchAction = previous.bodyTouchAction;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      document.documentElement.style.touchAction = previous.htmlTouchAction;
+    };
+  }, [open]);
+
+  if (!open) return null;
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <AnimatePresence>
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        className="fixed inset-0 z-[80] flex items-center justify-center p-4"
       >
         <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={handleClose} />
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="relative glass-panel p-6 w-full max-w-md z-10"
+          className="relative glass-panel p-6 w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto z-10"
         >
           <button onClick={handleClose} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
             <X className="w-5 h-5" />
@@ -304,7 +354,8 @@ const CreateRoomDialog = ({ open, onClose, type = "movie" }) => {
           )}
         </motion.div>
       </motion.div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };
 

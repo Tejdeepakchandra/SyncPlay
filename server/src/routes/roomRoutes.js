@@ -3,8 +3,11 @@ const multer = require('multer');
 const roomService = require('../services/roomService');
 const mediaCleanupService = require('../services/mediaCleanupService');
 const Room = require('../models/mongodb/Room');
+const User = require('../models/mongodb/User');
+const Friendship = require('../models/mongodb/Friendship');
 const cloudinary = require('../utils/cloudinary');
 const { validateRoomCreation } = require('../middleware/validation');
+const notificationService = require('../services/notificationService');
 const router = express.Router();
 
 const upload = multer({
@@ -30,6 +33,130 @@ function canControlMedia(room, userId) {
   }
   return participant.permissions?.canControl !== false;
 }
+
+const GENRE_KEYWORDS = {
+  action: ['action', 'avengers', 'marvel', 'hero', 'combat', 'war'],
+  thriller: ['thriller', 'mystery', 'crime', 'detective', 'suspense'],
+  horror: ['horror', 'ghost', 'haunted', 'zombie', 'slasher'],
+  comedy: ['comedy', 'funny', 'sitcom', 'humor', 'laugh'],
+  romance: ['romance', 'love', 'romcom', 'valentine'],
+  scifi: ['sci-fi', 'scifi', 'space', 'future', 'cyber', 'alien'],
+  anime: ['anime', 'otaku', 'manga'],
+  lofi: ['lo-fi', 'lofi', 'chill beats', 'study beats'],
+  edm: ['edm', 'house', 'techno', 'trance', 'rave'],
+  hiphop: ['hip hop', 'hiphop', 'rap', 'trap'],
+  pop: ['pop', 'chart', 'mainstream'],
+  rock: ['rock', 'metal', 'punk'],
+  jazz: ['jazz', 'soul', 'blues'],
+  classical: ['classical', 'orchestra', 'mozart', 'beethoven'],
+  kpop: ['k-pop', 'kpop', 'korean pop'],
+};
+
+const LANGUAGE_KEYWORDS = {
+  english: ['english', 'eng'],
+  hindi: ['hindi', 'bollywood', 'hindustani'],
+  tamil: ['tamil', 'kollywood'],
+  telugu: ['telugu', 'tollywood'],
+  korean: ['korean', 'kdrama', 'k-pop', 'kpop'],
+  japanese: ['japanese', 'anime', 'jpop'],
+  spanish: ['spanish', 'latino', 'reggaeton'],
+};
+
+const parseCsvSet = (value) => {
+  if (!value) return new Set();
+  return new Set(
+    String(value)
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  );
+};
+
+const extractYouTubeId = (url = '') => {
+  const value = String(url || '');
+  const directMatch = value.match(/[?&]v=([a-zA-Z0-9_-]{6,})/);
+  if (directMatch?.[1]) return directMatch[1];
+  const shortMatch = value.match(/youtu\.be\/([a-zA-Z0-9_-]{6,})/);
+  if (shortMatch?.[1]) return shortMatch[1];
+  return null;
+};
+
+const deriveGenresAndLanguages = (room) => {
+  const haystack = `${room?.name || ''} ${room?.media?.current?.title || ''}`.toLowerCase();
+  const genres = new Set();
+  const languages = new Set();
+
+  Object.entries(GENRE_KEYWORDS).forEach(([genre, words]) => {
+    if (words.some((word) => haystack.includes(word))) genres.add(genre);
+  });
+
+  Object.entries(LANGUAGE_KEYWORDS).forEach(([language, words]) => {
+    if (words.some((word) => haystack.includes(word))) languages.add(language);
+  });
+
+  return {
+    genres: [...genres],
+    languages: [...languages],
+  };
+};
+
+const deriveRoomCover = (room) => {
+  const media = room?.media?.current || {};
+  const thumbnail = media?.thumbnail;
+  if (thumbnail) {
+    return { coverUrl: thumbnail, coverType: 'thumbnail' };
+  }
+
+  const ytId = extractYouTubeId(media?.url || media?.metadata?.videoUrl || '');
+  if (ytId) {
+    return {
+      coverUrl: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
+      coverType: 'youtube',
+    };
+  }
+
+  const cloudinaryPublicId = media?.metadata?.cloudinary?.publicId;
+  if (cloudinaryPublicId && media?.url && String(media.url).includes('res.cloudinary.com')) {
+    try {
+      const [, cloudName] = String(media.url).match(/res\.cloudinary\.com\/([^/]+)/) || [];
+      if (cloudName) {
+        return {
+          coverUrl: `https://res.cloudinary.com/${cloudName}/video/upload/so_2,w_960,h_540,c_fill,q_auto,f_jpg/${cloudinaryPublicId}.jpg`,
+          coverType: 'cloudinary-video-frame',
+        };
+      }
+    } catch {
+      // Ignore parsing errors and fallback.
+    }
+  }
+
+  return { coverUrl: '', coverType: 'none' };
+};
+
+const scoreRoom = ({ room, friendHostIds, preferredGenres, preferredLanguages, includePersonalized }) => {
+  const recencyMinutes = Math.max(0, (Date.now() - new Date(room.updatedAt || room.createdAt).getTime()) / 60000);
+  const freshnessScore = Math.max(0, 12 - Math.min(12, recencyMinutes / 5));
+
+  const genres = room.meta?.genres || [];
+  const languages = room.meta?.languages || [];
+  const matchedGenres = genres.filter((g) => preferredGenres.has(g));
+  const matchedLanguages = languages.filter((l) => preferredLanguages.has(l));
+
+  const friendHostBoost = friendHostIds.has(room.host?.id) ? 25 : 0;
+  const genreBoost = matchedGenres.length * 8;
+  const languageBoost = matchedLanguages.length * 6;
+  const coverBoost = room.cover?.coverUrl ? 2 : 0;
+
+  const base = Number(room.participantCount || 0) * 3 + freshnessScore + coverBoost;
+  const personalizedBoost = includePersonalized ? friendHostBoost + genreBoost + languageBoost : 0;
+
+  return {
+    score: base + personalizedBoost,
+    matchedGenres,
+    matchedLanguages,
+    friendHostBoost,
+  };
+};
 
 /**
  * Create new room
@@ -57,8 +184,42 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
     
     console.log(`[ROOMS] 🔄 Calling roomService.createRoom...`);
     const room = await roomService.createRoom(req.body, hostId);
+
+    const invitedUserIds = (room.invitedUsers || [])
+      .map((inv) => inv?.userId)
+      .filter(Boolean);
+
+    if (invitedUserIds.length > 0) {
+      const inviterUser = await User.findOne({ clerkId: hostId }).select('displayName username').lean();
+      const roomPath = room.type === 'music' ? `/music/room/${room.roomCode}` : `/room/${room.roomCode}`;
+      await notificationService.createManyNotifications({
+        io: req.app.get('io'),
+        userIds: invitedUserIds,
+        actorId: hostId,
+        type: 'room_invite',
+        title: `${inviterUser?.displayName || inviterUser?.username || 'A friend'} invited you`,
+        body: `Join \"${room.name}\" (${room.type})`,
+        metadata: {
+          room_code: room.roomCode,
+          room_name: room.name,
+          room_type: room.type,
+          room_path: roomPath,
+          path: roomPath,
+        },
+      });
+    }
     
     console.log(`[ROOMS] ✅ Room created: ${room.roomCode} in ${Date.now() - startTime}ms`);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('discovery:rooms-updated', {
+        type: room.type,
+        roomCode: room.roomCode,
+        roomName: room.name,
+        reason: 'room-created',
+        at: new Date().toISOString(),
+      });
+    }
     
     res.status(201).json({
       success: true,
@@ -71,6 +232,130 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
     });
   } catch (error) {
     console.log(`[ROOMS] ❌ Error after ${Date.now() - startTime}ms:`, error.message);
+    next(error);
+  }
+});
+
+/**
+ * Discover rooms
+ * GET /api/rooms?type=movie|music&status=active|lobby&limit=24
+ */
+router.get('/', async (req, res, next) => {
+  try {
+    const type = String(req.query.type || '').trim().toLowerCase();
+    const requestedStatuses = String(req.query.status || 'active,lobby')
+      .split(',')
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
+    const allowedStatuses = ['lobby', 'active', 'paused', 'ended'];
+    const statusList = requestedStatuses.filter((status) => allowedStatuses.includes(status));
+    const limit = Math.min(Math.max(Number(req.query.limit) || 24, 1), 50);
+    const personalized = String(req.query.personalized || '').trim().toLowerCase();
+    const includePersonalized = personalized === '1' || personalized === 'true';
+
+    const filter = {
+      status: { $in: statusList.length > 0 ? statusList : ['active', 'lobby'] },
+      'settings.privacy': { $ne: 'private' },
+    };
+
+    if (type && ['movie', 'music', 'custom'].includes(type)) {
+      filter.type = type;
+    }
+
+    const rooms = await Room.find(filter)
+      .select('roomCode name type status participantCount participants media.current settings createdAt updatedAt')
+      .sort({ participantCount: -1, updatedAt: -1 })
+      .limit(limit)
+      .lean();
+
+    let friendHostIds = new Set();
+    let preferredGenres = parseCsvSet(req.query.preferredGenres);
+    let preferredLanguages = parseCsvSet(req.query.preferredLanguages);
+
+    if (includePersonalized && !req.isGuest && req.userId) {
+      const [userDoc, links] = await Promise.all([
+        User.findOne({ clerkId: req.userId }).select('preferences.discovery').lean(),
+        Friendship.find({
+          status: 'accepted',
+          $or: [{ requesterId: req.userId }, { addresseeId: req.userId }],
+        })
+          .select('requesterId addresseeId')
+          .lean(),
+      ]);
+
+      friendHostIds = new Set(
+        links.map((f) => (f.requesterId === req.userId ? f.addresseeId : f.requesterId)).filter(Boolean)
+      );
+
+      if (preferredGenres.size === 0) {
+        const mergedGenres = [
+          ...(userDoc?.preferences?.discovery?.movieGenres || []),
+          ...(userDoc?.preferences?.discovery?.musicGenres || []),
+        ];
+        preferredGenres = new Set(mergedGenres.map((g) => String(g).toLowerCase()));
+      }
+
+      if (preferredLanguages.size === 0) {
+        preferredLanguages = new Set((userDoc?.preferences?.discovery?.languages || []).map((l) => String(l).toLowerCase()));
+      }
+    }
+
+    const data = rooms.map((room) => {
+      const hostParticipant = Array.isArray(room.participants)
+        ? room.participants.find((p) => p?.role === 'host')
+        : null;
+
+      const meta = deriveGenresAndLanguages(room);
+      const cover = deriveRoomCover(room);
+
+      const payload = {
+        roomCode: room.roomCode,
+        name: room.name,
+        type: room.type,
+        status: room.status,
+        participantCount: Number(room.participantCount || 0),
+        privacy: room?.settings?.privacy || 'public',
+        host: {
+          id: hostParticipant?.userId || room?.hostId || null,
+          name: hostParticipant?.displayName || hostParticipant?.username || 'Host',
+          avatarEmoji: hostParticipant?.avatar_emoji || '🧑',
+        },
+        media: {
+          title: room?.media?.current?.title || '',
+          source: room?.media?.current?.source || '',
+          thumbnail: room?.media?.current?.thumbnail || '',
+        },
+        cover,
+        meta,
+        updatedAt: room.updatedAt,
+        createdAt: room.createdAt,
+      };
+
+      const ranking = scoreRoom({
+        room: payload,
+        friendHostIds,
+        preferredGenres,
+        preferredLanguages,
+        includePersonalized,
+      });
+
+      return {
+        ...payload,
+        ranking,
+      };
+    });
+
+    data.sort((a, b) => Number(b?.ranking?.score || 0) - Number(a?.ranking?.score || 0));
+
+    res.json({
+      success: true,
+      data: {
+        rooms: data.slice(0, limit),
+        count: data.length,
+        personalized: includePersonalized,
+      },
+    });
+  } catch (error) {
     next(error);
   }
 });
@@ -213,6 +498,16 @@ router.put('/:roomCode/settings', async (req, res, next) => {
 router.post('/:roomCode/end', async (req, res, next) => {
   try {
     const room = await roomService.endRoom(req.params.roomCode, req.userId);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('discovery:rooms-updated', {
+        type: room?.type || null,
+        roomCode: req.params.roomCode,
+        roomName: room?.name || null,
+        reason: 'room-ended',
+        at: new Date().toISOString(),
+      });
+    }
     
     res.json({
       success: true,
@@ -297,7 +592,7 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
         fileName: req.file.originalname,
         mimeType: req.file.mimetype,
         size: req.file.size,
-        uploadedBy: req.userId,
+            roomName: room?.name || null,
         cloudinary: {
           publicId: mediaPublicId,
           resourceType: 'video',
@@ -320,6 +615,17 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
 
     await room.save();
 
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('discovery:rooms-updated', {
+        type: room.type,
+        roomCode: room.roomCode,
+        roomName: room.name,
+        reason: 'media-updated',
+        at: new Date().toISOString(),
+      });
+    }
+
     if (previousPublicId && previousPublicId !== mediaPublicId) {
       await mediaCleanupService.enqueue(previousPublicId, previousResourceType, 'media-replaced');
     }
@@ -336,6 +642,107 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
           duration: null,
           publicId: mediaPublicId,
         },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Invite users to a room and notify them in realtime.
+ * POST /api/rooms/:roomCode/invite
+ */
+router.post('/:roomCode/invite', async (req, res, next) => {
+  try {
+    if (req.isGuest || !req.userId) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const roomCode = String(req.params.roomCode || '').trim().toUpperCase();
+    if (!roomCode) {
+      return res.status(400).json({ success: false, message: 'roomCode is required' });
+    }
+
+    const room = await Room.findOne({ roomCode });
+    if (!room) {
+      return res.status(404).json({ success: false, message: 'Room not found' });
+    }
+
+    const inviterParticipant = room.participants.find((p) => p.userId === req.userId);
+    if (!inviterParticipant) {
+      return res.status(403).json({ success: false, message: 'You are not in this room' });
+    }
+
+    const canInvite =
+      room.hostId === req.userId ||
+      inviterParticipant.role === 'co-host' ||
+      inviterParticipant.role === 'cohost' ||
+      inviterParticipant.permissions?.canInvite;
+
+    if (!canInvite) {
+      return res.status(403).json({ success: false, message: 'You do not have invite permissions' });
+    }
+
+    const rawIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds
+      : req.body?.targetUserId
+        ? [req.body.targetUserId]
+        : [];
+
+    const targetUserIds = [...new Set(rawIds.map((id) => String(id || '').trim()).filter(Boolean))]
+      .filter((id) => id !== req.userId);
+
+    if (targetUserIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one target user is required' });
+    }
+
+    const inviterUser = await User.findOne({ clerkId: req.userId }).select('username displayName').lean();
+    const roomPath = room.type === 'music' ? `/music/room/${room.roomCode}` : `/room/${room.roomCode}`;
+
+    const newlyInvited = [];
+    room.invitedUsers = room.invitedUsers || [];
+
+    for (const userId of targetUserIds) {
+      const alreadyInvited = room.invitedUsers.some((inv) => inv.userId === userId);
+      if (!alreadyInvited) {
+        room.invitedUsers.push({
+          userId,
+          email: null,
+          name: null,
+          invitedAt: new Date(),
+        });
+        newlyInvited.push(userId);
+      }
+    }
+
+    if (newlyInvited.length > 0) {
+      await room.save();
+    }
+
+    const io = req.app.get('io');
+    await notificationService.createManyNotifications({
+      io,
+      userIds: newlyInvited,
+      actorId: req.userId,
+      type: room.type === 'music' ? 'room_invite' : 'room_invite',
+      title: `${inviterUser?.displayName || inviterUser?.username || 'A friend'} invited you`,
+      body: `Join \"${room.name}\" (${room.type})`,
+      metadata: {
+        room_code: room.roomCode,
+        room_name: room.name,
+        room_type: room.type,
+        room_path: roomPath,
+        path: roomPath,
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        roomCode: room.roomCode,
+        invitedCount: newlyInvited.length,
+        invitedUserIds: newlyInvited,
       },
     });
   } catch (error) {

@@ -18,20 +18,46 @@ const storySchema = new mongoose.Schema({
   roomId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Room',
-    required: true,
+    required: false,
+    default: null,
     index: true
   },
   roomName: String,
   roomCode: String,
+  roomType: {
+    type: String,
+    default: null,
+  },
+  ctaLabel: {
+    type: String,
+    default: null,
+  },
+  ctaPath: {
+    type: String,
+    default: null,
+  },
   
   // Story content
   type: {
     type: String,
-    enum: ['live', 'recap', 'moment'],
+    enum: ['photo', 'video', 'text', 'live', 'recap', 'moment'],
     required: true
   },
   mediaUrl: String,      // Cloudinary URL
   thumbnailUrl: String,
+  textContent: {
+    type: String,
+    maxlength: 300,
+    default: null,
+  },
+  backgroundColor: {
+    type: String,
+    default: null,
+  },
+  storyDuration: {
+    type: Number,
+    default: 5,
+  },
   caption: {
     type: String,
     maxlength: 200
@@ -76,11 +102,26 @@ const storySchema = new mongoose.Schema({
   },
   reactions: [{
     userId: String,  // Clerk user ID
+    username: String,
+    displayName: String,
     reaction: String,
     createdAt: {
       type: Date,
       default: Date.now
     }
+  }],
+  replies: [{
+    userId: String,
+    username: String,
+    displayName: String,
+    text: {
+      type: String,
+      maxlength: 250,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
   }],
   
   // Expiry

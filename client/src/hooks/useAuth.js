@@ -29,17 +29,44 @@ export const useAuth = () => {
 
         // The useApiAuth interceptor should add the token automatically
         const response = await api.get('/users/me');
-        
-        return response.data?.data;
+        const payload = response.data?.data || {};
+
+        return {
+          ...payload,
+          id: payload.id || payload.userId || payload.clerkId || clerkUser?.id || null,
+          userId: payload.userId || payload.id || payload.clerkId || clerkUser?.id || null,
+          clerkId: payload.clerkId || payload.userId || payload.id || clerkUser?.id || null,
+          displayName: payload.displayName || clerkUser?.fullName || payload.username || 'User',
+          username: payload.username || clerkUser?.username || 'user',
+          avatar_emoji: payload.avatar_emoji || '🧑',
+          bio: payload.bio || '',
+          preferences: payload.preferences || {},
+          stats: payload.stats || {},
+        };
       } catch (error) {
         console.error('❌ Failed to fetch user:', error.message);
         // Don't throw - allow room creation to proceed with just Clerk auth
         return null;
       }
     },
-    enabled: isSignedIn && clerkLoaded,
+    enabled: isSignedIn && clerkLoaded && sessionLoaded,
     retry: false, // /users/me is now instant, no need to retry
   });
+
+  const updateProfile = async (updates = {}) => {
+    const response = await api.put('/users/me', updates);
+    const updated = response?.data?.data;
+
+    queryClient.setQueryData(['currentUser', isSignedIn], (prev) => ({
+      ...(prev || {}),
+      ...(updated || {}),
+      id: updated?.id || prev?.id,
+      userId: updated?.userId || prev?.userId,
+      clerkId: updated?.clerkId || prev?.clerkId,
+    }));
+
+    return updated;
+  };
 
   const signOut = async () => {
     await clerk.signOut();
@@ -53,7 +80,7 @@ export const useAuth = () => {
   return {
     user: dbUser,
     clerkUser,
-    isAuthenticated: isSignedIn,
+    isAuthenticated: Boolean(isSignedIn && clerkLoaded && sessionLoaded),
     isLoading,
     isLoaded: clerkLoaded,
     clerkLoaded,
@@ -61,6 +88,7 @@ export const useAuth = () => {
     dbLoading,
     error: queryError,
     signOut,
+    updateProfile,
     refetchUser: refetch,
   };
 };

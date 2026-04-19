@@ -4,8 +4,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { ClerkProvider } from "@clerk/clerk-react";
+import { useEffect } from "react";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { useAuthSync } from "@/hooks/useAuthSync";
+import { useThemeStore } from "@/stores/themeStore";
 import { AppRouter } from "./router/AppRouter";
 
 const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -21,6 +23,13 @@ const queryClient = new QueryClient({
 });
 
 function AppInner() {
+  const theme = useThemeStore((state) => state.theme);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.setAttribute("data-theme", theme || "midnight-cinema");
+  }, [theme]);
+
   return (
     <TooltipProvider>
       <Toaster />

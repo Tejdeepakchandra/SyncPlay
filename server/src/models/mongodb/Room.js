@@ -142,6 +142,18 @@ const roomSchema = new mongoose.Schema({
   
   // Participants
   participants: [participantSchema],
+  participantHistory: [{
+    userId: { type: String, required: true },
+    username: { type: String, default: '' },
+    displayName: { type: String, default: '' },
+    avatar: { type: String, default: '' },
+    avatar_emoji: { type: String, default: '🧑' },
+    role: { type: String, default: 'participant' },
+    joinedAt: Date,
+    lastActive: Date,
+    leftAt: Date,
+    timeSpentMinutes: { type: Number, default: 0 },
+  }],
   participantCount: {
     type: Number,
     default: 0

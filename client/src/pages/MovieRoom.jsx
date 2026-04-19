@@ -48,6 +48,13 @@ const MovieRoom = () => {
   const effectiveRoomId = roomCode || "default";
   const { user, profile } = useAuth();
 
+  useEffect(() => {
+    const normalized = String(effectiveRoomId || "").trim().toUpperCase();
+    if (normalized && normalized !== "DEFAULT") {
+      localStorage.setItem("syncplay:last-room-code", normalized);
+    }
+  }, [effectiveRoomId]);
+
   // Room and chat data
   const {
     room,
@@ -105,11 +112,14 @@ const MovieRoom = () => {
   const [showUserSettings, setShowUserSettings] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isLeavingRoom, setIsLeavingRoom] = useState(false);
+  const [viewportSize, setViewportSize] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
 
   const [roomSettings, setRoomSettings] = useState({
     chatEnabled: true,
     reactionsEnabled: true,
-    isPrivate: false,
     allowScreenShare: true,
     slowMode: false,
   });
@@ -120,7 +130,6 @@ const MovieRoom = () => {
       setRoomSettings(prev => ({
         chatEnabled: room.settings.chatEnabled !== undefined ? room.settings.chatEnabled : prev.chatEnabled,
         reactionsEnabled: room.settings.reactionsEnabled !== undefined ? room.settings.reactionsEnabled : prev.reactionsEnabled,
-        isPrivate: room.settings.isPrivate !== undefined ? room.settings.isPrivate : prev.isPrivate,
         allowScreenShare: room.settings.allowScreenShare !== undefined ? room.settings.allowScreenShare : prev.allowScreenShare,
         slowMode: room.settings.slowMode !== undefined ? room.settings.slowMode : prev.slowMode,
       }));
@@ -148,6 +157,13 @@ const MovieRoom = () => {
   const nativeBridgeMutedUntilRef = useRef(0);
   const uploadReadyToastRef = useRef(false);
   const desiredPlayingRef = useRef(false);
+  const lastChatSendAtRef = useRef(0);
+  const lastWatchHeartbeatAtRef = useRef(Date.now());
+  const backgroundUploadAudioRef = useRef(null);
+  const [isBackgroundUploadAudioActive, setIsBackgroundUploadAudioActive] = useState(false);
+  const autoBackgroundDeafenRef = useRef(false);
+  const previousDeafenStateRef = useRef(false);
+  const lastBackgroundYoutubeToastAtRef = useRef(0);
 
   const getYoutubeMediaKey = useCallback(() => {
     const activeYoutubeVideoId = youtubeVideoId || fallbackYoutubeVideoId;
@@ -164,6 +180,190 @@ const MovieRoom = () => {
     if (mediaSource !== "youtube") return null;
     return youtubeVideoId || fallbackYoutubeVideoId || null;
   }, [mediaSource, youtubeVideoId, fallbackYoutubeVideoId]);
+
+  const isCompactViewport = viewportSize.width < 768;
+  const isTabletViewport = viewportSize.width >= 768 && viewportSize.width < 1024;
+  const isMobileOrTabletViewport = viewportSize.width < 1024;
+  const isPortraitCompact = isCompactViewport && viewportSize.height >= viewportSize.width;
+  const useTouchSizedControls = isCompactViewport || isTabletViewport;
+  const controlBtnSizeClass = useTouchSizedControls ? "h-10 w-10" : "h-8 w-8";
+  const compactToggleBtnSizeClass = useTouchSizedControls ? "h-9 w-9" : "h-7 w-7";
+
+  useEffect(() => {
+    const onResize = () => {
+      setViewportSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!effectiveRoomId) return undefined;
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        lastWatchHeartbeatAtRef.current = Date.now();
+      }
+    };
+
+    lastWatchHeartbeatAtRef.current = Date.now();
+
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+      const canTrack =
+        !document.hidden &&
+        isPlaying &&
+        mediaSource !== "none" &&
+        (accessStatus === "granted" || joinStatus === "joined");
+
+      if (!canTrack) {
+        lastWatchHeartbeatAtRef.current = now;
+        return;
+      }
+
+      const watchedSeconds = Math.max(
+        0,
+        Math.min(120, (now - lastWatchHeartbeatAtRef.current) / 1000)
+      );
+      lastWatchHeartbeatAtRef.current = now;
+
+      if (watchedSeconds < 5) return;
+
+      socket.emit("room:watch-heartbeat", {
+        roomCode: effectiveRoomId,
+        watchedSeconds,
+        isPlaying: true,
+      });
+    }, 15000);
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(intervalId);
+    };
+  }, [effectiveRoomId, isPlaying, mediaSource, accessStatus, joinStatus]);
+  useEffect(() => {
+    if (mediaSource !== "upload") {
+      if (backgroundUploadAudioRef.current) {
+        backgroundUploadAudioRef.current.pause();
+        backgroundUploadAudioRef.current.src = "";
+        backgroundUploadAudioRef.current = null;
+      }
+      setIsBackgroundUploadAudioActive(false);
+      return undefined;
+    }
+
+    if (!isMobileOrTabletViewport) return undefined;
+
+    const syncBackgroundBridge = async () => {
+      const hidden = document.hidden;
+      const video = uploadVideoRef.current;
+
+      if (hidden) {
+        if (!video || !uploadedVideoUrl) return;
+
+        if (!backgroundUploadAudioRef.current) {
+          const audio = new Audio(uploadedVideoUrl);
+          audio.preload = "auto";
+          audio.playsInline = true;
+          audio.currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+          audio.volume = isMuted ? 0 : movieVolume / 100;
+          audio.muted = isMuted;
+          backgroundUploadAudioRef.current = audio;
+          setIsBackgroundUploadAudioActive(true);
+        }
+
+        const backgroundAudio = backgroundUploadAudioRef.current;
+        if (!backgroundAudio) return;
+
+        if (isPlaying || !video.paused) {
+          try {
+            await backgroundAudio.play();
+          } catch {
+            // Platform may require user gesture; keep graceful fallback.
+          }
+        }
+        video.pause();
+        return;
+      }
+
+      const backgroundAudio = backgroundUploadAudioRef.current;
+      if (!backgroundAudio) return;
+
+      const wasPlaying = !backgroundAudio.paused;
+      const resumeTime = Number.isFinite(backgroundAudio.currentTime) ? backgroundAudio.currentTime : 0;
+      backgroundAudio.pause();
+      backgroundAudio.src = "";
+      backgroundUploadAudioRef.current = null;
+      setIsBackgroundUploadAudioActive(false);
+
+      if (video) {
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.max(0, Math.min(video.duration, resumeTime));
+        } else {
+          video.currentTime = Math.max(0, resumeTime);
+        }
+
+        if (wasPlaying && desiredPlayingRef.current) {
+          video.play().catch(() => {});
+        }
+      }
+    };
+
+    syncBackgroundBridge();
+    document.addEventListener("visibilitychange", syncBackgroundBridge);
+
+    return () => {
+      document.removeEventListener("visibilitychange", syncBackgroundBridge);
+    };
+  }, [mediaSource, isMobileOrTabletViewport, uploadedVideoUrl, isPlaying, isMuted, movieVolume]);
+
+  useEffect(() => {
+    if (!isMobileOrTabletViewport) return undefined;
+
+    const handleVisibility = () => {
+      const hidden = document.hidden;
+
+      if (hidden) {
+        if (mediaSource === "youtube" && isPlaying) {
+          const now = Date.now();
+          if (now - lastBackgroundYoutubeToastAtRef.current > 12000) {
+            lastBackgroundYoutubeToastAtRef.current = now;
+            toast("YouTube background limit", {
+              description: "YouTube may pause in background on mobile. Uploaded media is used for reliable background listening.",
+              duration: 3200,
+            });
+          }
+        }
+
+        if (showVideoChat && !deafenVoiceChat) {
+          previousDeafenStateRef.current = deafenVoiceChat;
+          autoBackgroundDeafenRef.current = true;
+          setDeafenVoiceChat(true);
+        }
+        return;
+      }
+
+      if (autoBackgroundDeafenRef.current) {
+        setDeafenVoiceChat(previousDeafenStateRef.current);
+        autoBackgroundDeafenRef.current = false;
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isMobileOrTabletViewport, mediaSource, isPlaying, showVideoChat, deafenVoiceChat]);
 
   const resolveYoutubeVideoId = useCallback((media) => {
     const rawMediaId = media?.videoId || media?.id || media?.metadata?.videoId || "";
@@ -203,6 +403,24 @@ const MovieRoom = () => {
       .map((p) => p.userId),
     [dbParticipants, myUserId]
   );
+
+  const uniqueParticipantCount = useMemo(() => {
+    const canonical = Array.isArray(dbParticipants) && dbParticipants.length > 0
+      ? dbParticipants
+      : participants;
+
+    if (!Array.isArray(canonical) || canonical.length === 0) {
+      return Math.max(Number(room?.participantCount || 0), 1);
+    }
+
+    const seen = new Set();
+    canonical.forEach((p, index) => {
+      const key = String(p?.userId || p?.id || p?.username || p?.name || `idx:${index}`);
+      seen.add(key);
+    });
+
+    return Math.max(seen.size, 1);
+  }, [dbParticipants, participants, room?.participantCount]);
 
   // WebRTC signaling (for screen share)
   const rtcSignaling = useWebRTCSignaling({
@@ -431,7 +649,10 @@ const MovieRoom = () => {
         return Number.NaN;
       }
       if (mediaSource === "youtube") return ytPlayer.currentTime || 0;
-      if (mediaSource === "upload" && uploadVideoRef.current) return uploadVideoRef.current.currentTime || 0;
+      if (mediaSource === "upload") {
+        const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+        return uploadMedia?.currentTime || 0;
+      }
       return 0;
     },
     onMediaChange: (media) => {
@@ -493,7 +714,7 @@ const MovieRoom = () => {
         setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
-        const video = uploadVideoRef.current;
+        const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         const canApplyImmediately = !!video && video.readyState >= 2;
         if (canApplyImmediately) {
           pendingRemoteActionRef.current = null;
@@ -546,7 +767,7 @@ const MovieRoom = () => {
         setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
-        const video = uploadVideoRef.current;
+        const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         if (video) {
           pendingRemoteActionRef.current = null;
           if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
@@ -576,7 +797,7 @@ const MovieRoom = () => {
     onSeek: (timeSec) => {
       const duration = mediaSource === "youtube"
         ? (ytPlayer.duration || 0)
-        : (mediaSource === "upload" ? (uploadVideoRef.current?.duration || 0) : 0);
+        : (mediaSource === "upload" ? ((backgroundUploadAudioRef.current || uploadVideoRef.current)?.duration || 0) : 0);
       if (duration > 0 && Number.isFinite(timeSec)) {
         setProgress(Math.max(0, Math.min(100, (timeSec / duration) * 100)));
       }
@@ -604,7 +825,7 @@ const MovieRoom = () => {
         }
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
-        const video = uploadVideoRef.current;
+        const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         if (video && Number.isFinite(video.duration) && video.duration > 0) {
           pendingRemoteActionRef.current = null;
           video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
@@ -813,14 +1034,14 @@ const MovieRoom = () => {
           type: "activity-card",
           activityType: "movie",
           title: `Movie Room ${effectiveRoomId}`,
-          detail: `Watched with ${participants.length} people`,
+          detail: `Watched with ${uniqueParticipantCount} people`,
           emoji: "🎬",
           stats: [
             {
               label: "Duration",
               value: mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`,
             },
-            { label: "Viewers", value: `${participants.length}` },
+            { label: "Viewers", value: `${uniqueParticipantCount}` },
           ],
           mood: "🍿",
         });
@@ -960,6 +1181,7 @@ const MovieRoom = () => {
     title: room?.name || "Movie Room",
     artist: "Watchparty",
     isPlaying,
+    mediaElement: mediaSource === "upload" ? (backgroundUploadAudioRef.current || uploadVideoRef.current) : null,
     onPlay: () => handleTogglePlay(),
     onPause: () => handleTogglePlay(),
   });
@@ -967,13 +1189,19 @@ const MovieRoom = () => {
   // Handlers
   const getCurrentMediaTime = useCallback(() => {
     if (mediaSource === "youtube") return ytPlayer.currentTime || 0;
-    if (mediaSource === "upload" && uploadVideoRef.current) return uploadVideoRef.current.currentTime || 0;
+    if (mediaSource === "upload") {
+      const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+      return uploadMedia?.currentTime || 0;
+    }
     return 0;
   }, [mediaSource, ytPlayer.currentTime]);
 
   const getCurrentMediaDuration = useCallback(() => {
     if (mediaSource === "youtube") return ytPlayer.duration || 0;
-    if (mediaSource === "upload" && uploadVideoRef.current) return uploadVideoRef.current.duration || 0;
+    if (mediaSource === "upload") {
+      const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+      return uploadMedia?.duration || 0;
+    }
     return 0;
   }, [mediaSource, ytPlayer.duration]);
 
@@ -994,9 +1222,10 @@ const MovieRoom = () => {
     }
     if (mediaSource === "upload" && uploadVideoRef.current) {
       pendingRemoteActionRef.current = null;
-      if (uploadVideoRef.current.paused) {
+      const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+      if (uploadMedia.paused) {
         desiredPlayingRef.current = true;
-        uploadVideoRef.current.play().then(() => {
+        uploadMedia.play().then(() => {
           setIsPlaying(true);
         }).catch(() => {
           setIsPlaying(false);
@@ -1005,10 +1234,10 @@ const MovieRoom = () => {
         roomSync.broadcastPlay(getCurrentMediaTime(), getCurrentMediaDuration());
       } else {
         desiredPlayingRef.current = false;
-        uploadVideoRef.current.pause();
+        uploadMedia.pause();
         // Some browsers can briefly re-enter playing state; enforce pause on next tick.
         setTimeout(() => {
-          uploadVideoRef.current?.pause();
+          uploadMedia?.pause();
         }, 0);
         setIsPlaying(false);
         roomSync.broadcastPause(getCurrentMediaTime(), getCurrentMediaDuration());
@@ -1042,11 +1271,12 @@ const MovieRoom = () => {
       setTimeout(() => {
         suppressRemoteSyncRef.current = false;
       }, 260);
-    } else if (mediaSource === "upload" && uploadVideoRef.current) {
+    } else if (mediaSource === "upload" && (backgroundUploadAudioRef.current || uploadVideoRef.current)) {
+      const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
       if (shouldResumeAfterSeek) {
         // Keep local playback state; authoritative seek update will set the target time.
       } else {
-        uploadVideoRef.current.currentTime = targetSec;
+        uploadMedia.currentTime = targetSec;
       }
     }
   }, [canControl, mediaSource, ytPlayer, roomSync, getCurrentMediaDuration]);
@@ -1054,29 +1284,52 @@ const MovieRoom = () => {
   const handleSendMessage = useCallback(() => {
     const text = chatMessage.trim();
     if (!text || !roomSettings.chatEnabled) return;
+
+    if (roomSettings.slowMode) {
+      const now = Date.now();
+      const msSinceLast = now - lastChatSendAtRef.current;
+      if (msSinceLast < 5000) {
+        const waitSeconds = Math.max(1, Math.ceil((5000 - msSinceLast) / 1000));
+        toast.error(`Slow mode is on. Wait ${waitSeconds}s before sending again.`);
+        return;
+      }
+      lastChatSendAtRef.current = now;
+    }
+
     sendChatMessage(text);
     setChatMessage("");
-  }, [chatMessage, roomSettings.chatEnabled, sendChatMessage]);
+  }, [chatMessage, roomSettings.chatEnabled, roomSettings.slowMode, sendChatMessage]);
 
   const handleReaction = useCallback((emoji) => {
     if (!roomSettings.reactionsEnabled) {
       toast.error("Reactions are disabled by the host");
       return;
     }
+
     const id = reactionIdRef.current++;
     const x = 20 + Math.random() * 60;
     setFloatingReactions(prev => [...prev, { id, emoji, x }]);
     setTimeout(() => setFloatingReactions(prev => prev.filter(r => r.id !== id)), 2000);
+
+    socket.emit('room:reaction', { roomCode, emoji }, (response) => {
+      if (response && response.success === false) {
+        toast.error(response.error || "Failed to send reaction");
+      }
+    });
+
     setShowReactionPicker(false);
-  }, [roomSettings.reactionsEnabled]);
+  }, [roomSettings.reactionsEnabled, roomCode]);
 
   const handleSkipForward = useCallback(() => {
     const newProgress = Math.min(progress + 5, 100);
     setProgress(newProgress);
     if (mediaSource === "youtube") {
       ytPlayer.seekToPercent(newProgress);
-    } else if (mediaSource === "upload" && uploadVideoRef.current) {
-      uploadVideoRef.current.currentTime = (newProgress / 100) * uploadVideoRef.current.duration;
+    } else if (mediaSource === "upload") {
+      const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+      if (uploadMedia?.duration) {
+        uploadMedia.currentTime = (newProgress / 100) * uploadMedia.duration;
+      }
     }
     toast("⏩ Skipped forward 5%", { duration: 1500 });
   }, [progress, mediaSource, ytPlayer]);
@@ -1103,7 +1356,7 @@ const MovieRoom = () => {
       viewCount: participants.length,
       stats: [
         { label: "Timestamp", value: formatTime(progress) },
-        { label: "Viewers", value: `${participants.length}` },
+        { label: "Viewers", value: `${uniqueParticipantCount}` },
       ],
       mood: "⭐",
     });
@@ -1111,10 +1364,15 @@ const MovieRoom = () => {
       description: "A 1-min highlight clip has been saved to your Moments.",
       duration: 3000,
     });
-  }, [addMoment, progress, participants.length, room?.name]);
+  }, [addMoment, progress, uniqueParticipantCount, room?.name]);
 
   // Media source handlers
   const handleScreenShare = useCallback(async () => {
+    if (!webrtc.screenSharing && !isHost && !roomSettings.allowScreenShare) {
+      toast.error("Screen sharing is disabled by the host", { duration: 2200 });
+      return;
+    }
+
     if (webrtc.screenSharing) {
       webrtc.stopScreenShare();
       rtcSignaling.stopBroadcastStream();
@@ -1141,7 +1399,7 @@ const MovieRoom = () => {
         });
       }
     }
-  }, [webrtc, roomSync, rtcSignaling]);
+  }, [isHost, roomSettings.allowScreenShare, webrtc, roomSync, rtcSignaling]);
 
   // Bind screen share stream to video element using srcObject (required for MediaStream).
   useEffect(() => {
@@ -1608,7 +1866,6 @@ const MovieRoom = () => {
     const labels = {
       chatEnabled: "Chat",
       reactionsEnabled: "Reactions",
-      isPrivate: "Private Room",
       allowScreenShare: "Screen Share",
       slowMode: "Slow Mode",
     };
@@ -1667,10 +1924,17 @@ const MovieRoom = () => {
   // Sync upload video volume
   useEffect(() => {
     const video = uploadVideoRef.current;
-    if (!video || mediaSource !== "upload") return;
-    video.volume = isMuted ? 0 : movieVolume / 100;
-    video.muted = isMuted;
-  }, [isMuted, movieVolume, mediaSource]);
+    const bgAudio = backgroundUploadAudioRef.current;
+    if (mediaSource !== "upload") return;
+    if (video) {
+      video.volume = isMuted ? 0 : movieVolume / 100;
+      video.muted = isMuted;
+    }
+    if (bgAudio) {
+      bgAudio.volume = isMuted ? 0 : movieVolume / 100;
+      bgAudio.muted = isMuted;
+    }
+  }, [isMuted, movieVolume, mediaSource, isBackgroundUploadAudioActive]);
 
   // Sync YouTube player volume
   useEffect(() => {
@@ -1688,13 +1952,29 @@ const MovieRoom = () => {
       setRoomSettings(prev => ({
         chatEnabled: data.settings.chatEnabled !== undefined ? data.settings.chatEnabled : prev.chatEnabled,
         reactionsEnabled: data.settings.reactionsEnabled !== undefined ? data.settings.reactionsEnabled : prev.reactionsEnabled,
-        isPrivate: data.settings.isPrivate !== undefined ? data.settings.isPrivate : prev.isPrivate,
         allowScreenShare: data.settings.allowScreenShare !== undefined ? data.settings.allowScreenShare : prev.allowScreenShare,
         slowMode: data.settings.slowMode !== undefined ? data.settings.slowMode : prev.slowMode,
       }));
     };
     socket.on('room:settings-updated', handleSettingsUpdated);
     return () => socket.off('room:settings-updated', handleSettingsUpdated);
+  }, []);
+
+  useEffect(() => {
+    const handleRoomReaction = (data) => {
+      const emoji = String(data?.emoji || '').trim();
+      if (!emoji) return;
+
+      const id = reactionIdRef.current++;
+      const x = 20 + Math.random() * 60;
+      setFloatingReactions((prev) => [...prev, { id, emoji, x }]);
+      setTimeout(() => {
+        setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+      }, 2000);
+    };
+
+    socket.on('room:reaction', handleRoomReaction);
+    return () => socket.off('room:reaction', handleRoomReaction);
   }, []);
 
   // Listen for permission denied events
@@ -1999,9 +2279,9 @@ const MovieRoom = () => {
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="glass-nav px-4 py-3 flex items-center justify-between z-30 relative"
+            className="glass-nav px-3 sm:px-4 py-2.5 sm:py-3 flex items-start sm:items-center justify-between gap-2 z-30 relative"
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
                 onClick={handleRequestLeave}
                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
@@ -2010,13 +2290,13 @@ const MovieRoom = () => {
                 <ChevronLeft className="w-5 h-5" />
                 <span className="text-xs font-medium">Leave</span>
               </button>
-              <div>
-                <h1 className="font-display text-sm font-semibold text-foreground">
+              <div className="min-w-0">
+                <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[10rem] sm:max-w-none">
                   {room?.name || "Movie Room"}
                 </h1>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs text-muted-foreground">
-                    {room?.participantCount || 0} watching · Room {roomCode?.slice(0, 6)}
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <p className="text-xs text-muted-foreground truncate max-w-[11rem] sm:max-w-none">
+                    {uniqueParticipantCount} watching · Room {roomCode?.slice(0, 6)}
                   </p>
                   <span
                     className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
@@ -2048,10 +2328,15 @@ const MovieRoom = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-1 relative">
+            <div className={`flex items-center gap-1 relative ${
+              isCompactViewport
+                ? "max-w-[56vw] flex-wrap justify-end overflow-visible"
+                : "max-w-[48vw] sm:max-w-none overflow-visible"
+            }`}>
               <RoomInfoBar
                 roomId={effectiveRoomId}
                 roomType="movie"
+                roomName={room?.name || "Movie Room"}
                 host={
                   isHost
                     ? "You (Host)"
@@ -2059,7 +2344,7 @@ const MovieRoom = () => {
                        room?.participants?.find(p => p.userId === room?.hostId)?.username || 
                        "Host")
                 }
-                participantCount={room?.participantCount || participants.length || 1}
+                participantCount={uniqueParticipantCount}
                 isHost={isHost}
               />
               <Button
@@ -2309,7 +2594,8 @@ const MovieRoom = () => {
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={handleScreenShare}
-                      className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4 rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all w-full sm:w-28"
+                      disabled={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing}
+                      className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4 rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all w-full sm:w-28 disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:border-glass-border disabled:hover:bg-foreground/5"
                     >
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
                         <Monitor className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
@@ -2445,13 +2731,22 @@ const MovieRoom = () => {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="px-2 md:px-4 py-2 md:py-2.5 flex items-center justify-between bg-card/90 backdrop-blur-sm border-t border-glass-border gap-1"
+                className={`px-2 md:px-4 py-2 md:py-2.5 bg-card/90 backdrop-blur-sm border-t border-glass-border gap-1.5 ${
+                  isPortraitCompact
+                    ? "grid grid-cols-3 items-center"
+                    : "flex items-center justify-between"
+                }`}
+                style={{
+                  paddingBottom: isPortraitCompact
+                    ? "calc(env(safe-area-inset-bottom, 0px) + 0.2rem)"
+                    : "calc(env(safe-area-inset-bottom, 0px) + 0.35rem)",
+                }}
               >
                 {/* Left controls */}
-                <div className="flex items-center gap-1.5">
+                <div className={`flex items-center gap-1.5 min-w-0 ${isPortraitCompact ? "col-start-1 justify-start" : ""}`}>
                   {mediaSource !== "none" && (
                     <>
-                      <Button size="icon" variant="ghost" onClick={handleTogglePlay} className="h-8 w-8">
+                      <Button size="icon" variant="ghost" onClick={handleTogglePlay} className={controlBtnSizeClass}>
                         {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                       </Button>
                       <Button
@@ -2459,7 +2754,7 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleSkipForward}
                         title="Skip forward 5%"
-                        className="h-8 w-8"
+                        className={controlBtnSizeClass}
                       >
                         <SkipForward className="w-4 h-4" />
                       </Button>
@@ -2469,7 +2764,7 @@ const MovieRoom = () => {
                     size="icon"
                     variant="ghost"
                     onClick={() => setIsMuted(!isMuted)}
-                    className="h-8 w-8"
+                    className={controlBtnSizeClass}
                   >
                     {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                   </Button>
@@ -2481,13 +2776,13 @@ const MovieRoom = () => {
                 </div>
 
                 {/* Center controls */}
-                <div className="flex items-center gap-1">
+                <div className={`flex items-center gap-1 ${isPortraitCompact ? "col-span-3 row-start-2 justify-center pt-0.5" : ""}`}>
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={handleBookmarkMoment}
                     title="Bookmark Moment"
-                    className="h-8 w-8 text-muted-foreground hover:text-accent"
+                    className={`${controlBtnSizeClass} text-muted-foreground hover:text-accent`}
                   >
                     <Bookmark className="w-4 h-4" />
                   </Button>
@@ -2498,8 +2793,9 @@ const MovieRoom = () => {
                       size="icon"
                       variant="ghost"
                       onClick={handleScreenShare}
-                      title={webrtc.screenSharing ? "Stop Screen Share" : "Screen Share"}
-                      className={`h-7 w-7 rounded-full ${
+                      title={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing ? "Screen share disabled by host" : (webrtc.screenSharing ? "Stop Screen Share" : "Screen Share")}
+                      disabled={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing}
+                      className={`${compactToggleBtnSizeClass} rounded-full ${
                         mediaSource === "screen"
                           ? "text-primary bg-primary/10"
                           : "text-muted-foreground"
@@ -2513,7 +2809,7 @@ const MovieRoom = () => {
                       onClick={handleUploadVideo}
                       title="Upload Video"
                       disabled={isUploadingMedia}
-                      className={`h-7 w-7 rounded-full ${
+                      className={`${compactToggleBtnSizeClass} rounded-full ${
                         mediaSource === "upload"
                           ? "text-secondary bg-secondary/10"
                           : "text-muted-foreground"
@@ -2526,7 +2822,7 @@ const MovieRoom = () => {
                       variant="ghost"
                       onClick={handleYoutubeUrl}
                       title="YouTube URL"
-                      className="h-7 w-7 rounded-full text-muted-foreground"
+                      className={`${compactToggleBtnSizeClass} rounded-full text-muted-foreground`}
                     >
                       <Youtube className="w-3.5 h-3.5" />
                     </Button>
@@ -2537,7 +2833,7 @@ const MovieRoom = () => {
                       size="icon"
                       variant="ghost"
                       onClick={() => setShowReactionPicker(!showReactionPicker)}
-                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                      className={`${controlBtnSizeClass} text-muted-foreground hover:text-foreground`}
                     >
                       <Smile className="w-4 h-4" />
                     </Button>
@@ -2565,13 +2861,13 @@ const MovieRoom = () => {
                 </div>
 
                 {/* Right controls */}
-                <div className="flex items-center gap-1">
+                <div className={`flex items-center gap-1 min-w-0 ${isPortraitCompact ? "col-start-3 justify-end" : ""}`}>
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={handleToggleVideoChat}
                     title="Toggle Video Chat"
-                    className={`h-8 w-8 ${showVideoChat ? "text-secondary" : "text-muted-foreground"}`}
+                    className={`${controlBtnSizeClass} ${showVideoChat ? "text-secondary" : "text-muted-foreground"}`}
                   >
                     <Users className="w-4 h-4" />
                   </Button>
@@ -2584,7 +2880,7 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleToggleMyAudio}
                         title={webrtc.audioEnabled ? "Mute" : "Unmute"}
-                        className={`h-7 w-7 rounded-full ${
+                        className={`${compactToggleBtnSizeClass} rounded-full ${
                           webrtc.audioEnabled
                             ? "text-foreground"
                             : "text-destructive bg-destructive/10"
@@ -2601,7 +2897,7 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleToggleMyVideo}
                         title={webrtc.videoEnabled ? "Camera Off" : "Camera On"}
-                        className={`h-7 w-7 rounded-full ${
+                        className={`${compactToggleBtnSizeClass} rounded-full ${
                           webrtc.videoEnabled
                             ? "text-foreground"
                             : "text-destructive bg-destructive/10"
@@ -2618,7 +2914,7 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleToggleDeafen}
                         title={deafenVoiceChat ? "Undeafen" : "Deafen"}
-                        className={`h-7 w-7 rounded-full ${
+                        className={`${compactToggleBtnSizeClass} rounded-full ${
                           deafenVoiceChat
                             ? "text-destructive bg-destructive/10"
                             : "text-muted-foreground"
@@ -2638,7 +2934,7 @@ const MovieRoom = () => {
                     variant="ghost"
                     onClick={handleToggleFullscreen}
                     title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-                    className="h-8 w-8"
+                    className={controlBtnSizeClass}
                   >
                     {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
                   </Button>
@@ -2655,10 +2951,10 @@ const MovieRoom = () => {
             <motion.aside
               key="chat"
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: window.innerWidth < 768 ? "100%" : 300, opacity: 1 }}
+              animate={{ width: isCompactViewport ? "100%" : 300, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               className={`border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
-                window.innerWidth < 768
+                isCompactViewport
                   ? "absolute inset-0 z-30 border-l-0"
                   : ""
               }`}
@@ -2669,7 +2965,7 @@ const MovieRoom = () => {
                   {!roomSettings.chatEnabled && (
                     <span className="text-[10px] text-destructive font-medium">Disabled</span>
                   )}
-                  {window.innerWidth < 768 && (
+                  {isCompactViewport && (
                     <button
                       onClick={() => setShowChat(false)}
                       className="text-muted-foreground hover:text-foreground"
@@ -2682,7 +2978,7 @@ const MovieRoom = () => {
 
               <div
                 className={`flex-1 overflow-y-auto p-3 space-y-3 ${
-                  window.innerWidth < 768 ? "w-full" : "w-[300px]"
+                  isCompactViewport ? "w-full" : "w-[300px]"
                 }`}
               >
                 {messages.map(msg => (
@@ -2693,7 +2989,24 @@ const MovieRoom = () => {
                     className="space-y-0.5"
                   >
                     <div className="flex items-baseline gap-2">
-                      <span className="text-sm">{msg.profile?.avatar_emoji || "🧑"}</span>
+                      {(() => {
+                        const profileAvatarUrl = msg.profile?.avatar_url;
+                        const profileAvatarEmoji = msg.profile?.avatar_emoji;
+                        const looksLikeUrl = typeof profileAvatarEmoji === "string" && /^https?:\/\//i.test(profileAvatarEmoji);
+                        const avatarUrl = profileAvatarUrl || (looksLikeUrl ? profileAvatarEmoji : null);
+
+                        if (avatarUrl) {
+                          return (
+                            <img
+                              src={avatarUrl}
+                              alt="avatar"
+                              className="w-4 h-4 rounded-full object-cover mt-0.5"
+                            />
+                          );
+                        }
+
+                        return <span className="text-sm">{profileAvatarEmoji || "🧑"}</span>;
+                      })()}
                       <span
                         className={`text-xs font-semibold ${
                           msg.user_id === userId ? "text-secondary" : "text-primary"
@@ -2714,7 +3027,7 @@ const MovieRoom = () => {
                 <div ref={chatEndRef} />
               </div>
 
-              <div className="p-3 border-t border-glass-border">
+              <div className="p-3 border-t border-glass-border" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.5rem)" }}>
                 <div className="flex items-center gap-2">
                   <Input
                     placeholder={roomSettings.chatEnabled ? "Type a message..." : "Chat is disabled"}
@@ -2742,10 +3055,10 @@ const MovieRoom = () => {
             <motion.aside
               key="mixer"
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: window.innerWidth < 768 ? "100%" : 320, opacity: 1 }}
+              animate={{ width: isCompactViewport ? "100%" : 320, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               className={`border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
-                window.innerWidth < 768
+                isCompactViewport
                   ? "absolute inset-0 z-30 border-l-0"
                   : ""
               }`}
@@ -2755,7 +3068,7 @@ const MovieRoom = () => {
                   <Sliders className="w-4 h-4 text-primary" />
                   <h3 className="text-sm font-semibold text-foreground">Volume Mixer</h3>
                 </div>
-                {window.innerWidth < 768 && (
+                {isCompactViewport && (
                   <button
                     onClick={() => setShowMixer(false)}
                     className="text-muted-foreground hover:text-foreground"
@@ -2767,7 +3080,7 @@ const MovieRoom = () => {
 
               <div
                 className={`flex-1 overflow-y-auto p-4 space-y-6 ${
-                  window.innerWidth < 768 ? "w-full" : "w-[320px]"
+                  isCompactViewport ? "w-full" : "w-[320px]"
                 }`}
               >
                 {/* Movie Volume */}
