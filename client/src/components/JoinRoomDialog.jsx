@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, LinkIcon, ArrowRight, Hash, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,11 +8,34 @@ import { useNavigate } from "react-router-dom";
 import api from "@/services/api";
 
 
-const JoinRoomDialog = ({ open, onClose }) => {
+const JoinRoomDialog = ({ open, onClose, theme = "movie" }) => {
   const navigate = useNavigate();
   const [link, setLink] = useState("");
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const previous = {
+      bodyOverflow: document.body.style.overflow,
+      bodyTouchAction: document.body.style.touchAction,
+      htmlOverflow: document.documentElement.style.overflow,
+      htmlTouchAction: document.documentElement.style.touchAction,
+    };
+
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "none";
+    document.documentElement.style.overflow = "hidden";
+    document.documentElement.style.touchAction = "none";
+
+    return () => {
+      document.body.style.overflow = previous.bodyOverflow;
+      document.body.style.touchAction = previous.bodyTouchAction;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      document.documentElement.style.touchAction = previous.htmlTouchAction;
+    };
+  }, [open]);
 
   const normalizeRoomCode = (value) =>
     String(value || "")
@@ -83,21 +107,22 @@ const JoinRoomDialog = ({ open, onClose }) => {
   };
 
   if (!open) return null;
+  if (typeof document === "undefined") return null;
 
-  return (
+  return createPortal(
     <AnimatePresence>
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        className="fixed inset-0 z-[80] flex items-center justify-center p-4"
       >
         <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={onClose} />
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="relative glass-panel p-6 w-full max-w-md z-10"
+          className="relative glass-panel p-6 w-full max-w-md max-h-[calc(100vh-2rem)] overflow-y-auto z-10"
         >
           <button onClick={onClose} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
             <X className="w-5 h-5" />
@@ -130,7 +155,7 @@ const JoinRoomDialog = ({ open, onClose }) => {
           <Button
             disabled={!link.trim() || checking}
             onClick={handleJoin}
-            className="w-full gradient-movie text-primary-foreground font-semibold"
+            className={`w-full font-semibold ${theme === "music" ? "gradient-music text-secondary-foreground" : "gradient-movie text-primary-foreground"}`}
           >
             {checking ? (
               <>
@@ -146,7 +171,8 @@ const JoinRoomDialog = ({ open, onClose }) => {
           </Button>
         </motion.div>
       </motion.div>
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 };
 

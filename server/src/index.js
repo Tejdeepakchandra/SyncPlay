@@ -84,6 +84,8 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
+app.set('io', io);
+
 
 // MIDDLEWARE
 
@@ -142,6 +144,10 @@ const authRoutes = require('./routes/authRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const momentRoutes = require('./routes/momentRoutes');
 const userRoutes = require('./routes/userRoutes');
+const friendRoutes = require('./routes/friendRoutes');
+const storyRoutes = require('./routes/storyRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const dmRoutes = require('./routes/dmRoutes');
 const musicRoutes = require('./routes/musicRoutes');
 const movieRoutes = require('./routes/movieRoutes');
 
@@ -149,6 +155,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/moments', momentRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/friends', friendRoutes);
+app.use('/api/stories', storyRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/dm', dmRoutes);
 app.use('/api/music', musicRoutes);
 app.use('/api/movies', movieRoutes);
 

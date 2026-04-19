@@ -71,7 +71,7 @@ export default function FeaturesSection() {
               key={feature.title}
               variants={cardItem}
               whileHover={cardHover.whileHover}
-              className="glass-panel p-6 group cursor-pointer"
+              className="landing-panel p-6 group cursor-pointer"
             >
               <motion.div
                 whileHover={{ rotate: 360, scale: 1.1 }}

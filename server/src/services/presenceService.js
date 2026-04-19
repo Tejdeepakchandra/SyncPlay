@@ -21,6 +21,17 @@ class PresenceService {
         EX: CACHE_TTL.PRESENCE
       });
 
+      await User.updateOne(
+        { clerkId: userId },
+        {
+          $set: {
+            isOnline: true,
+            currentRoom: roomCode || null,
+            lastActive: new Date(),
+          },
+        }
+      );
+
       return true;
 
     } catch (error) {
@@ -158,6 +169,17 @@ class PresenceService {
     try {
       const presenceKey = createRedisKey(REDIS_KEYS.PRESENCE, userId);
       await redisClient.del(presenceKey);
+
+      await User.updateOne(
+        { clerkId: userId },
+        {
+          $set: {
+            isOnline: false,
+            currentRoom: null,
+            lastActive: new Date(),
+          },
+        }
+      );
 
       return true;
 

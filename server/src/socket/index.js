@@ -4,9 +4,12 @@ const syncHandlers = require('./handlers/syncHandlers');
 const presenceHandlers = require('./handlers/presenceHandlers');
 const chatHandlers = require('./handlers/chatHandlers');
 const webrtcHandlers = require('./handlers/webrtcHandlers');
+const Friendship = require('../models/mongodb/Friendship');
 const roomService = require('../services/roomService');
 const presenceService = require('../services/presenceService');
 const momentHandlers = require('./handlers/momentHandlers');
+const notificationHandlers = require('./handlers/notificationHandlers');
+const dmHandlers = require('./handlers/dmHandlers');
 
 const DISCONNECT_GRACE_MS = 20000;
 
@@ -19,6 +22,35 @@ const setupSocketHandlers = (io) => {
 
   const makeLeaveKey = (userId, roomCode) => `${userId}:${roomCode}`;
 
+  const emitPresenceStatusToFriends = async (userId, isOnline, roomCode = null) => {
+    if (!userId) return;
+
+    const links = await Friendship.find({
+      status: 'accepted',
+      $or: [{ requesterId: userId }, { addresseeId: userId }],
+    })
+      .select('requesterId addresseeId')
+      .lean();
+
+    const audience = new Set([userId]);
+    links.forEach((link) => {
+      audience.add(link.requesterId);
+      audience.add(link.addresseeId);
+    });
+
+    const payload = {
+      userId,
+      isOnline,
+      status: isOnline ? 'online' : 'offline',
+      roomCode: roomCode || null,
+      at: new Date().toISOString(),
+    };
+
+    audience.forEach((targetUserId) => {
+      io.to(`user:${targetUserId}`).emit('presence:user-status', payload);
+    });
+  };
+
   // Authentication middleware for all sockets
   io.use(authenticateSocket);
 
@@ -30,6 +62,14 @@ const setupSocketHandlers = (io) => {
       userSocketIds.set(socket.userId, new Set());
     }
     userSocketIds.get(socket.userId).add(socket.id);
+
+    // Per-user room enables direct fanout for social notifications/stories.
+    socket.join(`user:${socket.userId}`);
+
+    if (!socket.isGuest) {
+      presenceService.updatePresence(socket.userId, socket.roomCode || null).catch(() => null);
+      emitPresenceStatusToFriends(socket.userId, true, socket.roomCode || null).catch(() => null);
+    }
 
     // Cancel pending auto-leave on fast reconnect/refresh.
     for (const [leaveKey, timer] of pendingLeaveTimers.entries()) {
@@ -53,6 +93,8 @@ const setupSocketHandlers = (io) => {
     chatHandlers(socket, io);
     webrtcHandlers(socket, io);
     momentHandlers(socket, io);
+    notificationHandlers(socket, io);
+    dmHandlers(socket, io);
 
     // Auto-leave room and cleanup on disconnect — FIXED
     socket.on('disconnect', async () => {
@@ -102,6 +144,7 @@ const setupSocketHandlers = (io) => {
 
             if (!socket.isGuest) {
               await presenceService.setOffline(socket.userId);
+              emitPresenceStatusToFriends(socket.userId, false, null).catch(() => null);
             }
           } catch (error) {
             console.error('Auto-leave error:', error);
@@ -115,6 +158,7 @@ const setupSocketHandlers = (io) => {
       // No room to preserve; mark offline immediately.
       if (!socket.isGuest) {
         await presenceService.setOffline(socket.userId);
+        emitPresenceStatusToFriends(socket.userId, false, null).catch(() => null);
       }
     });
   });

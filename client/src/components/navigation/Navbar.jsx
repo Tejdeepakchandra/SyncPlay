@@ -11,24 +11,52 @@ const navLinks = [
   { to: "/friends", label: "Friends", icon: Users },
 ];
 
-export default function Navbar() {
+export default function Navbar({ unreadDmCount = 0 }) {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia("(max-width: 767px)").matches);
   const location = useLocation();
   const navigate = useNavigate();
   const notifRef = useRef(null);
   const { user, clerkUser, isAuthenticated, signOut } = useAuth();
+  const messagesActive = location.pathname.startsWith("/messages");
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 20);
+    const mql = window.matchMedia("(max-width: 767px)");
+    const onChange = (e) => setIsMobileViewport(e.matches);
+
+    setIsMobileViewport(mql.matches);
+    if (typeof mql.addEventListener === "function") {
+      mql.addEventListener("change", onChange);
+      return () => mql.removeEventListener("change", onChange);
+    }
+
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => {
+      if (isMobileViewport) {
+        setScrolled(true);
+        return;
+      }
+      const y = window.scrollY;
+      setScrolled((prev) => {
+        if (!prev && y > 24) return true;
+        if (prev && y < 10) return false;
+        return prev;
+      });
+    };
+    onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [isMobileViewport]);
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
-        scrolled ? "glass-nav shadow-lg" : "bg-transparent"
+      className={`fixed top-0 left-0 right-0 z-50 nav-fixed-stable nav-fixed-top transition-colors duration-300 ${
+        isMobileViewport || scrolled ? "glass-nav shadow-lg" : "bg-transparent"
       }`}
     >
       <div className="container mx-auto flex items-center justify-between h-16 px-4 lg:px-8">
@@ -69,9 +97,16 @@ export default function Navbar() {
             <>
               <button
                 onClick={() => navigate("/messages")}
-                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors relative"
+                className={`p-2 rounded-lg transition-colors relative ${
+                  messagesActive
+                    ? "text-primary bg-primary/10 shadow-[0_0_0_1px_hsl(var(--primary)/0.25)]"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
               >
                 <MessageSquare className="w-5 h-5" />
+                {unreadDmCount > 0 && !messagesActive && (
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-pulse" />
+                )}
               </button>
 
               <div className="relative" ref={notifRef}>
@@ -108,10 +143,33 @@ export default function Navbar() {
           )}
         </div>
 
-        {/* Mobile menu button */}
-        <button className="md:hidden p-2 text-foreground" onClick={() => setMobileOpen(!mobileOpen)}>
-          {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </button>
+        {/* Mobile top actions: notifications, messages, menu */}
+        <div className="md:hidden flex items-center gap-1">
+          {isAuthenticated && (
+            <>
+              <button
+                onClick={() => navigate("/messages")}
+                className={`p-2 rounded-lg transition-colors relative ${
+                  messagesActive
+                    ? "text-primary bg-primary/10"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                }`}
+                title="Messages"
+              >
+                <MessageSquare className="w-5 h-5" />
+                {unreadDmCount > 0 && !messagesActive && (
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-pulse" />
+                )}
+              </button>
+
+              <NotificationDropdown variant="top-mobile" />
+            </>
+          )}
+
+          <button className="p-2 text-foreground" onClick={() => setMobileOpen(!mobileOpen)}>
+            {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
       </div>
 
       {/* Mobile menu */}
@@ -124,6 +182,15 @@ export default function Navbar() {
             className="md:hidden glass-nav border-t border-border overflow-hidden"
           >
             <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
+              <Link
+                to="/"
+                onClick={() => setMobileOpen(false)}
+                className="flex items-center gap-3 px-4 py-3 rounded-lg text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <span className="text-base">🏠</span>
+                Home
+              </Link>
+
               {navLinks.map((link) => (
                 <Link
                   key={link.to}
@@ -137,9 +204,12 @@ export default function Navbar() {
               ))}
               {isAuthenticated ? (
                 <>
-                  <Link to="/messages" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-foreground hover:bg-muted/50 transition-colors">
+                  <Link to="/messages" onClick={() => setMobileOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${messagesActive ? "text-primary bg-primary/10" : "text-foreground hover:bg-muted/50"}`}>
                     <MessageSquare className="w-5 h-5" />
                     Messages
+                    {unreadDmCount > 0 && !messagesActive && (
+                      <span className="ml-auto w-2 h-2 rounded-full bg-primary animate-pulse" />
+                    )}
                   </Link>
                   <Link to="/profile" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-lg text-primary font-medium">
                     <User className="w-5 h-5" />

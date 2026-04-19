@@ -4,6 +4,16 @@ const analyticsService = require('../../services/analyticsService');
 const { socketRateLimiter } = require('../middleware/rateLimiter');
 const Room = require('../../models/mongodb/Room');
 
+const watchHeartbeatAccumulator = new Map();
+
+const getWatchAccumulatorKey = (roomCode, userId) => `${String(roomCode || '').toUpperCase()}:${String(userId || '')}`;
+
+const clampWatchSeconds = (seconds) => {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(120, numeric));
+};
+
 module.exports = (socket, io) => {
   const buildPermissionsForRole = (role) => {
     if (role === 'host') return roomService.getHostPermissions();
@@ -85,6 +95,15 @@ module.exports = (socket, io) => {
           timestamp: Date.now()
         });
 
+        io.emit('discovery:rooms-updated', {
+          type: result?.room?.type || null,
+          roomCode,
+          roomName: result?.room?.name || null,
+          actorName: newParticipant?.displayName || newParticipant?.username || guestName || socket.username || 'Someone',
+          reason: 'participant-joined',
+          at: new Date().toISOString(),
+        });
+
         // If original host rejoined and reclaimed host role, notify everyone.
         if (result.hostTransfer?.newHostId) {
           io.to(roomCode).emit('room:new-host', {
@@ -147,6 +166,7 @@ module.exports = (socket, io) => {
         socket.leave(roomCode);
         const oldRoomCode = socket.roomCode;
         socket.roomCode = null;
+        watchHeartbeatAccumulator.delete(getWatchAccumulatorKey(oldRoomCode || roomCode, socket.userId));
 
         // Update presence
         await presenceService.updatePresence(socket.userId, null);
@@ -155,6 +175,15 @@ module.exports = (socket, io) => {
         socket.to(roomCode).emit('room:user-left', {
           userId: socket.userId,
           timestamp: Date.now()
+        });
+
+        io.emit('discovery:rooms-updated', {
+          type: result?.room?.type || null,
+          roomCode,
+          roomName: result?.room?.name || null,
+          actorName: socket.username || 'A participant',
+          reason: 'participant-left',
+          at: new Date().toISOString(),
         });
 
         // If host left and new host promoted, notify
@@ -179,6 +208,56 @@ module.exports = (socket, io) => {
         });
       }
     });
+  });
+
+  socket.on('room:watch-heartbeat', async ({ roomCode, watchedSeconds, isPlaying }, callback) => {
+    const done = typeof callback === 'function' ? callback : () => {};
+
+    try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return done({ success: false, error: 'Missing room code' });
+      }
+
+      if (socket.isGuest) {
+        return done({ success: true, skipped: true, reason: 'guest-user' });
+      }
+
+      if (!isPlaying) {
+        return done({ success: true, skipped: true, reason: 'not-playing' });
+      }
+
+      const room = await Room.findOne({ roomCode }).select('participants status');
+      if (!room || room.status === 'ended') {
+        return done({ success: false, error: 'Room not active' });
+      }
+
+      const participant = room.participants.find((p) => String(p.userId) === String(socket.userId));
+      if (!participant) {
+        return done({ success: false, error: 'Not in room' });
+      }
+
+      const key = getWatchAccumulatorKey(roomCode, socket.userId);
+      const current = watchHeartbeatAccumulator.get(key) || 0;
+      const nextSeconds = current + clampWatchSeconds(watchedSeconds || 0);
+
+      const wholeMinutes = Math.floor(nextSeconds / 60);
+      const remainderSeconds = nextSeconds - (wholeMinutes * 60);
+
+      watchHeartbeatAccumulator.set(key, remainderSeconds);
+
+      if (wholeMinutes > 0) {
+        await analyticsService.logUserAction(socket.userId, 'watch_time', { minutes: wholeMinutes });
+      }
+
+      done({
+        success: true,
+        trackedMinutes: wholeMinutes,
+        bufferedSeconds: remainderSeconds,
+      });
+    } catch (error) {
+      done({ success: false, error: error.message });
+    }
   });
 
   
@@ -324,6 +403,7 @@ module.exports = (socket, io) => {
           if (clientSocket.roomCode === roomCode) {
             clientSocket.roomCode = null;
           }
+          watchHeartbeatAccumulator.delete(getWatchAccumulatorKey(roomCode, clientSocket.userId));
 
           await presenceService.updatePresence(clientSocket.userId, null);
           clientSocket.emit('room:force-leave', { reason: 'room-ended', roomCode });
@@ -599,6 +679,7 @@ module.exports = (socket, io) => {
         .forEach((s) => {
           s.leave(roomCode);
           s.roomCode = null;
+          watchHeartbeatAccumulator.delete(getWatchAccumulatorKey(roomCode, s.userId));
           s.emit('room:force-leave', {
             reason: 'removed-by-host',
             removedBy: socket.userId,
@@ -616,5 +697,51 @@ module.exports = (socket, io) => {
     } catch (error) {
       callback({ success: false, error: error.message });
     }
+  });
+
+  // Broadcast emoji reactions to everyone else in a room.
+  socket.on('room:reaction', async ({ roomCode, emoji }, callback) => {
+    const done = typeof callback === 'function' ? callback : () => {};
+    try {
+      roomCode = String(roomCode || socket.roomCode || '').trim().toUpperCase();
+      if (!roomCode) {
+        return done({ success: false, error: 'Missing room code' });
+      }
+
+      const reaction = String(emoji || '').trim();
+      if (!reaction) {
+        return done({ success: false, error: 'Missing emoji' });
+      }
+
+      const room = await Room.findOne({ roomCode }).select('settings participants');
+      if (!room) {
+        return done({ success: false, error: 'Room not found' });
+      }
+
+      const participant = room.participants.find((p) => String(p.userId) === String(socket.userId));
+      if (!participant) {
+        return done({ success: false, error: 'Not in room' });
+      }
+
+      const reactionsEnabled = room.settings?.reactionsEnabled ?? room.settings?.allowReactions ?? true;
+      if (!reactionsEnabled) {
+        return done({ success: false, error: 'Reactions are disabled in this room' });
+      }
+
+      socket.to(roomCode).emit('room:reaction', {
+        emoji: reaction,
+        userId: socket.userId,
+        timestamp: Date.now(),
+      });
+
+      done({ success: true });
+    } catch (error) {
+      done({ success: false, error: error.message });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    if (!socket.roomCode) return;
+    watchHeartbeatAccumulator.delete(getWatchAccumulatorKey(socket.roomCode, socket.userId));
   });
 };

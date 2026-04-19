@@ -1,147 +1,327 @@
-import { useState, useRef } from "react";
-import { motion, useScroll, useTransform, AnimatePresence } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, useScroll, useTransform } from "framer-motion";
 import {
-  Film, Link as LinkIcon, Plus, Users, Clock, TrendingUp, Play, Star,
-  ChevronRight, Sparkles, Search, Grid3X3, Eye,
-  Flame, Heart
+  Film,
+  Link as LinkIcon,
+  Plus,
+  Search,
+  Sparkles,
+  Users,
+  Play,
+  Clock3,
+  Waves,
+  ShieldCheck,
+  Radio,
+  Flame,
+  Star,
+  Trophy,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
-
 import CreateRoomDialog from "@/components/CreateRoomDialog";
 import JoinRoomDialog from "@/components/JoinRoomDialog";
+import api from "@/services/api";
+import { getSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
-import { toast } from "sonner";
+import RoomFeedTicker from "@/components/discovery/RoomFeedTicker";
+import ThemeParticleBackground from "@/components/discovery/ThemeParticleBackground";
 
-// Mock data (replace with real API calls)
-const recentRooms = [
-  { name: "Friday Movie Night", host: "Alex", viewers: 4, genre: "Action", time: "2h ago", emoji: "🎬", id: "recent-1", rating: 4.8 },
-  { name: "Horror Marathon", host: "Sarah", viewers: 6, genre: "Horror", time: "5h ago", emoji: "👻", id: "recent-2", rating: 4.5 },
-  { name: "Studio Ghibli Night", host: "You", viewers: 3, genre: "Animation", time: "1d ago", emoji: "🌸", id: "recent-3", rating: 4.9 },
+const featurePills = [
+  { icon: Waves, label: "Frame-level sync" },
+  { icon: Users, label: "Voice + text together" },
+  { icon: ShieldCheck, label: "Host controls" },
+  { icon: Clock3, label: "Moments capture" },
 ];
 
-const trendingGenres = [
-  { name: "Action", emoji: "💥", rooms: 24, color: "from-primary to-[hsl(210,100%,60%)]", bg: "hsl(195 100% 50% / 0.08)" },
-  { name: "Comedy", emoji: "😂", rooms: 18, color: "from-secondary to-[hsl(170,80%,50%)]", bg: "hsl(155 80% 45% / 0.08)" },
-  { name: "Horror", emoji: "👻", rooms: 12, color: "from-accent to-[hsl(290,60%,60%)]", bg: "hsl(270 60% 60% / 0.08)" },
-  { name: "Sci-Fi", emoji: "🚀", rooms: 15, color: "from-[hsl(195,100%,50%)] to-[hsl(240,80%,60%)]", bg: "hsl(220 80% 55% / 0.08)" },
-  { name: "Romance", emoji: "💕", rooms: 9, color: "from-[hsl(340,80%,55%)] to-accent", bg: "hsl(340 80% 55% / 0.08)" },
-  { name: "Anime", emoji: "⚔️", rooms: 21, color: "from-primary to-accent", bg: "hsl(230 80% 55% / 0.08)" },
+const MOVIE_GENRES = ["action", "thriller", "horror", "comedy", "romance", "scifi", "anime"];
+const LANGUAGES = ["english", "hindi", "korean", "japanese", "spanish", "tamil", "telugu"];
+const EXPERIENCE_BLOCKS = [
+  { icon: Flame, title: "Live Reactions", desc: "Emoji storms, synced hype, instant vibe checks." },
+  { icon: Star, title: "Smart Picks", desc: "Friend-hosted and matched genres bubble to the top." },
+  { icon: Trophy, title: "Watch Streaks", desc: "Stay consistent and build your cinema streak." },
 ];
 
-const liveRooms = [
-  { name: "Avengers Watch Party", host: "Jordan", viewers: 12, emoji: "🦸", genre: "Action", isLive: true, id: "live-0", progress: 45, hostEmoji: "🧑‍🦱", reactions: ["🔥", "😍", "💯"] },
-  { name: "Anime Chill Zone", host: "Mike", viewers: 8, emoji: "⚔️", genre: "Anime", isLive: true, id: "live-1", progress: 72, hostEmoji: "🧔", reactions: ["❤️", "🎌", "✨"] },
-  { name: "Classic Cinema Club", host: "Emma", viewers: 5, emoji: "🎞️", genre: "Classic", isLive: true, id: "live-2", progress: 23, hostEmoji: "👧", reactions: ["👏", "🍿", "🎬"] },
+const ROOM_ACTION_GUIDE = [
+  {
+    title: "Start Instantly",
+    desc: "Create a room, choose media source, and hit play in seconds.",
+    icon: Play,
+  },
+  {
+    title: "Sync + Voice",
+    desc: "Watch in lockstep while talking with your crew.",
+    icon: Users,
+  },
+  {
+    title: "Host Controls",
+    desc: "Manage permissions, invites, and moderation cleanly.",
+    icon: ShieldCheck,
+  },
 ];
 
-const popularRooms = [
-  { name: "Sci-Fi Sundays", host: "Community", viewers: 32, emoji: "🚀", genre: "Sci-Fi", id: "pop-1", rating: 4.9, members: 156 },
-  { name: "Indie Film Club", host: "Community", viewers: 14, emoji: "🎥", genre: "Indie", id: "pop-2", rating: 4.7, members: 89 },
-];
+const cardItem = {
+  hidden: { opacity: 0, y: 24, filter: "blur(8px)" },
+  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: { type: "spring", stiffness: 180, damping: 22 } },
+};
 
-const container = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.06, delayChildren: 0.1 }
+function CoverTile({ room }) {
+  if (room?.cover?.coverUrl) {
+    return (
+      <div className="h-32 rounded-xl overflow-hidden border border-border mb-3 bg-muted/30">
+        <img src={room.cover.coverUrl} alt={room.name} className="w-full h-full object-cover" loading="lazy" />
+      </div>
+    );
   }
-};
 
-const item = {
-  hidden: { opacity: 0, y: 20, filter: "blur(8px)" },
-  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: { type: "spring", stiffness: 200, damping: 20 } }
-};
+  return (
+    <div className="h-32 rounded-xl border border-border mb-3 bg-[linear-gradient(135deg,hsl(var(--primary)/0.3),hsl(var(--accent)/0.25),hsl(var(--background)/0.4))] flex items-center justify-center">
+      <Film className="w-12 h-12 text-foreground/50" />
+    </div>
+  );
+}
 
-const Movies = () => {
+function PreferenceChips({ title, options, selected, onToggle, tone = "primary" }) {
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground mb-2">{title}</p>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => {
+          const active = selected.includes(option);
+          const activeClass = tone === "primary"
+            ? "bg-primary/20 border-primary/40 text-primary"
+            : "bg-secondary/20 border-secondary/40 text-secondary";
+          return (
+            <button
+              key={option}
+              onClick={() => onToggle(option)}
+              className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${active ? activeClass : "bg-background/60 border-border text-muted-foreground hover:text-foreground"}`}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default function Movies() {
   const navigate = useNavigate();
-  const { user: _user } = useAuth();
+  const { user, isAuthenticated, updateProfile } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
-  const [hoveredLive, setHoveredLive] = useState(null);
-  const [tab, setTab] = useState("live");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [likedRooms, setLikedRooms] = useState(new Set());
+  const [rooms, setRooms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [movieGenres, setMovieGenres] = useState([]);
+  const [languages, setLanguages] = useState([]);
+  const [newRoomIds, setNewRoomIds] = useState(new Set());
+  const [isDesktopParallax, setIsDesktopParallax] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
+  const initializedPrefsRef = useRef(false);
   const heroRef = useRef(null);
+  const previousRoomIdsRef = useRef(new Set());
+  const hasHydratedRoomsRef = useRef(false);
+  const clearNewRoomsTimeoutRef = useRef(null);
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ["start start", "end start"] });
-  const heroOpacity = useTransform(scrollYProgress, [0, 0.5], [1, 0]);
-  const heroScale = useTransform(scrollYProgress, [0, 0.5], [1, 0.95]);
+  const heroParallaxY = useTransform(scrollYProgress, [0, 1], [0, -34]);
+  const heroParallaxScale = useTransform(scrollYProgress, [0, 1], [1, 0.97]);
 
-  const handleGenreClick = (genre) => {
-    toast(`🎬 Browsing ${genre} rooms...`, { description: `Showing ${genre} movie rooms.`, duration: 2000 });
-  };
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event) => setIsDesktopParallax(event.matches);
 
-  const toggleLike = (id) => {
-    setLikedRooms(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
+    setIsDesktopParallax(mediaQuery.matches);
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", onChange);
+      return () => mediaQuery.removeEventListener("change", onChange);
+    }
+
+    mediaQuery.addListener(onChange);
+    return () => mediaQuery.removeListener(onChange);
+  }, []);
+
+  useEffect(() => {
+    if (initializedPrefsRef.current) return;
+    if (!user) return;
+
+    const prefMovieGenres = Array.isArray(user?.preferences?.discovery?.movieGenres)
+      ? user.preferences.discovery.movieGenres.map((g) => String(g).toLowerCase())
+      : [];
+    const prefLanguages = Array.isArray(user?.preferences?.discovery?.languages)
+      ? user.preferences.discovery.languages.map((l) => String(l).toLowerCase())
+      : [];
+
+    setMovieGenres(prefMovieGenres);
+    setLanguages(prefLanguages);
+    initializedPrefsRef.current = true;
+  }, [user]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !initializedPrefsRef.current) return;
+
+    const timeoutId = window.setTimeout(() => {
+      updateProfile({
+        preferences: {
+          discovery: {
+            movieGenres,
+            languages,
+          },
+        },
+      }).catch(() => {});
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isAuthenticated, movieGenres, languages, updateProfile]);
+
+  const fetchRooms = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const res = await api.get("/rooms", {
+        params: {
+          type: "movie",
+          status: "active,lobby",
+          limit: 36,
+          personalized: true,
+          preferredGenres: movieGenres.join(","),
+          preferredLanguages: languages.join(","),
+        },
+      });
+      const nextRooms = Array.isArray(res?.data?.data?.rooms) ? res.data.data.rooms : [];
+
+      const nextIds = new Set(nextRooms.map((room) => room?.roomCode).filter(Boolean));
+      const prevIds = previousRoomIdsRef.current;
+
+      if (hasHydratedRoomsRef.current) {
+        const incomingIds = [...nextIds].filter((id) => !prevIds.has(id));
+        if (incomingIds.length > 0) {
+          if (clearNewRoomsTimeoutRef.current) {
+            window.clearTimeout(clearNewRoomsTimeoutRef.current);
+          }
+          setNewRoomIds(new Set(incomingIds));
+          clearNewRoomsTimeoutRef.current = window.setTimeout(() => {
+            setNewRoomIds(new Set());
+          }, 2200);
+        }
+      }
+
+      previousRoomIdsRef.current = nextIds;
+      hasHydratedRoomsRef.current = true;
+      setRooms(nextRooms);
+    } catch {
+      if (!silent) setRooms([]);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [movieGenres, languages]);
+
+  useEffect(() => {
+    return () => {
+      if (clearNewRoomsTimeoutRef.current) {
+        window.clearTimeout(clearNewRoomsTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    fetchRooms(false);
+  }, [fetchRooms]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      fetchRooms(true);
+    }, 15000);
+    return () => window.clearInterval(intervalId);
+  }, [fetchRooms]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    const handleDiscoveryRefresh = (payload) => {
+      const roomType = String(payload?.type || "").toLowerCase();
+      if (roomType && roomType !== "movie") return;
+      fetchRooms(true);
+    };
+
+    socket.on("discovery:rooms-updated", handleDiscoveryRefresh);
+    return () => {
+      socket.off("discovery:rooms-updated", handleDiscoveryRefresh);
+    };
+  }, [fetchRooms]);
+
+  const filteredRooms = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rooms;
+    return rooms.filter((room) => {
+      return (
+        room?.name?.toLowerCase().includes(q) ||
+        room?.host?.name?.toLowerCase().includes(q) ||
+        room?.media?.title?.toLowerCase().includes(q)
+      );
     });
+  }, [rooms, query]);
+
+  const spotlightRoom = filteredRooms[0] || null;
+  const trendingRooms = filteredRooms.slice(0, 4);
+
+  const toggleMovieGenre = (genre) => {
+    setMovieGenres((prev) => (prev.includes(genre) ? prev.filter((g) => g !== genre) : [...prev, genre]));
   };
 
-  const tabs = [
-    { key: "live", label: "Live Now", icon: Flame, count: liveRooms.length },
-    { key: "popular", label: "Popular", icon: TrendingUp, count: popularRooms.length },
-    { key: "recent", label: "Recent", icon: Clock, count: recentRooms.length },
-  ];
+  const toggleLanguage = (language) => {
+    setLanguages((prev) => (prev.includes(language) ? prev.filter((l) => l !== language) : [...prev, language]));
+  };
 
   return (
     <>
-      <main className="pb-12">
-        <div className="container mx-auto px-4 lg:px-8">
+      <main className="pb-12 w-full overflow-x-hidden relative">
+        <ThemeParticleBackground theme="movie" />
+        <div className="container mx-auto px-4 lg:px-8 relative z-10">
+          <RoomFeedTicker roomType="movie" className="mb-4" />
 
-          {/* Hero Section */}
-          <motion.div ref={heroRef} style={{ opacity: heroOpacity, scale: heroScale }} className="mb-10">
+          <motion.section
+            ref={heroRef}
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.65, ease: [0.22, 1, 0.36, 1] }}
+            style={{
+              y: isDesktopParallax ? heroParallaxY : 0,
+              scale: isDesktopParallax ? heroParallaxScale : 1,
+            }}
+            className="relative overflow-hidden rounded-[2rem] border border-primary/25 bg-[radial-gradient(circle_at_15%_20%,hsl(var(--primary)/0.38),transparent_45%),radial-gradient(circle_at_85%_20%,hsl(var(--accent)/0.28),transparent_50%),radial-gradient(circle_at_50%_110%,hsl(var(--secondary)/0.2),transparent_55%),hsl(var(--card)/0.7)] p-6 md:p-8 lg:p-10 mb-7"
+          >
+            <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(115deg,transparent_10%,hsl(var(--primary)/0.09)_48%,transparent_90%)] animate-spotlight" />
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-              className="relative overflow-hidden rounded-3xl glass-panel p-8 md:p-12"
-            >
-              {/* Spotlight effect */}
-              <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute inset-0 w-[30%] h-[200%] bg-gradient-to-r from-transparent via-primary/5 to-transparent animate-spotlight" />
-              </div>
+              className="absolute -top-14 -left-10 w-40 h-40 rounded-full bg-primary/20 blur-3xl pointer-events-none"
+              animate={{ scale: [1, 1.18, 1], opacity: [0.45, 0.75, 0.45] }}
+              transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
+            />
+            <motion.div
+              className="absolute -bottom-16 right-6 w-48 h-48 rounded-full bg-accent/20 blur-3xl pointer-events-none"
+              animate={{ scale: [1.12, 1, 1.12], opacity: [0.55, 0.3, 0.55] }}
+              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+            />
 
-              <div className="relative z-10">
-                <motion.div
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.2 }}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-xs font-medium text-primary mb-5"
-                >
+            <div className="relative z-10 grid lg:grid-cols-[1.2fr_0.8fr] gap-7 items-center">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary mb-4">
                   <Sparkles className="w-3 h-3" />
-                  Watch Together, Feel Together
-                </motion.div>
-                <h1 className="font-display text-4xl md:text-6xl font-bold mb-4 leading-tight">
+                  Cinema-grade social watching
+                </div>
+                <h1 className="font-display text-4xl md:text-5xl lg:text-6xl font-bold leading-tight mb-3">
                   <span className="text-gradient-movie">Movies</span>
                 </h1>
-                <p className="text-muted-foreground text-lg md:text-xl max-w-xl leading-relaxed">
-                  Create a theatre-like room or join one with friends. Watch anything together in perfect sync.
+                <p className="text-muted-foreground text-base md:text-lg max-w-2xl leading-relaxed mb-6">
+                  Discover live rooms ranked for you: friend-hosted first, then your genres and language preferences.
                 </p>
 
-                {/* Stats */}
-                <div className="flex items-center gap-6 mt-6 mb-8">
-                  {[
-                    { label: "Live Rooms", value: liveRooms.length, icon: Flame },
-                    { label: "Watching", value: "52+", icon: Eye },
-                    { label: "Genres", value: trendingGenres.length, icon: Grid3X3 },
-                  ].map((stat, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.4 + i * 0.1 }}
-                      className="flex items-center gap-2"
-                    >
-                      <stat.icon className="w-3.5 h-3.5 text-primary" />
-                      <span className="text-sm font-semibold text-foreground">{stat.value}</span>
-                      <span className="text-xs text-muted-foreground hidden sm:inline">{stat.label}</span>
-                    </motion.div>
+                <div className="flex flex-wrap gap-2.5 mb-7">
+                  {featurePills.map((pill) => (
+                    <span key={pill.label} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/40 px-3 py-1.5 text-xs text-foreground/90">
+                      <pill.icon className="w-3.5 h-3.5 text-primary" />
+                      {pill.label}
+                    </span>
                   ))}
                 </div>
 
-                {/* Action buttons */}
                 <div className="flex flex-wrap gap-3">
                   <motion.button
                     whileHover={{ scale: 1.03, y: -2 }}
@@ -150,10 +330,10 @@ const Movies = () => {
                     className="gradient-movie text-primary-foreground font-semibold px-6 py-3 rounded-xl flex items-center gap-2 text-sm shadow-lg shadow-primary/20"
                   >
                     <Plus className="w-4 h-4" />
-                    Create Room
+                    Create Movie Room
                   </motion.button>
                   <motion.button
-                    whileHover={{ scale: 1.03, y: -2 }}
+                    whileHover={{ scale: 1.02, y: -1 }}
                     whileTap={{ scale: 0.97 }}
                     onClick={() => setJoinOpen(true)}
                     className="glass-panel px-6 py-3 rounded-xl flex items-center gap-2 text-sm font-medium text-foreground hover:bg-muted/40 transition-colors"
@@ -164,380 +344,268 @@ const Movies = () => {
                 </div>
               </div>
 
-              {/* Decorative emojis */}
-              <div className="absolute right-8 top-8 hidden lg:block">
-                <motion.div animate={{ y: [0, -12, 0] }} transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} className="text-6xl opacity-20">🎬</motion.div>
+              <div className="glass-panel p-4 md:p-5 rounded-2xl">
+                <p className="text-xs uppercase tracking-[0.22em] text-primary/80 mb-2">Live Snapshot</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-xl border border-border bg-background/50 p-3">
+                    <p className="text-[11px] text-muted-foreground">Active rooms</p>
+                    <p className="font-display text-2xl font-bold text-foreground">{rooms.length}</p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-background/50 p-3">
+                    <p className="text-[11px] text-muted-foreground">Watching now</p>
+                    <p className="font-display text-2xl font-bold text-foreground">
+                      {rooms.reduce((sum, room) => sum + Number(room?.participantCount || 0), 0)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-background/50 p-3">
+                    <p className="text-[11px] text-muted-foreground">Refresh</p>
+                    <p className="font-display text-lg font-bold text-secondary inline-flex items-center gap-1.5">
+                      <Radio className="w-4 h-4" />
+                      Live
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-3">Auto updates via socket + polling fallback.</p>
               </div>
-              <div className="absolute right-28 bottom-6 hidden lg:block">
-                <motion.div animate={{ y: [0, -8, 0] }} transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }} className="text-4xl opacity-15">🍿</motion.div>
-              </div>
-            </motion.div>
-          </motion.div>
-
-          {/* Tabs */}
-          <div className="flex items-center gap-1 p-1 rounded-2xl bg-glass/50 backdrop-blur-sm border border-glass-border w-fit mb-4">
-            {tabs.map((t) => (
-              <motion.button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={`relative flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors duration-200 ${
-                  tab === t.key ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                }`}
-                whileTap={{ scale: 0.97 }}
-              >
-                {tab === t.key && (
-                  <motion.div
-                    layoutId="movieTabBg"
-                    className="absolute inset-0 gradient-movie rounded-xl shadow-lg shadow-primary/20"
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  />
-                )}
-                <span className="relative z-10 flex items-center gap-2">
-                  <t.icon className="w-3.5 h-3.5" />
-                  {t.label}
-                  {t.count != null && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                      tab === t.key ? "bg-primary-foreground/20" : "bg-muted"
-                    }`}>
-                      {t.count}
-                    </span>
-                  )}
-                </span>
-              </motion.button>
-            ))}
-          </div>
-
-          {/* Search */}
-          <div className="relative mb-8">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-            <Input
-              placeholder="Search rooms, genres, hosts..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full max-w-md h-11 pl-11 pr-4 rounded-xl bg-glass/60 border-glass-border backdrop-blur-sm text-sm placeholder:text-muted-foreground focus:border-primary/40 focus:ring-primary/20"
-            />
-          </div>
-
-          {/* Tab Content */}
-          <AnimatePresence mode="wait">
-            {tab === "live" && (
-              <motion.div
-                key="live"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <motion.div
-                  variants={container}
-                  initial="hidden"
-                  animate="show"
-                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-14"
-                >
-                  {liveRooms
-                    .filter(r => !searchQuery || r.name.toLowerCase().includes(searchQuery.toLowerCase()) || r.genre.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((room) => (
-                      <motion.div
-                        key={room.id}
-                        variants={item}
-                        onMouseEnter={() => setHoveredLive(room.id)}
-                        onMouseLeave={() => setHoveredLive(null)}
-                        onClick={() => navigate(`/room/${room.id}`)}
-                        className="glass-panel cursor-pointer group relative overflow-hidden"
-                      >
-                        {/* Card top */}
-                        <div className={`h-44 bg-gradient-to-br ${
-                          trendingGenres.find(g => g.name === room.genre)?.color || 'from-primary to-accent'
-                        } relative flex items-center justify-center`}>
-                          <span className="text-7xl opacity-40 group-hover:opacity-60 group-hover:scale-110 transition-all duration-500">{room.emoji}</span>
-                          
-                          {/* LIVE badge */}
-                          <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-destructive/90 backdrop-blur-sm px-2.5 py-1 rounded-lg">
-                            <span className="w-1.5 h-1.5 rounded-full bg-destructive-foreground" />
-                            <span className="text-[10px] font-bold text-destructive-foreground tracking-wider">LIVE</span>
-                          </div>
-
-                          {/* Viewer avatars */}
-                          <div className="absolute top-3 right-3 flex items-center">
-                            <div className="flex -space-x-2">
-                              {[room.hostEmoji, "👤", "👤"].map((e, i) => (
-                                <div key={i} className="w-6 h-6 rounded-full bg-background/80 backdrop-blur-sm border border-background/50 flex items-center justify-center text-xs">
-                                  {e}
-                                </div>
-                              ))}
-                            </div>
-                            <span className="ml-2 text-[10px] font-medium text-foreground/80 bg-background/40 backdrop-blur-sm px-1.5 py-0.5 rounded-full">+{room.viewers}</span>
-                          </div>
-
-                          {/* Progress bar */}
-                          <div className="absolute bottom-0 left-0 right-0 h-1 bg-background/30">
-                            <motion.div
-                              className="h-full bg-primary"
-                              initial={{ width: 0 }}
-                              animate={{ width: `${room.progress}%` }}
-                              transition={{ delay: 0.3, duration: 1, ease: "easeOut" }}
-                            />
-                          </div>
-
-                          {/* Hover overlay */}
-                          <AnimatePresence>
-                            {hoveredLive === room.id && (
-                              <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0 }}
-                                className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center"
-                              >
-                                <motion.div
-                                  initial={{ scale: 0.5 }}
-                                  animate={{ scale: 1 }}
-                                  exit={{ scale: 0.5 }}
-                                  className="w-14 h-14 rounded-full gradient-movie flex items-center justify-center shadow-lg shadow-primary/30"
-                                >
-                                  <Play className="w-6 h-6 text-primary-foreground ml-0.5" />
-                                </motion.div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-
-                        {/* Card bottom */}
-                        <div className="p-4">
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-semibold text-foreground text-sm mb-0.5 truncate group-hover:text-primary transition-colors">{room.name}</h4>
-                              <p className="text-xs text-muted-foreground">by {room.host} · {room.genre}</p>
-                            </div>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); toggleLike(room.id); }}
-                              className="flex-shrink-0 ml-2"
-                            >
-                              <Heart className={`w-4 h-4 transition-colors ${
-                                likedRooms.has(room.id) ? "text-destructive fill-destructive" : "text-muted-foreground hover:text-foreground"
-                              }`} />
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between mt-3">
-                            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                              <Users className="w-3 h-3" /> {room.viewers} watching
-                            </span>
-                            <div className="flex items-center gap-1">
-                              {room.reactions.map((r, i) => (
-                                <motion.span
-                                  key={i}
-                                  initial={{ scale: 0 }}
-                                  animate={{ scale: 1 }}
-                                  transition={{ delay: 0.5 + i * 0.1 }}
-                                  className="text-xs"
-                                >
-                                  {r}
-                                </motion.span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="mt-3 flex items-center gap-2">
-                            <div className="flex-1 h-1.5 rounded-full bg-muted/50">
-                              <div className="h-full rounded-full gradient-movie" style={{ width: `${room.progress}%` }} />
-                            </div>
-                            <span className="text-[10px] text-muted-foreground">{room.progress}%</span>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                </motion.div>
-              </motion.div>
-            )}
-
-            {tab === "popular" && (
-              <motion.div
-                key="popular"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <motion.div
-                  variants={container}
-                  initial="hidden"
-                  animate="show"
-                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-14"
-                >
-                  {popularRooms
-                    .filter(r => !searchQuery || r.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((room) => (
-                      <motion.div
-                        key={room.id}
-                        variants={item}
-                        onClick={() => navigate(`/room/${room.id}`)}
-                        className="glass-panel cursor-pointer group overflow-hidden"
-                      >
-                        <div className="p-5">
-                          <div className="flex items-center gap-4 mb-4">
-                            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-3xl group-hover:scale-110 transition-transform duration-300">
-                              {room.emoji}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-semibold text-foreground text-sm truncate group-hover:text-primary transition-colors">{room.name}</h4>
-                              <p className="text-xs text-muted-foreground">{room.genre} · {room.host}</p>
-                            </div>
-                            <div className="flex items-center gap-1 bg-primary/10 px-2 py-1 rounded-lg">
-                              <Star className="w-3 h-3 text-primary fill-primary" />
-                              <span className="text-xs font-semibold text-primary">{room.rating}</span>
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <Users className="w-3 h-3" /> {room.viewers} live
-                              </span>
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <Heart className="w-3 h-3" /> {room.members}
-                              </span>
-                            </div>
-                            <motion.div
-                              whileHover={{ scale: 1.05 }}
-                              whileTap={{ scale: 0.95 }}
-                              className="px-3 py-1.5 rounded-lg gradient-movie text-primary-foreground text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              Join
-                            </motion.div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                </motion.div>
-              </motion.div>
-            )}
-
-            {tab === "recent" && (
-              <motion.div
-                key="recent"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <motion.div
-                  variants={container}
-                  initial="hidden"
-                  animate="show"
-                  className="space-y-3 max-w-2xl mb-14"
-                >
-                  {recentRooms
-                    .filter(r => !searchQuery || r.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((room) => (
-                      <motion.div
-                        key={room.name}
-                        variants={item}
-                        onClick={() => navigate(`/room/${room.id}`)}
-                        className="glass-panel p-4 flex items-center gap-4 cursor-pointer group"
-                      >
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-2xl flex-shrink-0 group-hover:scale-110 transition-transform duration-300">
-                          {room.emoji}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="font-semibold text-foreground text-sm truncate group-hover:text-primary transition-colors">{room.name}</p>
-                            <div className="flex items-center gap-0.5">
-                              <Star className="w-3 h-3 text-primary fill-primary" />
-                              <span className="text-[10px] text-primary font-medium">{room.rating}</span>
-                            </div>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            {room.host} · {room.genre} · {room.viewers} viewers
-                          </p>
-                        </div>
-                        <span className="text-xs text-muted-foreground flex-shrink-0">{room.time}</span>
-                        <div className="flex-shrink-0">
-                          <div className="w-8 h-8 rounded-full gradient-movie flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Play className="w-3.5 h-3.5 text-primary-foreground ml-0.5" />
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Trending Genres */}
-          <motion.section
-            variants={container}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, margin: "-50px" }}
-            className="mb-14"
-          >
-            <div className="flex items-center gap-2.5 mb-5">
-              <TrendingUp className="w-4 h-4 text-primary" />
-              <h2 className="font-display text-xl font-bold text-foreground">Trending Genres</h2>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              {trendingGenres.map((genre) => (
-                <motion.div
-                  key={genre.name}
-                  variants={item}
-                  whileHover={{ scale: 1.05, y: -4 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => handleGenreClick(genre.name)}
-                  className="glass-panel p-5 cursor-pointer text-center group transition-all duration-300"
-                  style={{ background: genre.bg }}
-                >
-                  <motion.span
-                    className="text-3xl block mb-3"
-                    whileHover={{ scale: 1.2, rotate: [0, -10, 10, 0] }}
-                    transition={{ duration: 0.4 }}
-                  >
-                    {genre.emoji}
-                  </motion.span>
-                  <p className="text-sm font-bold text-foreground mb-0.5">{genre.name}</p>
-                  <p className="text-[11px] text-muted-foreground">{genre.rooms} rooms</p>
-                </motion.div>
-              ))}
             </div>
           </motion.section>
 
-          {/* How it Works */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
+          <div className="glass-panel rounded-2xl p-4 mb-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <PreferenceChips title="Movie genres you prefer" options={MOVIE_GENRES} selected={movieGenres} onToggle={toggleMovieGenre} tone="primary" />
+              <PreferenceChips title="Preferred languages" options={LANGUAGES} selected={languages} onToggle={toggleLanguage} tone="secondary" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h2 className="font-display text-xl md:text-2xl font-bold text-foreground">Live Movie Rooms</h2>
+            <span className="text-xs text-muted-foreground">Friend-hosted and matched rooms rank higher</span>
+          </div>
+
+          {trendingRooms.length > 0 && (
+            <motion.section
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.18 }}
+              className="grid md:grid-cols-2 xl:grid-cols-4 gap-3 mb-6"
+            >
+              {trendingRooms.map((room, idx) => (
+                <motion.button
+                  key={`trend-${room.roomCode}`}
+                  whileHover={{ y: -3, scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  onClick={() => navigate(`/room/${room.roomCode}`)}
+                  className="text-left rounded-xl border border-border bg-[linear-gradient(140deg,hsl(var(--primary)/0.16),hsl(var(--card)/0.55))] p-3"
+                >
+                  <p className="text-[10px] uppercase tracking-[0.15em] text-primary/85 mb-1">Tonight #{idx + 1}</p>
+                  <p className="text-sm font-semibold text-foreground truncate">{room.name}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">{room.media?.title || "Starting soon"}</p>
+                </motion.button>
+              ))}
+            </motion.section>
+          )}
+
+          <div className="relative mb-6">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="Search room, host, or current title"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-full h-11 pl-11 pr-4 rounded-xl bg-glass/60 border-glass-border backdrop-blur-sm text-sm"
+            />
+          </div>
+
+          <motion.section
+            initial={{ opacity: 0, y: 10 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            transition={{ duration: 0.6 }}
-            className="max-w-3xl"
+            className="grid md:grid-cols-3 gap-3 mb-6"
           >
-            <h3 className="font-display text-xl font-bold text-foreground mb-8">How it works</h3>
-            <div className="grid sm:grid-cols-3 gap-6">
-              {[
-                { step: "01", title: "Create a Room", desc: "Name it, set privacy & choose a vibe", icon: Plus },
-                { step: "02", title: "Invite Friends", desc: "Share a link — no sign-up needed", icon: Users },
-                { step: "03", title: "Watch Together", desc: "Perfectly synced with live chat", icon: Play },
-              ].map((s, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 20 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true }}
-                  transition={{ delay: i * 0.15 }}
-                  className="glass-panel p-6 group hover:border-primary/20 transition-all duration-300"
+            {EXPERIENCE_BLOCKS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                initial={{ opacity: 0, y: 14 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: idx * 0.08 }}
+                className="rounded-xl border border-border bg-card/50 p-4"
+              >
+                <div className="w-9 h-9 rounded-lg bg-primary/20 border border-primary/30 text-primary flex items-center justify-center mb-3">
+                  <item.icon className="w-4 h-4" />
+                </div>
+                <p className="text-sm font-semibold text-foreground mb-1">{item.title}</p>
+                <p className="text-xs text-muted-foreground">{item.desc}</p>
+              </motion.div>
+            ))}
+          </motion.section>
+
+          <motion.section
+            initial={{ opacity: 0, y: 10 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="grid md:grid-cols-3 gap-3 mb-6"
+          >
+            {ROOM_ACTION_GUIDE.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                initial={{ opacity: 0, y: 14 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: idx * 0.08 }}
+                className="rounded-xl border border-primary/20 bg-[linear-gradient(145deg,hsl(var(--primary)/0.14),hsl(var(--card)/0.48))] p-4"
+              >
+                <div className="w-9 h-9 rounded-lg bg-primary/20 border border-primary/35 text-primary flex items-center justify-center mb-3">
+                  <item.icon className="w-4 h-4" />
+                </div>
+                <p className="text-sm font-semibold text-foreground mb-1">{item.title}</p>
+                <p className="text-xs text-muted-foreground">{item.desc}</p>
+              </motion.div>
+            ))}
+          </motion.section>
+
+          {spotlightRoom && (
+            <motion.section
+              variants={cardItem}
+              initial="hidden"
+              animate="show"
+              className="mb-5 rounded-2xl border border-primary/25 bg-[linear-gradient(145deg,hsl(var(--primary)/0.16),hsl(var(--background)/0.55))] p-4 md:p-5"
+            >
+              <div className="flex flex-col md:flex-row md:items-center gap-4 justify-between">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-primary/85 mb-1">Spotlight Room</p>
+                  <h3 className="text-lg md:text-xl font-semibold text-foreground">{spotlightRoom.name}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Hosted by {spotlightRoom.host?.name || "Host"} · {spotlightRoom.participantCount} watching
+                  </p>
+                  {spotlightRoom.media?.title && (
+                    <p className="text-xs text-foreground/80 mt-2">Now playing: {spotlightRoom.media.title}</p>
+                  )}
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => navigate(`/room/${spotlightRoom.roomCode}`)}
+                  className="self-start md:self-center gradient-movie text-primary-foreground rounded-xl px-5 py-2.5 text-sm font-semibold inline-flex items-center gap-2"
                 >
-                  <div className="flex items-center gap-3 mb-4">
-                    <span className="text-3xl font-display font-bold text-gradient-movie opacity-40">{s.step}</span>
-                    <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                      <s.icon className="w-5 h-5 text-primary" />
-                    </div>
-                  </div>
-                  <p className="font-semibold text-foreground text-sm mb-1">{s.title}</p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">{s.desc}</p>
-                </motion.div>
+                  <Play className="w-4 h-4" />
+                  Watch Now
+                </motion.button>
+              </div>
+            </motion.section>
+          )}
+
+          {loading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-16">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="h-56 rounded-2xl border border-border bg-card/40 animate-pulse" />
               ))}
             </div>
-          </motion.div>
+          ) : filteredRooms.length === 0 ? (
+            <div className="glass-panel rounded-2xl p-8 text-center mb-16">
+              <Film className="w-10 h-10 text-primary/70 mx-auto mb-3" />
+              <h3 className="font-display text-xl font-bold text-foreground mb-2">No live movie rooms yet</h3>
+              <p className="text-sm text-muted-foreground mb-5">Start the first one and invite your friends in one tap.</p>
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={() => setCreateOpen(true)} className="gradient-movie text-primary-foreground px-5 py-2.5 rounded-xl text-sm font-semibold">
+                  Create Room
+                </button>
+                <button onClick={() => setJoinOpen(true)} className="glass-panel px-5 py-2.5 rounded-xl text-sm font-medium text-foreground">
+                  Join by Code
+                </button>
+              </div>
+            </div>
+          ) : (
+            <motion.section
+              initial="hidden"
+              animate="show"
+              variants={{ hidden: {}, show: { transition: { staggerChildren: 0.06 } } }}
+              className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-16"
+            >
+              {filteredRooms.map((room) => (
+                <motion.article
+                  key={room.roomCode}
+                  variants={cardItem}
+                  initial={false}
+                  animate={
+                    newRoomIds.has(room.roomCode)
+                      ? { opacity: [0.55, 1], y: [16, 0], scale: [0.96, 1] }
+                      : { opacity: 1, y: 0, scale: 1 }
+                  }
+                  transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                  whileHover={{ y: -6 }}
+                  onClick={() => navigate(`/room/${room.roomCode}`)}
+                  className="group cursor-pointer rounded-2xl border border-border bg-card/55 p-4 backdrop-blur-sm hover:border-primary/30 transition-colors overflow-hidden"
+                >
+                  <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-r from-primary/0 via-primary/10 to-accent/0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <CoverTile room={room} />
+
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-foreground truncate group-hover:text-primary transition-colors">{room.name}</h3>
+                      <p className="text-xs text-muted-foreground">{room.host?.avatarEmoji || "🧑"} {room.host?.name || "Host"}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {newRoomIds.has(room.roomCode) && (
+                        <span className="text-[10px] px-2 py-1 rounded-full bg-secondary/20 border border-secondary/40 text-secondary font-semibold uppercase tracking-wide">
+                          New
+                        </span>
+                      )}
+                      <span className="text-[10px] px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary font-semibold uppercase tracking-wide">
+                        {room.status}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-background/45 p-3 mb-3">
+                    <p className="text-[11px] text-muted-foreground mb-1">Current media</p>
+                    <p className="text-sm text-foreground truncate">{room.media?.title || "Waiting for host to start"}</p>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-[11px] text-muted-foreground">Live energy</p>
+                      <p className="text-[11px] text-primary font-semibold">
+                        {Math.min(100, Math.max(18, Math.round((Number(room?.ranking?.score || 0) * 1.2) + Number(room?.participantCount || 0) * 4)))}%
+                      </p>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted/40 overflow-hidden border border-border/70">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.min(100, Math.max(18, Math.round((Number(room?.ranking?.score || 0) * 1.2) + Number(room?.participantCount || 0) * 4)))}%` }}
+                        transition={{ duration: 0.8, ease: "easeOut" }}
+                        className="h-full bg-gradient-to-r from-primary via-secondary to-accent"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {room?.ranking?.friendHostBoost > 0 && (
+                      <span className="text-[10px] px-2 py-1 rounded-full border border-secondary/40 bg-secondary/15 text-secondary">Friend host</span>
+                    )}
+                    {(room?.ranking?.matchedGenres || []).slice(0, 2).map((genre) => (
+                      <span key={genre} className="text-[10px] px-2 py-1 rounded-full border border-primary/35 bg-primary/12 text-primary">{genre}</span>
+                    ))}
+                    {(room?.ranking?.matchedLanguages || []).slice(0, 1).map((language) => (
+                      <span key={language} className="text-[10px] px-2 py-1 rounded-full border border-accent/35 bg-accent/12 text-accent">{language}</span>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5" />
+                      {room.participantCount} in room
+                    </span>
+                    <span>{room.privacy || "public"}</span>
+                  </div>
+                </motion.article>
+              ))}
+            </motion.section>
+          )}
         </div>
       </main>
+
       <CreateRoomDialog open={createOpen} onClose={() => setCreateOpen(false)} type="movie" />
-      <JoinRoomDialog open={joinOpen} onClose={() => setJoinOpen(false)} />
+      <JoinRoomDialog open={joinOpen} onClose={() => setJoinOpen(false)} theme="movie" />
     </>
   );
-};
-
-export default Movies;
+}

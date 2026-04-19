@@ -1,17 +1,19 @@
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { Link } from "react-router-dom";
 import { Film, Music, Play, Users, MessageCircle, Smile } from "lucide-react";
 import { leftReveal, rightReveal, floatEmoji, buttonHover } from "@/lib/landingAnimations";
 import heroImage from "@/assets/hero-image.jpg";
 
 // Pre-computed random positions to avoid impure Math.random in render
-const particlePositions = Array.from({ length: 10 }, (_, i) => ({
+const particlePositions = Array.from({ length: 6 }, (_, i) => ({
   left: (17 + i * 8.3) % 100,
   top: (23 + i * 7.1) % 100,
-  duration: 4 + (i % 5) * 0.8,
+  duration: 6 + (i % 3) * 1.1,
 }));
 
 export default function HeroSection() {
+  const reduceMotion = useReducedMotion();
+
   return (
     <section className="relative min-h-screen flex items-center overflow-hidden pt-16">
       {/* Static Background */}
@@ -35,12 +37,12 @@ export default function HeroSection() {
             top: `${p.top}%`,
           }}
           animate={{
-            y: [0, -40, 0],
-            opacity: [0.2, 0.6, 0.2],
+            y: reduceMotion ? 0 : [0, -18, 0],
+            opacity: reduceMotion ? 0.35 : [0.2, 0.45, 0.2],
           }}
           transition={{
             duration: p.duration,
-            repeat: Infinity,
+            repeat: reduceMotion ? 0 : Infinity,
             ease: "easeInOut",
             delay: i * 0.2,
           }}
@@ -117,8 +119,8 @@ export default function HeroSection() {
               {/* Main player preview */}
               <motion.div
                 variants={floatEmoji}
-                animate="animate"
-                className="glass-panel p-3 glow-movie"
+                animate={reduceMotion ? undefined : "animate"}
+                className="landing-panel p-3"
               >
                 <div className="aspect-video rounded-xl bg-muted/50 flex items-center justify-center relative overflow-hidden">
                   <img
@@ -127,8 +129,8 @@ export default function HeroSection() {
                     className="absolute inset-0 w-full h-full object-cover opacity-60 rounded-xl"
                   />
                   <motion.div
-                    animate={{ scale: [1, 1.2, 1] }}
-                    transition={{ duration: 2, repeat: Infinity }}
+                    animate={reduceMotion ? undefined : { scale: [1, 1.08, 1] }}
+                    transition={{ duration: 2.4, repeat: reduceMotion ? 0 : Infinity }}
                     className="relative z-10 w-16 h-16 rounded-full bg-primary/90 flex items-center justify-center backdrop-blur-sm cursor-pointer"
                   >
                     <Play className="w-7 h-7 text-primary-foreground ml-1" />
@@ -155,9 +157,10 @@ export default function HeroSection() {
 
               {/* Floating chat bubble */}
               <motion.div
-                animate={{ y: [0, -15, 0], x: [0, 8, 0] }}
-                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-                className="absolute -right-4 top-8 glass-panel px-4 py-2 flex items-center gap-2"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25, duration: 0.5 }}
+                className="absolute -right-4 top-8 landing-panel px-4 py-2 flex items-center gap-2"
               >
                 <MessageCircle className="w-4 h-4 text-primary" />
                 <span className="text-sm text-foreground">This scene is amazing! 🔥</span>
@@ -165,9 +168,10 @@ export default function HeroSection() {
 
               {/* Floating reaction */}
               <motion.div
-                animate={{ y: [0, -20, 0], x: [0, -12, 0] }}
-                transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
-                className="absolute -left-6 bottom-20 glass-panel px-3 py-2 flex items-center gap-2"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.35, duration: 0.5 }}
+                className="absolute -left-6 bottom-20 landing-panel px-3 py-2 flex items-center gap-2"
               >
                 <Smile className="w-4 h-4 text-secondary" />
                 <span className="text-2xl">😂🎬👏</span>
@@ -175,9 +179,10 @@ export default function HeroSection() {
 
               {/* Sync indicator */}
               <motion.div
-                animate={{ opacity: [0.6, 1, 0.6] }}
-                transition={{ duration: 2, repeat: Infinity }}
-                className="absolute left-4 -top-3 glass-panel px-3 py-1.5 flex items-center gap-2"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2, duration: 0.35 }}
+                className="absolute left-4 -top-3 landing-panel px-3 py-1.5 flex items-center gap-2"
               >
                 <Users className="w-3.5 h-3.5 text-secondary" />
                 <span className="text-xs text-secondary font-medium">In Sync</span>

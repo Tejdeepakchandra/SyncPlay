@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "@/layouts/AppLayout";
 
 // Page imports
@@ -8,7 +8,12 @@ import MovieRoom from "@/pages/MovieRoom";
 import MusicPage from "@/pages/Music";
 import MusicRoom from "@/pages/MusicRoom";
 import Friends from "@/pages/Friends";
+import Messages from "@/pages/Messages";
 import Profile from "@/pages/Profile";
+import ProfileActivity from "@/pages/ProfileActivity";
+import ProfileAchievements from "@/pages/ProfileAchievements";
+import ProfileFavorites from "@/pages/ProfileFavorites";
+import ProfileRoomDetails from "@/pages/ProfileRoomDetails";
 import SignIn from "@/pages/SignIn";
 import SignUp from "@/pages/Signup";
 import NotFound from "@/pages/NotFound";
@@ -29,9 +34,16 @@ export function AppRouter() {
         <Route path="/music" element={<MusicPage />} />
         <Route path="/music/room/:roomCode" element={<MusicRoom />} />
         <Route path="/friends" element={<Friends />} />
+        <Route path="/messages" element={<Messages />} />
+        <Route path="/friend" element={<Navigate to="/friends" replace />} />
+        <Route path="/Friends" element={<Navigate to="/friends" replace />} />
 
         {/* Protected routes - require authentication */}
         <Route path="/profile" element={<Profile />} />
+        <Route path="/profile/activity" element={<ProfileActivity />} />
+        <Route path="/profile/achievements" element={<ProfileAchievements />} />
+        <Route path="/profile/favorites" element={<ProfileFavorites />} />
+        <Route path="/profile/room/:roomCode" element={<ProfileRoomDetails />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>

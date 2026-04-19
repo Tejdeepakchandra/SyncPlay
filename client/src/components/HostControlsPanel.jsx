@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   X, Mic, MicOff, Video, VideoOff, MessageSquare, MessageSquareOff,
   Shield, ShieldCheck, UserMinus, Crown, Volume2, VolumeX,
-  Settings, Lock, Globe, Sliders, Ban,
+  Settings, Globe, Sliders, Ban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -291,7 +291,6 @@ const HostControlsPanel = ({
             {[
               { label: "Enable Chat", desc: "Allow participants to chat", key: "chatEnabled", icon: MessageSquare },
               { label: "Enable Reactions", desc: "Allow emoji reactions", key: "reactionsEnabled", icon: Sliders },
-              { label: "Private Room", desc: "Only invited users can join", key: "isPrivate", icon: Lock },
               { label: "Allow Screen Share", desc: "Guests can share their screen", key: "allowScreenShare", icon: Globe },
               { label: "Slow Mode", desc: "Limit chat to 1 msg per 5s", key: "slowMode", icon: Ban },
             ].map(({ label, desc, key, icon: IconComp }) => ( // eslint-disable-line no-unused-vars
@@ -302,7 +301,7 @@ const HostControlsPanel = ({
                   <p className="text-xs text-muted-foreground">{desc}</p>
                 </div>
                 <Switch
-                  checked={roomSettings[key]}
+                  checked={!!roomSettings[key]}
                   onCheckedChange={(v) => onUpdateSettings({ [key]: v })}
                 />
               </div>

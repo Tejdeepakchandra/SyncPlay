@@ -4,23 +4,8 @@ import { Film, Music } from "lucide-react";
 export default function FinalCTA() {
   return (
     <section className="py-24 lg:py-32 relative overflow-hidden">
-      {/* Animated background gradients */}
-      <motion.div
-        animate={{
-          scale: [1, 1.2, 1],
-          opacity: [0.3, 0.6, 0.3],
-        }}
-        transition={{ duration: 8, repeat: Infinity }}
-        className="absolute top-0 left-1/4 w-[500px] h-[500px] rounded-full bg-primary/5 blur-[150px] pointer-events-none"
-      />
-      <motion.div
-        animate={{
-          scale: [1, 1.3, 1],
-          opacity: [0.2, 0.5, 0.2],
-        }}
-        transition={{ duration: 10, repeat: Infinity, delay: 1 }}
-        className="absolute bottom-0 right-1/4 w-[400px] h-[400px] rounded-full bg-secondary/5 blur-[120px] pointer-events-none"
-      />
+      {/* Lightweight static glow backdrop */}
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_24%_20%,hsl(var(--primary)/0.12),transparent_42%),radial-gradient(circle_at_74%_72%,hsl(var(--secondary)/0.12),transparent_45%)]" />
 
       <div className="container mx-auto px-4 lg:px-8 relative z-10 text-center">
         <motion.div
