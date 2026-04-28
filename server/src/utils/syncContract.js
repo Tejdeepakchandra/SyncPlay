@@ -31,19 +31,22 @@ const SYNC_CONTRACT = {
    // Drift correction thresholds (seconds)
    
   driftThresholds: {
-    ignore: 0.08,
-    smooth: 0.14,
-    gradual: 0.32,
-    hardSeek: 0.65
+    ignore: 0.4,         // Below this: no correction needed (YT has ~250ms jitter)
+    smooth: 0.8,         // Start rate-adjust corrections
+    gradual: 1.5,        // Micro-seek correction for moderate drift
+    hardSeek: 3.0        // Hard seek for large drift
   },
 
   
    // Adaptive buffer based on latency (ms)
    
   adaptiveBuffer: (latencyMs) => {
-    if (latencyMs < 120) return 80;
-    if (latencyMs < 260) return 130;
-    return 220;
+    // Buffer must exceed typical broadcast round-trip so all clients
+    // receive the state before startAt arrives, enabling simultaneous playback.
+    // YouTube typically needs ~400-800ms to pre-buffer after a seek command.
+    if (latencyMs < 120) return 600;     // Low latency: reasonable buffer
+    if (latencyMs < 260) return 850;     // Medium: allow for network jitter
+    return 1200;                         // High latency: generous buffer
   }
 };
 

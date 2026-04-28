@@ -1,23 +1,26 @@
-import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Mic, MicOff, Crown, ShieldCheck } from "lucide-react";
+import DraggableVideoBubble from "./DraggableVideoBubble";
 
 const DEBUG_MEDIA_LOGS = false;
 const dbg = (...args) => {
   if (DEBUG_MEDIA_LOGS) {
     // eslint-disable-next-line no-console
-    console.log(...args);
   }
 };
 
-const bubblePositions = [
-  { bottom: "90px", right: "20px" },
-  { top: "80px", left: "20px" },
-  { top: "80px", right: "20px" },
-  { bottom: "90px", left: "20px" },
-  { top: "50%", left: "20px" },
-  { top: "50%", right: "20px" },
-];
+// Default initial positions in pixels (from container top-left)
+const getDefaultBubblePosition = (index, containerWidth = 800, containerHeight = 600) => {
+  const positions = [
+    { x: containerWidth - 84, y: containerHeight - 154 },
+    { x: 20, y: 80 },
+    { x: containerWidth - 84, y: 80 },
+    { x: 20, y: containerHeight - 154 },
+    { x: 20, y: Math.round(containerHeight / 2) - 32 },
+    { x: containerWidth - 84, y: Math.round(containerHeight / 2) - 32 },
+  ];
+  return positions[index % positions.length];
+};
 
 const hasLiveEnabledVideoTrack = (stream) => {
   if (!stream) return false;
@@ -347,6 +350,7 @@ const FloatingParticipantBubbles = ({
   hiddenVideoUserIds = new Set(),
   voiceChatVolume = 100,
   deafened = false,
+  containerRef,
 }) => {
   const [trackStateVersion, setTrackStateVersion] = useState(0);
 
@@ -403,6 +407,12 @@ const FloatingParticipantBubbles = ({
     });
   }, [participants, localStream, localVideoEnabled, remoteStreams, trackStateVersion]);
 
+  const [bubblePositions, setBubblePositions] = useState({});
+
+  const handlePositionChange = useCallback((bubbleId, newPosSize) => {
+    setBubblePositions(prev => ({ ...prev, [bubbleId]: newPosSize }));
+  }, []);
+
   return (
     <>
       {participants.map((p, i) => {
@@ -412,14 +422,21 @@ const FloatingParticipantBubbles = ({
         const localHasLiveVideo = hasLiveEnabledVideoTrack(localStream);
         const hasVideo = isLocal ? (localVideoEnabled && localHasLiveVideo) : (p.videoEnabled && !locallyVideoHidden);
         const hasAudio = isLocal ? localAudioEnabled : p.audioEnabled;
-        const pos = bubblePositions[i % bubblePositions.length];
-        const size = isLocal ? "w-16 h-16 md:w-20 md:h-20" : "w-12 h-12 md:w-16 md:h-16";
         const isOnline = p.isOnline !== false;
         const displayName = p.name.replace(" (Host)", "");
+        const bubbleId = p.odlUserId || `${p.name}-${i}`;
+
+        // Get container dimensions for default position
+        const container = containerRef?.current;
+        const cw = container?.clientWidth || 800;
+        const ch = container?.clientHeight || 600;
+        const defaultPos = getDefaultBubblePosition(i, cw, ch);
+        const savedPos = bubblePositions[bubbleId];
+        const initialPos = savedPos ? { x: savedPos.x, y: savedPos.y } : defaultPos;
+        const initialSize = savedPos?.size || (isLocal ? 72 : 56);
 
         // Get remote stream if this is a remote participant
         const remoteStream = !isLocal && p.odlUserId ? remoteStreams?.get(p.odlUserId) : undefined;
-        const remoteHasVideoTracks = remoteStream ? remoteStream.getVideoTracks().length > 0 : false;
         const remoteVideoEnabled = remoteStream
           ? remoteStream.getVideoTracks().some((t) => t.enabled && t.readyState === "live")
           : false;
@@ -429,31 +446,23 @@ const FloatingParticipantBubbles = ({
           ? (localStream && hasVideo)
           : (remoteStream && remoteVideoEnabled && !locallyVideoHidden);
 
-        if (!isLocal && p.odlUserId) {
-          dbg(`[FloatingParticipantBubbles] ${displayName} (${p.odlUserId}):`, {
-            hasRemoteStream: !!remoteStream,
-            videoTracks: remoteHasVideoTracks ? remoteStream.getVideoTracks().length : 0,
-            shouldShowVideo,
-            reason: !remoteStream ? "No remoteStream" : !remoteHasVideoTracks ? "No video tracks" : "Ready to show",
-          });
-        }
-
         return (
-          <motion.div
-            key={p.odlUserId || p.name}
-            initial={{ opacity: 0, scale: 0 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0 }}
-            transition={{ delay: i * 0.08, type: "spring", stiffness: 300, damping: 20 }}
-            className={`absolute z-20 ${size} rounded-full overflow-hidden cursor-pointer group`}
+          <DraggableVideoBubble
+            key={bubbleId}
+            bubbleId={bubbleId}
+            initialPosition={initialPos}
+            initialSize={initialSize}
+            minSize={40}
+            maxSize={180}
+            containerRef={containerRef}
+            onPositionChange={handlePositionChange}
             style={{
-              ...pos,
               boxShadow: p.speaking
                 ? "0 0 0 3px hsl(var(--secondary)), 0 0 20px hsl(var(--secondary) / 0.4)"
-                : "0 0 0 2px hsl(var(--background) / 0.6), 0 4px 12px rgba(0,0,0,0.5)",
+                : undefined,
             }}
-            title={`${displayName}${p.role === "host" ? " — Host" : p.role === "co-host" ? " — Co-Host" : ""}${p.speaking ? " (speaking)" : ""}`}
           >
+            {/* Video or emoji fallback */}
             {shouldShowVideo ? (
               isLocal ? (
                 <StreamCircle stream={localStream} mirrored muted fallbackEmoji={p.emoji} />
@@ -462,10 +471,11 @@ const FloatingParticipantBubbles = ({
               )
             ) : (
               <div className="absolute inset-0 bg-muted/80 backdrop-blur-sm flex items-center justify-center rounded-full">
-                <span className={isLocal ? "text-2xl md:text-3xl" : "text-lg md:text-2xl"}>{p.emoji}</span>
+                <span className="text-lg md:text-2xl">{p.emoji}</span>
               </div>
             )}
 
+            {/* Hidden audio element for remote stream */}
             {!isLocal && remoteStream && (
               <HiddenAudio
                 stream={remoteStream}
@@ -474,10 +484,12 @@ const FloatingParticipantBubbles = ({
               />
             )}
 
+            {/* Online indicator */}
             <div className={`absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-card ${
               isOnline ? "bg-green-500" : "bg-muted-foreground/50"
             }`} />
 
+            {/* Role badges */}
             {p.role === "host" && (
               <div className="absolute -top-0.5 -left-0.5 w-5 h-5 rounded-full bg-primary flex items-center justify-center border border-card">
                 <Crown className="w-2.5 h-2.5 text-primary-foreground" />
@@ -489,17 +501,14 @@ const FloatingParticipantBubbles = ({
               </div>
             )}
 
-            <AnimatePresence>
-              {p.speaking && hasAudio && (
-                <motion.div
-                  initial={{ scale: 1, opacity: 0.6 }}
-                  animate={{ scale: [1, 1.3, 1], opacity: [0.6, 0, 0.6] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  className="absolute inset-0 rounded-full border-2 border-secondary pointer-events-none"
-                />
-              )}
-            </AnimatePresence>
+            {/* Speaking animation */}
+            {p.speaking && hasAudio && (
+              <div
+                className="absolute inset-0 rounded-full border-2 border-secondary pointer-events-none animate-pulse"
+              />
+            )}
 
+            {/* Mic indicator */}
             <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-card/90 backdrop-blur flex items-center justify-center border border-glass-border">
               {hasAudio ? (
                 <Mic className="w-2.5 h-2.5 text-secondary" />
@@ -507,7 +516,12 @@ const FloatingParticipantBubbles = ({
                 <MicOff className="w-2.5 h-2.5 text-destructive" />
               )}
             </div>
-          </motion.div>
+
+            {/* Name tooltip on hover */}
+            <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-muted-foreground bg-card/80 backdrop-blur px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              {displayName}
+            </div>
+          </DraggableVideoBubble>
         );
       })}
     </>

@@ -100,7 +100,7 @@ export default function Profile() {
   const [notificationOverrides, setNotificationOverrides] = useState({});
   const [privacyOverrides, setPrivacyOverrides] = useState({});
   const [friendCount, setFriendCount] = useState(null);
-  const [profileCounts, setProfileCounts] = useState({ activity: 0, achievements: 0, favorites: 0 });
+  const [profileCounts, setProfileCounts] = useState({ activity: 0, achievements: 0, favorites: 0, moments: 0 });
 
   const notifications = useMemo(
     () => ({
@@ -166,13 +166,13 @@ export default function Profile() {
         key: "moments",
         path: "/profile/moments",
         label: "Moments",
-        desc: "Captured highlights (next phase)",
+        desc: "Session highlights & captured clips",
         icon: Play,
         gradient: "bg-primary",
-        count: user?.stats?.momentCreated ?? 0,
+        count: profileCounts.moments,
       },
     ],
-    [profileCounts, user?.stats?.momentCreated]
+    [profileCounts]
   );
 
   const stats = useMemo(
@@ -192,11 +192,12 @@ export default function Profile() {
 
     const loadProfileCounts = async (isRetry = false) => {
       try {
-        const [summaryRes, activityRes, achievementsRes, favoritesRes] = await Promise.all([
+        const [summaryRes, activityRes, achievementsRes, favoritesRes, momentsRes] = await Promise.all([
           api.get("/friends/summary"),
           api.get("/users/me/activity", { params: { page: 1, limit: 1, category: "all" } }),
           api.get("/users/me/achievements"),
           api.get("/users/me/favorites"),
+          api.get("/moments/profile/moments").catch(() => ({ data: { data: { total: 0 } } })),
         ]);
 
         if (cancelled) return;
@@ -205,10 +206,13 @@ export default function Profile() {
         setFriendCount(Number.isFinite(friends) ? friends : null);
 
         const favorites = favoritesRes?.data?.data?.favorites || { rooms: [], moments: [], activities: [] };
+        const momentsData = momentsRes?.data?.data;
+        const momentsCount = momentsData?.total ?? (Array.isArray(momentsData) ? momentsData.length : 0);
         setProfileCounts({
           activity: activityRes?.data?.data?.summary?.total ?? 0,
           achievements: achievementsRes?.data?.data?.summary?.unlocked ?? 0,
           favorites: (favorites.rooms?.length || 0) + (favorites.moments?.length || 0) + (favorites.activities?.length || 0),
+          moments: momentsCount,
         });
       } catch {
         if (!isRetry && !cancelled) {
@@ -396,10 +400,6 @@ export default function Profile() {
               whileHover={{ scale: 1.02, y: -1 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => {
-                if (navItem.key === "moments") {
-                  toast("Moments page is planned next");
-                  return;
-                }
                 navigate(navItem.path, { state: { profileNavDirection: "forward" } });
               }}
               className="relative bg-card border border-border p-4 rounded-2xl text-left overflow-hidden group transition-all hover:border-primary/20"

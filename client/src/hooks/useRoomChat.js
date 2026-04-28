@@ -88,7 +88,6 @@ export const useRoomChat = (roomCode) => {
 
     // Listen for chat permission denied
     const handleChatPermissionDenied = (data) => {
-      console.log('[CHAT-PERMISSION-DENIED]:', data);
       window.dispatchEvent(new CustomEvent('permission:chat-denied', {
         detail: { error: data.error, error_code: data.error_code }
       }));

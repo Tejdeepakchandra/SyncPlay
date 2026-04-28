@@ -20,6 +20,7 @@ const { authMiddleware } = require('./middleware/auth');
 const { rateLimiter } = require('./middleware/rateLimiter');
 const { startPresenceCleanup } = require('./jobs/presenceCleanup');
 const { startMediaCleanupJob } = require('./jobs/mediaCleanup');
+const { startRoomExpirationJob } = require('./jobs/roomExpirationJob');
 const { clerkWebhook } = require('./controllers/authController');
 
 // Initialize Express
@@ -86,6 +87,8 @@ const io = new Server(server, {
 
 app.set('io', io);
 
+// Start room expiration job which needs the io instance
+startRoomExpirationJob(io);
 
 // MIDDLEWARE
 
@@ -98,7 +101,6 @@ app.use((req, res, next) => {
     const path = req.path;
     const isAuth = req.headers.authorization ? '🔐' : '🔓';
     
-    console.log(`${timestamp} ${isAuth} ${method.padEnd(6)} ${path}`);
   }
   
   next();
@@ -182,7 +184,6 @@ app.use((err, req, res, next) => {
     ).catch(e => {
       // Silently fail - table might not exist in development
       if (process.env.NODE_ENV === 'development') {
-        console.log('[INFO] PostgreSQL logging skipped (table may not exist)');
       }
     });
   }
@@ -215,26 +216,18 @@ async function startServer() {
     }
 
     // Connect to MongoDB
-    console.log('⏳ Connecting to MongoDB...');
     await connectDB();
-    console.log('✅ MongoDB connected');
     
     // Connect to Redis (optional, will continue if fails)
-    console.log('⏳ Connecting to Redis...');
     try {
       await redisClient.connect();
       console.log('✅ Redis connected');
     } catch (redisErr) {
-      console.warn('⚠️ Redis connection failed (optional):', redisErr.message);
+      console.error('⚠️ Redis connection failed:', redisErr.message, '— sync will fall back to MongoDB (slower)');
     }
     
     // Now start listening
     server.listen(PORT, () => {
-      console.log('\n=================================');
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📡 WebSocket server ready`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-      console.log('=================================\n');
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
@@ -246,12 +239,10 @@ startServer();
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Closing connections...');
   await mongoose.connection.close();
   await redisClient.quit();
   await pgPool.end();
   server.close(() => {
-    console.log('Server closed');
     process.exit(0);
   });
 });

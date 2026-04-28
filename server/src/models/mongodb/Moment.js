@@ -24,9 +24,30 @@ const momentSchema = new mongoose.Schema({
   },
   duration: {
     type: Number,
-    default: 60,
+    default: 15,
     min: 10,
     max: 120
+  },
+  
+  // Clip time range in video seconds (for overlap detection & merge)
+  clipRange: {
+    startTime: { type: Number },  // e.g., 595 (9:55)
+    endTime: { type: Number },    // e.g., 610 (10:10)
+  },
+  
+  // Cloudinary direct upload reference
+  cloudinaryPublicId: String,
+  
+  // Who captured this moment
+  capturedBy: {
+    userId: String,
+    isHost: { type: Boolean, default: true }
+  },
+  
+  // If this moment was merged into another
+  mergedInto: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Moment'
   },
   
   // Moment type

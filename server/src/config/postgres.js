@@ -23,9 +23,7 @@ try {
     postgresTargetHost = 'invalid-uri';
 }
 
-console.log(`PostgreSQL mode: ${usingPoolerUri ? 'pooler' : 'direct'} (host: ${postgresTargetHost})`);
 if (!usingPoolerUri) {
-    console.log('ℹ️  POSTGRES_POOLER_URI is not set. On restrictive Wi-Fi, direct Supabase DB host may fail DNS/routing.');
 }
 
 const pgPool = new Pool({
@@ -42,22 +40,17 @@ const pgPool = new Pool({
 // Non-blocking connection check (doesn't block server startup)
 setTimeout(() => {
     pgPool.query('SELECT NOW()', (err, result) => {
-        if(err){
-            console.log("⚠️  PostgreSQL connection check failed:", err.message);
+        if (err) {
             if (err.code === 'ENOTFOUND' || err.code === 'ENETUNREACH') {
-                console.log('ℹ️  Network/DNS issue detected. Prefer POSTGRES_POOLER_URI from Supabase for IPv4-compatible access on restricted networks.');
             }
         }
-        else{
-            console.log("✅ PostgreSQL connected successfully");
+        else {
         }
     });
 }, 1000);
 
-pgPool.on('error', (err)=>{
-    console.log("Supabase PostgreSQL error:", err.message);
+pgPool.on('error', (err) => {
     if (err.code === 'ENOTFOUND' || err.code === 'ENETUNREACH' || err.code === 'ETIMEDOUT') {
-        console.log('ℹ️  If this happens only on specific Wi-Fi, switch to POSTGRES_POOLER_URI (Supabase pooler) and keep SSL enabled.');
     }
 })
 
@@ -65,5 +58,4 @@ module.exports = pgPool;
 
 // Don't exit the process on connection failure - Redis and MongoDB still work
 process.on('unhandledRejection', (reason, promise) => {
-    console.log('Unhandled Rejection at:', promise, 'reason:', reason);
 });

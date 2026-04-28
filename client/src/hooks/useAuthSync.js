@@ -22,7 +22,6 @@ export function useAuthSync() {
     if (!token || !clerkUser || syncedRef.current) return;
 
     syncedRef.current = true;
-    console.log('🔄 Syncing user to MongoDB (background)...');
 
     api
       .post(
@@ -40,10 +39,8 @@ export function useAuthSync() {
         }
       )
       .then((res) => {
-        console.log('✅ User synced to MongoDB:', res.data?.user?.username);
       })
       .catch((err) => {
-        console.warn("⚠️ Auth sync failed (non-blocking):", err.message);
         syncedRef.current = false;
       });
   }, [clerkUser]);
@@ -62,7 +59,6 @@ export function useAuthSync() {
       getToken()
         .then((token) => {
           if (!token) return;
-          console.log('🔌 Connecting authenticated socket...');
           connectSocket(token);
           syncUserProfile(token);
         })
@@ -73,13 +69,11 @@ export function useAuthSync() {
 
     // ✅ CASE 1: User just signed in
     if (currentSignInState && !previousSignInStateRef.current) {
-      console.log('🔄 User signed in - transitioning to authenticated socket');
       connectAuthenticated();
     }
 
     // ✅ CASE 2: User just signed out
     if (!currentSignInState && previousSignInStateRef.current) {
-      console.log('🔄 User signed out - transitioning to guest socket');
       syncedRef.current = false; // allow re-sync on next sign in
       
       // Disconnect user socket and create guest socket
@@ -87,22 +81,18 @@ export function useAuthSync() {
       
       // Create guest socket immediately (no auth needed)
       setTimeout(() => {
-        console.log('🔌 Connecting guest socket...');
         connectSocket(null); // null token = guest mode
       }, 300); // Small delay to ensure disconnect completes
     }
 
     // ✅ CASE 3: Initial load (before any sign in/out)
     if (isLoaded && previousSignInStateRef.current === null) {
-      console.log('🔄 Initial app load');
 
       if (isSignedIn) {
         // First load while already signed in - connect authenticated socket immediately.
-        console.log('🔌 Connecting authenticated socket (initial signed-in load)...');
         connectAuthenticated();
       } else {
         // First time user - create guest socket immediately
-        console.log('🔌 Connecting guest socket (first visit)...');
         connectSocket(null); // null token = guest mode
       }
     }

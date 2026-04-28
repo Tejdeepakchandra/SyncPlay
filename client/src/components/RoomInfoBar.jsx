@@ -198,13 +198,21 @@ const RoomInfoBar = ({ roomId, roomType, roomName, host, participantCount = 1, i
 
       <AnimatePresence>
         {showPanel && (
-          <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.95 }}
-            className="absolute top-full right-0 mt-2 z-50 w-72 sm:w-80"
-          >
-            <div className="glass-panel p-4 space-y-3 shadow-xl">
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowPanel(false)}
+              className="sm:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[99]"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
+              className="fixed sm:absolute top-16 sm:top-full left-3 right-3 sm:left-auto sm:right-0 mt-0 sm:mt-2 z-[100] sm:w-80"
+            >
+              <div className="glass-panel p-4 space-y-3 shadow-2xl border border-glass-border rounded-2xl max-h-[calc(100vh-5rem)] overflow-y-auto">
               <AlertDialog open={deleteStoryConfirmOpen} onOpenChange={setDeleteStoryConfirmOpen}>
                 <AlertDialogContent className="max-w-sm rounded-2xl border-border/70 bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.1))]">
                   <AlertDialogHeader>
@@ -313,7 +321,8 @@ const RoomInfoBar = ({ roomId, roomType, roomName, host, participantCount = 1, i
                 </Button>
               </div>
             </div>
-          </motion.div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>

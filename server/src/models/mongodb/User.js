@@ -107,6 +107,11 @@ const userSchema = new mongoose.Schema({
             activityId: { type: String, trim: true },
             label: { type: String, trim: true, maxlength: 160 },
             type: { type: String, trim: true, maxlength: 40 },
+            videoUrl: String,           // Final merged highlights video URL
+            thumbnailUrl: String,       // Thumbnail for activity card
+            roomCode: String,           // Original room code
+            clipCount: Number,          // How many moments were captured
+            duration: Number,           // Total duration in seconds
             addedAt: { type: Date, default: Date.now },
             _id: false,
         }],

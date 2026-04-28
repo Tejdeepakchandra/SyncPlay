@@ -51,7 +51,6 @@ const authMiddleware = async (req, res, next) => {
     req.userRole = 'user';
     req.userPending = true; // Flag for pending user creation via webhook
     
-    console.log(`[AUTH] ✅ Token verified (${Date.now() - startTime}ms): ${clerkUserId.substring(0, 8)}...`);
     next();
   } catch (error) {
     console.error(`[AUTH] ❌ Error (${Date.now() - startTime}ms):`, error.message);

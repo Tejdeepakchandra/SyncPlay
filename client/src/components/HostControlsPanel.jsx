@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import {
   X, Mic, MicOff, Video, VideoOff, MessageSquare, MessageSquareOff,
   Shield, ShieldCheck, UserMinus, Crown, Volume2, VolumeX,
-  Settings, Globe, Sliders, Ban,
+  Settings, Globe, Sliders, Ban, Camera,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -19,6 +19,10 @@ const HostControlsPanel = ({
   isHost = false,
   hideVideoControls = false,
   panelTheme = "movie",
+  // Moment Capture controls
+  isCaptureBuffering = false,
+  onStartCapture,
+  onStopCapture,
 }) => {
   const [tab, setTab] = useState("participants");
   const [confirmRemove, setConfirmRemove] = useState(null);
@@ -149,9 +153,9 @@ const HostControlsPanel = ({
             {/* Participants List */}
             <p className="text-xs font-semibold text-muted-foreground uppercase">Participants</p>
             <div className="space-y-2">
-              {participants.map((p) => {
+              {participants.map((p, idx) => {
                 const badge = getRoleBadge(p.role);
-                const participantId = p.userId || p.odlUserId || p.name;
+                const participantId = p.userId || p.odlUserId || p.name || `participant-${idx}`;
                 const isParticipantHost = p.role === "host";
                 const isParticipantCoHost = p.role === "co-host" || p.role === "cohost";
                 const restrictions = p.restrictions || {};
@@ -306,6 +310,29 @@ const HostControlsPanel = ({
                 />
               </div>
             ))}
+
+            {/* Moment Capture Toggle */}
+            <div className="border-t border-glass-border my-2 pt-2" />
+            <p className="text-xs font-semibold text-muted-foreground uppercase mb-2">Moment Capture</p>
+            <div className="glass-panel p-3 flex items-center gap-3">
+              <Camera className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-foreground">Capture Moments</p>
+                <p className="text-xs text-muted-foreground">
+                  {isCaptureBuffering ? 'Recording buffer active' : 'Screen share required'}
+                </p>
+              </div>
+              <Switch
+                checked={isCaptureBuffering}
+                onCheckedChange={(v) => {
+                  if (v) {
+                    onStartCapture?.();
+                  } else {
+                    onStopCapture?.();
+                  }
+                }}
+              />
+            </div>
           </div>
         )}
       </div>

@@ -1,166 +1,248 @@
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Bookmark, Flame, MessageCircle, Play, Loader2 } from 'lucide-react';
 
-export const MomentTimeline = ({ 
-  duration, 
-  currentTime,
+/**
+ * MomentTimeline — Hotstar-style premium progress bar with moment markers.
+ *
+ * Features:
+ * - Slim seekable progress bar (4px → 6px on hover)
+ * - Precisely positioned, type-colored moment icons at exact timestamps
+ * - Hover tooltips with timestamp and type info
+ * - Pulse glow on active capture
+ * - Click to play captured moment
+ * - Smart clustering when moments overlap
+ */
+
+const MOMENT_STYLES = {
+  bookmark:        { icon: Bookmark,       color: '#FBBF24', bg: '#FBBF24', label: 'Bookmark' },
+  reaction_spike:  { icon: Flame,          color: '#F97316', bg: '#F97316', label: 'Reaction' },
+  comment_cluster: { icon: MessageCircle,  color: '#22D3EE', bg: '#22D3EE', label: 'Chat Spike' },
+};
+
+export const MomentTimeline = ({
+  duration = 0,
+  currentTime = 0,
   moments = [],
   onMomentClick,
-  className = ''
+  onSeek,
+  isCapturing = false,
+  currentMoment = null,
 }) => {
+  const barRef = useRef(null);
+  const [hovered, setHovered] = useState(false);
   const [hoveredMoment, setHoveredMoment] = useState(null);
-  const timelineRef = useRef(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  // SAFE division - prevent NaN
-  const progressWidth = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
-  const getMomentColor = (type) => {
-    switch (type) {
-      case 'reaction_spike': return '#3B82F6';
-      case 'comment_cluster': return '#10B981';
-      case 'bookmark': return '#F59E0B';
-      case 'ai_highlight': return '#8B5CF6';
-      default: return '#6B7280';
+  // Format seconds → M:SS
+  const fmt = (s) => {
+    if (!s || isNaN(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  // Position moments as % of duration, cluster overlapping ones
+  const positionedMoments = useMemo(() => {
+    if (duration <= 0 || moments.length === 0) return [];
+
+    return moments
+      .map(m => ({
+        ...m,
+        pct: Math.max(0, Math.min(100, (m.timestamp / duration) * 100)),
+      }))
+      .sort((a, b) => a.pct - b.pct);
+  }, [moments, duration]);
+
+  // Handle bar click for seeking
+  const handleBarClick = useCallback((e) => {
+    if (!barRef.current || duration <= 0) return;
+    const rect = barRef.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    onSeek?.(pct * duration);
+  }, [duration, onSeek]);
+
+  // Handle moment hover
+  const handleMomentHover = useCallback((e, moment) => {
+    const rect = barRef.current?.getBoundingClientRect();
+    if (rect) {
+      setTooltipPos({ x: e.clientX - rect.left, y: rect.top });
     }
-  };
+    setHoveredMoment(moment);
+  }, []);
 
-  const getMomentIcon = (type) => {
-    switch (type) {
-      case 'reaction_spike': return '🔥';
-      case 'comment_cluster': return '💬';
-      case 'bookmark': return '⭐';
-      case 'ai_highlight': return '🎬';
-      default: return '📌';
-    }
-  };
-
-  const getMomentLabel = (type) => {
-    switch (type) {
-      case 'reaction_spike': return 'Reaction Spike';
-      case 'comment_cluster': return 'Hot Discussion';
-      case 'bookmark': return 'Bookmark';
-      case 'ai_highlight': return 'Highlight';
-      default: return 'Moment';
-    }
-  };
-
-  const handleTimelineClick = (e) => {
-    if (!timelineRef.current || duration <= 0) return;
-    
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const percentage = Math.max(0, Math.min(1, x / rect.width));
-    const timestamp = percentage * duration;
-    
-    onMomentClick?.({ timestamp, type: 'seek' });
-  };
+  if (duration <= 0) return null;
 
   return (
-    <div className={`w-full px-4 py-2 ${className}`}>
-      <div 
-        ref={timelineRef}
-        className="relative h-12 bg-gray-800 rounded-lg cursor-pointer overflow-hidden group"
-        onClick={handleTimelineClick}
+    <div
+      className="relative w-full select-none"
+      style={{ padding: '8px 0 4px 0' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setHoveredMoment(null); }}
+    >
+      {/* Time labels */}
+      <div className="flex items-center justify-between mb-1 px-0.5">
+        <span className="text-[10px] font-mono text-white/50 tabular-nums">{fmt(currentTime)}</span>
+        <span className="text-[10px] font-mono text-white/50 tabular-nums">{fmt(duration)}</span>
+      </div>
+
+      {/* Progress bar container */}
+      <div
+        ref={barRef}
+        className="relative cursor-pointer group"
+        style={{ height: hovered ? '10px' : '6px', transition: 'height 0.15s ease' }}
+        onClick={handleBarClick}
       >
-        {/* Progress bar */}
-        <motion.div 
-          className="absolute top-0 left-0 h-full bg-blue-600"
-          style={{ width: `${progressWidth}%` }}
+        {/* Background track */}
+        <div
+          className="absolute inset-0 rounded-full overflow-hidden"
+          style={{ background: 'rgba(255,255,255,0.08)' }}
+        >
+          {/* Played progress */}
+          <div
+            className="h-full rounded-full transition-all duration-150"
+            style={{
+              width: `${progress}%`,
+              background: 'linear-gradient(90deg, #6366F1, #8B5CF6, #A855F7)',
+            }}
+          />
+        </div>
+
+        {/* Playhead dot */}
+        <motion.div
+          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full shadow-lg"
+          style={{
+            left: `${progress}%`,
+            width: hovered ? 14 : 10,
+            height: hovered ? 14 : 10,
+            background: '#fff',
+            boxShadow: '0 0 8px rgba(139,92,246,0.6)',
+            transition: 'width 0.15s, height 0.15s',
+          }}
         />
-        
-        {/* Progress handle */}
-        <div className="absolute top-0 left-0 w-1 h-full bg-white shadow-lg"
-             style={{ left: `${progressWidth}%` }} />
-        
+
         {/* Moment markers */}
-        {moments.map((moment) => {
-          const left = duration > 0 ? (moment.timestamp / duration) * 100 : 0;
-          const isHovered = hoveredMoment === moment._id;
-          
+        {positionedMoments.map((m, i) => {
+          const style = MOMENT_STYLES[m.type] || MOMENT_STYLES.bookmark;
+          const Icon = style.icon;
+          const isActive = currentMoment?.momentId === m.momentId;
+          const isReady = m.ready && m.videoUrl;
+
           return (
-            <React.Fragment key={moment._id}>
-              <motion.button
-                className="absolute top-0 w-3 h-full transform -translate-x-1/2 z-10"
-                style={{ 
-                  left: `${left}%`,
-                  backgroundColor: getMomentColor(moment.type),
-                  boxShadow: isHovered ? '0 0 15px rgba(59,130,246,0.5)' : 'none'
+            <div
+              key={`${m.momentId || 'moment'}-${i}`}
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-10"
+              style={{ left: `${m.pct}%` }}
+              onMouseEnter={(e) => handleMomentHover(e, m)}
+              onMouseLeave={() => setHoveredMoment(null)}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isReady) onMomentClick?.(m);
+              }}
+            >
+              {/* Active capture glow */}
+              {isActive && (
+                <motion.div
+                  className="absolute inset-0 rounded-full"
+                  style={{ background: style.color, filter: 'blur(6px)', opacity: 0.5 }}
+                  animate={{ scale: [1, 1.8, 1], opacity: [0.5, 0.2, 0.5] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                />
+              )}
+
+              {/* Marker icon */}
+              <motion.div
+                className="relative flex items-center justify-center rounded-full border-2 cursor-pointer"
+                style={{
+                  width: hovered ? 22 : 16,
+                  height: hovered ? 22 : 16,
+                  background: isReady
+                    ? `${style.color}25`
+                    : 'rgba(100,100,100,0.3)',
+                  borderColor: isReady ? style.color : 'rgba(150,150,150,0.4)',
+                  transition: 'all 0.15s ease',
                 }}
-                whileHover={{ scale: 2, zIndex: 20 }}
-                onHoverStart={() => setHoveredMoment(moment._id)}
-                onHoverEnd={() => setHoveredMoment(null)}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMomentClick?.(moment);
-                }}
+                whileHover={{ scale: 1.3 }}
               >
-                <AnimatePresence>
-                  {isHovered && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute -top-16 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-3 py-2 rounded-lg shadow-xl whitespace-nowrap z-30"
-                      style={{ borderLeft: `3px solid ${getMomentColor(moment.type)}` }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">{getMomentIcon(moment.type)}</span>
-                        <div>
-                          <div className="font-semibold">{getMomentLabel(moment.type)}</div>
-                          <div className="text-xs text-gray-400">
-                            {Math.floor(moment.timestamp / 60)}:
-                            {Math.floor(moment.timestamp % 60).toString().padStart(2, '0')}
-                          </div>
-                          {moment.intensity && (
-                            <div className="text-xs text-blue-400">
-                              Intensity: {(moment.intensity * 100).toFixed(0)}%
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.button>
-            </React.Fragment>
+                {isActive && !isReady ? (
+                  <Loader2
+                    className="animate-spin"
+                    style={{ width: hovered ? 12 : 8, height: hovered ? 12 : 8, color: style.color }}
+                  />
+                ) : (
+                  <Icon
+                    style={{
+                      width: hovered ? 12 : 8,
+                      height: hovered ? 12 : 8,
+                      color: isReady ? style.color : 'rgba(150,150,150,0.6)',
+                    }}
+                  />
+                )}
+              </motion.div>
+            </div>
           );
         })}
-        
-        <div className="absolute inset-0 pointer-events-none bg-gradient-to-r from-transparent via-transparent to-gray-900/20" />
-        <div className="absolute inset-0 pointer-events-none bg-gradient-to-l from-transparent via-transparent to-gray-900/20" />
       </div>
 
-      {/* Timeline markers */}
-      <div className="flex justify-between mt-1 text-xs text-gray-500">
-        <span>0:00</span>
-        <span>
-          {duration > 0 
-            ? `${Math.floor(duration / 60)}:${Math.floor(duration % 60).toString().padStart(2, '0')}`
-            : '0:00'}
-        </span>
-      </div>
-
-      {/* Moments legend */}
-      {moments.length > 0 && (
-        <div className="flex gap-4 mt-2 text-xs flex-wrap">
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-blue-600" />
-            <span className="text-gray-400">Reaction Spike</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-green-600" />
-            <span className="text-gray-400">Discussion</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-yellow-600" />
-            <span className="text-gray-400">Bookmark</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-3 rounded-full bg-purple-600" />
-            <span className="text-gray-400">Highlight</span>
-          </div>
-        </div>
+      {/* Capture status bar */}
+      {isCapturing && (
+        <motion.div
+          className="mt-1 flex items-center gap-1.5"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
+          <motion.div
+            className="w-1.5 h-1.5 rounded-full bg-red-500"
+            animate={{ opacity: [1, 0.3, 1] }}
+            transition={{ duration: 0.8, repeat: Infinity }}
+          />
+          <span className="text-[9px] text-red-400/80 font-medium">Capturing moment...</span>
+        </motion.div>
       )}
+
+      {/* Hover tooltip */}
+      <AnimatePresence>
+        {hoveredMoment && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 5 }}
+            className="absolute z-30 pointer-events-none"
+            style={{
+              left: Math.max(50, Math.min(tooltipPos.x, barRef.current?.offsetWidth - 100 || 200)),
+              bottom: '100%',
+              marginBottom: '8px',
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <div
+              className="px-2.5 py-1.5 rounded-lg shadow-xl text-center"
+              style={{
+                background: 'rgba(10,10,25,0.95)',
+                border: `1px solid ${(MOMENT_STYLES[hoveredMoment.type] || MOMENT_STYLES.bookmark).color}30`,
+                backdropFilter: 'blur(10px)',
+              }}
+            >
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-[10px] font-semibold" style={{ color: (MOMENT_STYLES[hoveredMoment.type] || MOMENT_STYLES.bookmark).color }}>
+                  {(MOMENT_STYLES[hoveredMoment.type] || MOMENT_STYLES.bookmark).label}
+                </span>
+                {hoveredMoment.ready && (
+                  <Play className="w-2.5 h-2.5 text-green-400" />
+                )}
+              </div>
+              <span className="text-[9px] text-white/60 font-mono">{fmt(hoveredMoment.timestamp)}</span>
+              {!hoveredMoment.ready && (
+                <span className="text-[8px] text-amber-400/70 block mt-0.5">Processing...</span>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
+
+export default MomentTimeline;

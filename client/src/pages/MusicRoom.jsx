@@ -6,7 +6,8 @@ import {
   MessageSquare, Music, ListMusic, Sliders, Settings,
   Heart, Bookmark, Smile, Headphones, VolumeX,
   ChevronLeft, ChevronUp, Send, Volume2, Wifi, WifiOff, X,
-  Mic, MicOff, UserX, Youtube, Upload
+  Mic, MicOff, UserX, Youtube, Upload, UserPlus, Users,
+  MoreVertical
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { socket } from "@/services/socket";
@@ -32,6 +33,7 @@ import JoinRequestNotification from "@/components/JoinRequestNotification";
 import UpNextQueue from "@/components/UpNextQueue";
 import TrackEndedOverlay from "@/components/TrackEndedOverlay";
 import MusicSourcePicker from "@/components/MusicSourcePicker";
+import InviteFriendsModal from "@/components/InviteFriendsModal";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -160,6 +162,7 @@ const MusicRoom = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showHostControls, setShowHostControls] = useState(false);
+  const [showInviteFriends, setShowInviteFriends] = useState(false);
   const [showMixer, setShowMixer] = useState(false);
   const [showPlaylist, setShowPlaylist] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
@@ -184,6 +187,7 @@ const MusicRoom = () => {
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState("off"); // off, one, all
   const [showSourcePicker, setShowSourcePicker] = useState(true);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [_searchResults, _setSearchResults] = useState([]);
   const [_isSearching, _setIsSearching] = useState(false);
   const [_showYoutubeSearch, _setShowYoutubeSearch] = useState(false);
@@ -449,7 +453,7 @@ const MusicRoom = () => {
           at: Date.now(),
         };
       } else {
-        if (Number.isFinite(timeSec)) {
+        if (Number.isFinite(timeSec) && Math.abs((ytPlayer.currentTime || 0) - timeSec) > 0.15) {
           ytPlayer.seekTo(timeSec, true);
         }
         ytPlayer.play();
@@ -479,7 +483,7 @@ const MusicRoom = () => {
           at: Date.now(),
         };
       } else {
-        if (Number.isFinite(timeSec)) {
+        if (Number.isFinite(timeSec) && Math.abs((ytPlayer.currentTime || 0) - timeSec) > 0.15) {
           ytPlayer.seekTo(timeSec, true);
         }
         ytPlayer.pause();
@@ -505,7 +509,9 @@ const MusicRoom = () => {
             at: Date.now(),
           };
         } else {
-          ytPlayer.seekTo(timeSec, true);
+          if (Math.abs((ytPlayer.currentTime || 0) - timeSec) > 0.15) {
+            ytPlayer.seekTo(timeSec, true);
+          }
         }
       }
     },
@@ -520,6 +526,25 @@ const MusicRoom = () => {
           : `Your ${event} action was stale and room state was reapplied.`,
         duration: 2200,
       });
+    },
+    onRateAdjust: (rate, correction) => {
+      if (!Number.isFinite(rate)) return;
+      if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+        localAudioRef.current.playbackRate = rate;
+      } else {
+        if (typeof ytPlayer.setPlaybackRate === "function") {
+          ytPlayer.setPlaybackRate(rate);
+        }
+      }
+
+      if (window.musicRateResetTimer) clearTimeout(window.musicRateResetTimer);
+      window.musicRateResetTimer = setTimeout(() => {
+        if (currentTrack?.sourceType === "local" && localAudioRef.current) {
+          localAudioRef.current.playbackRate = 1;
+        } else if (typeof ytPlayer.setPlaybackRate === "function") {
+          ytPlayer.setPlaybackRate(1);
+        }
+      }, 1200);
     },
   });
 
@@ -845,14 +870,7 @@ const MusicRoom = () => {
 
       if (hidden) {
         if (currentTrack?.sourceType === "youtube" && isPlaying) {
-          const now = Date.now();
-          if (now - lastBackgroundYoutubeToastAtRef.current > 12000) {
-            lastBackgroundYoutubeToastAtRef.current = now;
-            toast("YouTube background limit", {
-              description: "YouTube may pause in background on mobile. Uploaded/local tracks continue more reliably.",
-              duration: 3200,
-            });
-          }
+          // YouTube may pause in background on mobile — no toast needed
         }
 
         if (audioActive && !deafenVoiceChat) {
@@ -915,12 +933,33 @@ const MusicRoom = () => {
   }, [isPlaying, ytPlayer, canControl, roomSync, currentTrack?.sourceType, getCurrentMediaTime, getCurrentMediaDuration, localCurrentTime]);
 
   const playNext = useCallback(() => {
-    if (queue.length > 0) {
-      const nextTrack = queue[0];
-      setCurrentTrack(nextTrack);
-      setQueue(queue.slice(1));
-      setShowUpNext(false);
-      if (canControl) {
+    if (queue.length === 0) return;
+
+    // Find next track that isn't the current one
+    const currentId = currentTrack?.videoId || currentTrack?.audioUrl;
+    let nextIdx = queue.findIndex((t) => {
+      const trackId = t.videoId || t.audioUrl;
+      return trackId !== currentId;
+    });
+    if (nextIdx === -1) nextIdx = 0; // fallback to first
+
+    const nextTrack = queue[nextIdx];
+    setCurrentTrack(nextTrack);
+    setShowUpNext(false);
+    setTrackEnded(false);
+    setIsPlaying(false);
+
+    if (canControl) {
+      if (nextTrack.sourceType === "local" && nextTrack.audioUrl) {
+        roomSync.broadcastMediaChange({
+          type: "upload",
+          title: nextTrack.title,
+          artist: nextTrack.artist,
+          audioUrl: nextTrack.audioUrl,
+          videoUrl: nextTrack.audioUrl,
+          url: nextTrack.audioUrl,
+        });
+      } else {
         roomSync.broadcastMediaChange({
           type: "youtube",
           videoId: nextTrack.videoId,
@@ -930,7 +969,7 @@ const MusicRoom = () => {
         });
       }
     }
-  }, [queue, canControl, roomSync]);
+  }, [queue, currentTrack, canControl, roomSync]);
 
   const playPrevious = useCallback(() => {
     if (currentTrack?.sourceType === "local" && localAudioRef.current) {
@@ -1072,6 +1111,11 @@ const MusicRoom = () => {
     }
 
     setCurrentTrack(nextTrack);
+    // Add to queue history so user can replay from queue
+    setQueue((prev) => {
+      const exists = prev.some((t) => t.videoId === nextTrack.videoId);
+      return exists ? prev : [...prev, nextTrack];
+    });
     pendingLocalControlRef.current = null;
     setShowSourcePicker(false);
     setTrackEnded(false);
@@ -1084,9 +1128,8 @@ const MusicRoom = () => {
         artist: nextTrack.artist,
         thumbnail: nextTrack.thumbnail,
       });
-      roomSync.broadcastPause(0, ytPlayer.duration || 0);
     }
-  }, [canControl, roomSync, ytPlayer.duration]);
+  }, [canControl, roomSync]);
 
   const handleSelectLocalTrack = useCallback(async (file, audioUrl) => {
     if (!file) return;
@@ -1153,7 +1196,6 @@ const MusicRoom = () => {
         videoUrl: sharedUrl,
         url: sharedUrl,
       });
-      roomSync.broadcastPause(0, 0);
 
       setUploadTrackProgress(100);
       setUploadTrackStatus("Upload complete. Ready to play");
@@ -1206,6 +1248,7 @@ const MusicRoom = () => {
     setShowHostControls(false);
     setShowMixer(false);
     setShowPlaylist(false);
+    setShowMobileMenu(false);
   }, []);
 
   useEffect(() => {
@@ -1225,6 +1268,11 @@ const MusicRoom = () => {
       if (localAudioRef.current && localDuration > 0) {
         localAudioRef.current.currentTime = targetSec;
         setLocalCurrentTime(localAudioRef.current.currentTime);
+        if (isPlaying) {
+          localAudioRef.current.play().catch(() => {});
+        } else {
+          localAudioRef.current.pause();
+        }
       } else {
         pendingLocalControlRef.current = {
           type: isPlaying ? "play" : "pause",
@@ -1314,8 +1362,8 @@ const MusicRoom = () => {
     });
   }, [roomCode]);
 
-  // Access control handling
-  if (!user && accessStatus === "granted" && !joinStatus) {
+  // Access control handling — skip if guestName exists (auto-rejoin in progress)
+  if (!user && accessStatus === "granted" && !joinStatus && !guestName) {
     return (
       <GuestNameDialog
         roomName={room?.name || "Music Room"}
@@ -1383,107 +1431,90 @@ const MusicRoom = () => {
       <motion.header
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-nav px-3 sm:px-4 py-2.5 sm:py-3 flex items-start sm:items-center justify-between gap-2 z-30 relative border-b border-emerald-400/20 bg-emerald-950/20"
+        className={`glass-nav px-3 sm:px-4 flex items-center justify-between gap-2 z-30 relative border-b border-emerald-400/20 bg-emerald-950/20 ${
+          isMobile && isLandscape ? "py-1" : "py-2 sm:py-3"
+        }`}
       >
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <button onClick={handleRequestLeave} className="text-muted-foreground hover:text-foreground transition-colors">
+        <div className="flex items-center gap-2 min-w-0">
+          <button onClick={handleRequestLeave} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
             <ChevronLeft className="w-5 h-5" />
+            <span className="text-xs font-medium hidden sm:inline">Leave</span>
           </button>
           <div className="min-w-0">
-            <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[10rem] sm:max-w-none">
-              {currentTrack?.title || "Chill Vibes Session"}
+            <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[8rem] sm:max-w-none">
+              {room?.name || currentTrack?.title || "Music Room"}
             </h1>
-            <div className="flex items-center gap-2">
-              <p className={`text-xs text-muted-foreground truncate ${isTablet && !isLandscape ? "max-w-[9rem]" : "max-w-[11rem] sm:max-w-none"}`}>{uniqueParticipantCount} listening · Room {roomCode?.slice(0, 6)}</p>
-              <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
+            <div className={`flex items-center gap-1.5 ${isMobile && isLandscape ? "hidden" : ""}`}>
+              <p className="text-[11px] text-muted-foreground truncate max-w-[7rem] sm:max-w-none">{uniqueParticipantCount} listening · {roomCode?.slice(0, 6)}</p>
+              <span className={`inline-flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded-full ${
                 syncStatus === "synced" ? "bg-emerald-400/20 text-emerald-300" : "bg-amber-400/20 text-amber-300"
               }`}>
-                {syncStatus === "synced" ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />}
-                {syncStatus === "synced" ? "Synced" : "Syncing..."}
+                {syncStatus === "synced" ? <Wifi className="w-2 h-2" /> : <WifiOff className="w-2 h-2" />}
+                {syncStatus === "synced" ? "Synced" : "Syncing"}
               </span>
             </div>
           </div>
         </div>
-
-        <div className={`flex items-center gap-1 relative ${isPortraitPhone ? "max-w-[56vw] flex-wrap justify-end" : "max-w-[48vw] sm:max-w-none overflow-x-auto no-scrollbar"}`}>
+        <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
           {uniqueParticipantCount > 0 && (
-            <RoomInfoBar
-              roomId={roomCode}
-              roomType="music"
-              roomName={room?.name || "Music Room"}
-              host={participants.find(p => p.role === "host")?.name || participants[0]?.name || "Host"}
-              participantCount={uniqueParticipantCount}
-              isHost={isHost}
-            />
+            <RoomInfoBar roomId={roomCode} roomType="music" roomName={room?.name || "Music Room"} host={participants.find(p => p.role === "host")?.name || participants[0]?.name || "Host"} participantCount={uniqueParticipantCount} isHost={isHost} />
           )}
-          <div className="flex -space-x-1.5 mr-2">
-            {participants.slice(0, 4).map((p) => (
-              <div key={p.name} className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-sm border-2 border-background" title={p.name}>
-                {p.emoji}
-              </div>
-            ))}
-            {participants.length > 4 && (
-              <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-[10px] text-muted-foreground border-2 border-background">+{participants.length - 4}</div>
+
+          {/* Desktop toolbar */}
+          <div className="hidden sm:flex items-center gap-0.5">
+            <div className="flex -space-x-1.5 mr-1.5">
+              {participants.slice(0, 3).map((p, idx) => (
+                <div key={p.odlUserId || `${p.name}-${idx}`} className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-xs border-2 border-background" title={p.name}>{p.emoji}</div>
+              ))}
+              {participants.length > 3 && (
+                <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[9px] text-muted-foreground border-2 border-background">+{participants.length - 3}</div>
+              )}
+            </div>
+            <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowPlaylist(!showPlaylist); }} className={`h-8 w-8 ${showPlaylist ? "text-emerald-300" : "text-muted-foreground"}`} title="Queue"><ListMusic className="w-4 h-4" /></Button>
+            <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowChat(!showChat); }} className={`h-8 w-8 ${showChat ? "text-emerald-300" : "text-muted-foreground"}`} title="Chat"><MessageSquare className="w-4 h-4" /></Button>
+            {user && (
+              <Button size="icon" variant="ghost" onClick={() => setShowInviteFriends(true)} className="h-8 w-8 text-muted-foreground hover:text-emerald-300" title="Invite"><UserPlus className="w-4 h-4" /></Button>
+            )}
+            <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowMixer(!showMixer); }} className={`h-8 w-8 ${showMixer ? "text-emerald-300" : "text-muted-foreground"}`} title="Mixer"><Sliders className="w-4 h-4" /></Button>
+            {canOpenHostControls && (
+              <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowHostControls(!showHostControls); }} className={`h-8 w-8 ${showHostControls ? "text-emerald-300" : "text-muted-foreground"}`} title="Settings"><Settings className="w-4 h-4" /></Button>
             )}
           </div>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => {
-              closeAllPanels();
-              setShowPlaylist(!showPlaylist);
-            }}
-            className={`${roomTopButtonClass} ${showPlaylist ? "text-emerald-300" : "text-muted-foreground"}`}
-            title="Queue"
-          >
-            <ListMusic className="w-4 h-4" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => {
-              closeAllPanels();
-              setShowChat(!showChat);
-            }}
-            className={`${roomTopButtonClass} ${showChat ? "text-emerald-300" : "text-muted-foreground"}`}
-            title="Chat"
-          >
-            <MessageSquare className="w-4 h-4" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => {
-              closeAllPanels();
-              setShowMixer(!showMixer);
-            }}
-            className={`${roomTopButtonClass} ${showMixer ? "text-emerald-300" : "text-muted-foreground"}`}
-            title="Volume Mixer"
-          >
-            <Sliders className="w-4 h-4" />
-          </Button>
-          {canOpenHostControls && (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => {
-                closeAllPanels();
-                setShowHostControls(!showHostControls);
-              }}
-              className={`${roomTopButtonClass} ${showHostControls ? "text-emerald-300" : "text-muted-foreground"}`}
-              title={userRole === "host" ? "Host Controls" : "Co-Host Controls"}
-            >
-              <Settings className="w-4 h-4" />
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={handleRequestLeave}
-            className={`ml-2 border-emerald-300/30 text-emerald-200 hover:bg-emerald-500/10 ${isPortraitPhone ? "basis-full ml-0 mt-1" : ""}`}
-          >
-            Leave
-          </Button>
+
+          {/* Mobile toolbar: RoomInfo + Chat + ⋮ dropdown */}
+          <div className="flex sm:hidden items-center gap-0">
+            <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowChat(!showChat); }} className={`h-8 w-8 ${showChat ? "text-emerald-300" : "text-muted-foreground"}`} title="Chat"><MessageSquare className="w-3.5 h-3.5" /></Button>
+            <div className="relative">
+              <Button size="icon" variant="ghost" onClick={() => setShowMobileMenu(!showMobileMenu)} className={`h-8 w-8 ${showMobileMenu ? "text-emerald-300" : "text-muted-foreground"}`} title="More"><MoreVertical className="w-4 h-4" /></Button>
+              <AnimatePresence>
+                {showMobileMenu && (
+                  <>
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowMobileMenu(false)} className="fixed inset-0 z-[98]" />
+                    <motion.div initial={{ opacity: 0, y: -8, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8, scale: 0.95 }} transition={{ duration: 0.15 }} className="absolute right-0 top-full mt-1 z-[99] w-48 rounded-xl border border-emerald-400/20 bg-card/95 backdrop-blur-xl shadow-2xl overflow-hidden">
+                      <div className="py-1">
+                        <button onClick={() => { setShowMobileMenu(false); closeAllPanels(); setShowPlaylist(!showPlaylist); }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showPlaylist ? "text-emerald-300 bg-emerald-300/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                          <ListMusic className="w-4 h-4" /><span>Queue</span>
+                        </button>
+                        <button onClick={() => { setShowMobileMenu(false); closeAllPanels(); setShowMixer(!showMixer); }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showMixer ? "text-emerald-300 bg-emerald-300/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                          <Sliders className="w-4 h-4" /><span>Volume Mixer</span>
+                        </button>
+                        {user && (
+                          <button onClick={() => { setShowMobileMenu(false); setShowInviteFriends(true); }} className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-foreground/80 hover:bg-muted/40 transition-colors">
+                            <UserPlus className="w-4 h-4" /><span>Add Friends</span>
+                          </button>
+                        )}
+                        {canOpenHostControls && (
+                          <button onClick={() => { setShowMobileMenu(false); closeAllPanels(); setShowHostControls(!showHostControls); }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showHostControls ? "text-emerald-300 bg-emerald-300/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                            <Settings className="w-4 h-4" /><span>Settings</span>
+                          </button>
+                        )}
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
         </div>
       </motion.header>
 
@@ -1509,7 +1540,7 @@ const MusicRoom = () => {
               </div>
             )
           ) : currentTrack ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-12 relative w-full">
+            <div className={`flex-1 flex items-center justify-center relative w-full ${isMobile && isLandscape ? 'flex-row p-2 gap-4' : 'flex-col p-4 md:p-12'}`}>
               <div className={`absolute inset-0 bg-gradient-to-br ${albumGradient || "from-emerald-500 to-lime-400"} opacity-[0.08]`} />
 
               <AnimatePresence>
@@ -1526,13 +1557,13 @@ const MusicRoom = () => {
                 ))}
               </AnimatePresence>
 
-              <div className="relative z-10 w-full max-w-md mx-auto flex flex-col items-center">
+              <div className={`relative z-10 w-full mx-auto flex items-center ${isMobile && isLandscape ? 'flex-row gap-4 max-w-none' : 'flex-col max-w-md'}`}>
                 <motion.div
                   key={currentTrack.videoId || currentTrack.title}
                   initial={{ opacity: 0, scale: 0.9, rotate: -5 }}
                   animate={{ opacity: 1, scale: 1, rotate: 0 }}
                   transition={{ duration: 0.4 }}
-                  className="w-40 h-40 md:w-72 md:h-72 rounded-3xl overflow-hidden flex items-center justify-center mb-4 md:mb-8 shadow-2xl relative"
+                  className={`rounded-3xl overflow-hidden flex items-center justify-center shadow-2xl relative flex-shrink-0 ${isMobile && isLandscape ? 'w-24 h-24 mb-0' : 'w-40 h-40 md:w-72 md:h-72 mb-4 md:mb-8'}`}
                   style={{ boxShadow: "0 30px 60px -15px rgba(16,185,129,0.35)" }}
                 >
                   {currentTrack.thumbnail ? (
@@ -1544,23 +1575,26 @@ const MusicRoom = () => {
                   )}
                 </motion.div>
 
-                <motion.div key={`info-${currentTrack.title}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-1 md:mb-2 w-full">
+                <div className={`${isMobile && isLandscape ? 'flex-1 flex flex-col items-center justify-center min-w-0' : 'contents'}`}>
+                <motion.div key={`info-${currentTrack.title}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`text-center w-full ${isMobile && isLandscape ? 'mb-0' : 'mb-1 md:mb-2'}`}>
                   <h2 className="font-display text-base md:text-2xl font-bold text-foreground mb-0.5 md:mb-1 line-clamp-2 leading-tight">{currentTrack.title}</h2>
                   <p className="text-muted-foreground text-xs md:text-sm">{currentTrack.artist || "Unknown Artist"}</p>
                 </motion.div>
 
-                <button onClick={() => setShowSourcePicker(true)} className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors mb-4 px-2 py-1 rounded-full bg-muted/30">
-                  {currentTrack?.sourceType === "local" ? <Upload className="w-3 h-3" /> : <Youtube className="w-3 h-3" />}
-                  {currentTrack?.sourceType === "local" ? "Upload" : "YouTube"} · Change source
+                <button onClick={() => setShowSourcePicker(true)} className={`flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-full bg-muted/30 hover:bg-muted/50 border border-emerald-400/15 hover:border-emerald-400/40 mb-4`}>
+                  {currentTrack?.sourceType === "local" ? <Upload className="w-3.5 h-3.5" /> : <Youtube className="w-3.5 h-3.5" />}
+                  <span>Browse Music</span>
+                  <span className="text-emerald-400/60">·</span>
+                  <span className="text-emerald-300/80">Change</span>
                 </button>
 
-                <div className="w-full flex items-end justify-center gap-[2px] h-8 md:h-12 mb-2 md:mb-4">
+                <div className={`w-full flex items-end justify-center gap-[2px] ${isMobile && isLandscape ? 'hidden' : 'h-8 md:h-12 mb-2 md:mb-4'}`}>
                   {waveformBars.map((height, i) => (
                     <motion.div key={i} className="w-1 rounded-full bg-secondary/60" animate={{ height: isPlaying ? `${height}%` : "15%" }} transition={{ duration: 0.3, ease: "easeInOut" }} />
                   ))}
                 </div>
 
-                <div className="w-full mb-3 md:mb-6">
+                <div className={`w-full ${isMobile && isLandscape ? 'mb-1' : 'mb-3 md:mb-6'}`}>
                   <div className="w-full h-1.5 bg-muted rounded-full cursor-pointer group relative" onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
                     const pct = ((e.clientX - rect.left) / rect.width) * 100;
@@ -1575,10 +1609,10 @@ const MusicRoom = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-center gap-3 md:gap-4 mb-3 md:mb-6">
+                <div className={`flex items-center justify-center gap-3 md:gap-4 ${isMobile && isLandscape ? 'mb-1' : 'mb-3 md:mb-6'}`}>
                   <Button size="icon" variant="ghost" onClick={toggleShuffle} className={shuffle ? "text-emerald-300" : "text-muted-foreground"}><Shuffle className="w-4 h-4" /></Button>
                   <Button size="icon" variant="ghost" className="text-foreground" onClick={playPrevious}><SkipBack className="w-5 h-5" /></Button>
-                  <button onClick={togglePlayPause} className="w-12 h-12 md:w-14 md:h-14 rounded-full gradient-music flex items-center justify-center active:scale-95 md:hover:scale-105 transition-transform shadow-lg">
+                  <button onClick={togglePlayPause} className={`rounded-full gradient-music flex items-center justify-center active:scale-95 md:hover:scale-105 transition-transform shadow-lg ${isMobile && isLandscape ? 'w-10 h-10' : 'w-12 h-12 md:w-14 md:h-14'}`}>
                     {isPlaying ? <Pause className="w-6 h-6 text-secondary-foreground" /> : <Play className="w-6 h-6 text-secondary-foreground ml-0.5" />}
                   </button>
                   <Button size="icon" variant="ghost" className="text-foreground" onClick={playNext}><SkipForward className="w-5 h-5" /></Button>
@@ -1589,11 +1623,19 @@ const MusicRoom = () => {
                   <div className="flex items-center gap-1">
                     <Button size="icon" variant="ghost" onClick={() => setIsLiked(!isLiked)} className={isLiked ? "text-destructive" : "text-muted-foreground"}><Heart className={`w-4 h-4 ${isLiked ? "fill-current" : ""}`} /></Button>
                     <Button size="icon" variant="ghost" onClick={() => setIsBookmarked(!isBookmarked)} className={isBookmarked ? "text-emerald-300" : "text-muted-foreground"}><Bookmark className="w-4 h-4" /></Button>
+                    <div className="relative">
+                      <Button size="icon" variant="ghost" onClick={() => { closeAllPanels(); setShowPlaylist(!showPlaylist); }} className={showPlaylist ? "text-emerald-300" : "text-muted-foreground"} title="Queue">
+                        <ListMusic className="w-4 h-4" />
+                      </Button>
+                      {queue.length > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-emerald-400 text-emerald-950 text-[8px] font-bold flex items-center justify-center">{queue.length}</span>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1 bg-muted/30 rounded-full px-1.5 py-0.5">
                     <Button size="icon" variant="ghost" onClick={handleToggleAudio} title={audioActive ? "Leave voice chat" : "Join voice chat"} className={`h-8 w-8 rounded-full ${audioActive ? "text-emerald-300 bg-emerald-500/15" : "text-muted-foreground"}`}>
-                      {audioActive ? <Headphones className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                      {audioActive ? <Headphones className="w-4 h-4" /> : <Users className="w-4 h-4" />}
                     </Button>
                     {audioActive && (
                       <Button size="icon" variant="ghost" onClick={() => {
@@ -1630,6 +1672,7 @@ const MusicRoom = () => {
                       {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                     </Button>
                   </div>
+                </div>
                 </div>
 
                 {webrtc.error && <p className="text-xs text-destructive text-center mt-2">{webrtc.error}</p>}
@@ -1690,69 +1733,142 @@ const MusicRoom = () => {
         <AnimatePresence>
           {showPlaylist && (
             <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`h-full bg-gradient-to-b from-emerald-950/95 to-emerald-900/90 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col ${isMobile ? "absolute inset-0 z-20" : "w-[320px]"}`}
             >
-              <div className="p-3 border-b border-glass-border">
+              <div className="p-3 border-b border-glass-border flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-foreground">
                   Queue · {queue.length} tracks
                 </h3>
+                {isMobile && <button onClick={() => setShowPlaylist(false)} className="text-muted-foreground hover:text-foreground"><ChevronLeft className="w-5 h-5" /></button>}
               </div>
               <div className="flex-1 overflow-y-auto p-3 space-y-1">
                 {queue.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-8">
                     <Music className="w-8 h-8 text-muted-foreground/30" />
                     <p className="text-xs text-muted-foreground">No tracks in queue</p>
+                    <p className="text-[10px] text-muted-foreground/60 max-w-[200px]">Search YouTube or upload audio files to build your queue</p>
                     <Button
                       variant="outline"
                       size="sm"
-                      className="border-glass-border h-7 text-xs"
-                      onClick={() => setShowSourcePicker(true)}
+                      className="border-emerald-400/30 hover:border-emerald-400/60 h-8 text-xs gap-1.5"
+                      onClick={() => { setShowPlaylist(false); setShowSourcePicker(true); }}
                     >
+                      <Music className="w-3.5 h-3.5" />
                       Add Music
                     </Button>
                   </div>
                 ) : (
-                  queue.map((track, idx) => (
-                    <div
-                      key={idx}
-                      className="w-full p-3 flex items-center gap-3 text-left hover:bg-muted/30 transition-colors rounded-lg"
-                    >
-                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-muted/40 flex-shrink-0">
-                        {track.thumbnail ? (
-                          <img src={track.thumbnail} alt={track.title} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-muted">
-                            <Music className="w-5 h-5 text-muted-foreground" />
+                  queue.map((track, idx) => {
+                      const isCurrentlyPlaying = currentTrack && (
+                        (track.videoId && track.videoId === currentTrack.videoId) ||
+                        (track.audioUrl && track.audioUrl === currentTrack.audioUrl)
+                      );
+                      return (
+                        <div
+                          key={`${track.videoId || track.audioUrl || idx}-${idx}`}
+                          className={`w-full p-3 flex items-center gap-3 text-left transition-colors rounded-lg cursor-pointer group ${
+                            isCurrentlyPlaying ? "bg-emerald-400/15 border border-emerald-400/30" : "hover:bg-muted/30"
+                          }`}
+                          onClick={() => {
+                            if (isCurrentlyPlaying) return;
+                            const playTrack = { ...track };
+                            setCurrentTrack(playTrack);
+                            setTrackEnded(false);
+                            setIsPlaying(false);
+                            setShowSourcePicker(false);
+                            if (canControl) {
+                              if (playTrack.sourceType === "local" && playTrack.audioUrl) {
+                                roomSync.broadcastMediaChange({
+                                  type: "upload",
+                                  title: playTrack.title,
+                                  artist: playTrack.artist,
+                                  audioUrl: playTrack.audioUrl,
+                                  videoUrl: playTrack.audioUrl,
+                                  url: playTrack.audioUrl,
+                                });
+                              } else {
+                                roomSync.broadcastMediaChange({
+                                  type: "youtube",
+                                  videoId: playTrack.videoId,
+                                  title: playTrack.title,
+                                  artist: playTrack.artist,
+                                  thumbnail: playTrack.thumbnail,
+                                });
+                              }
+                            }
+                          }}
+                        >
+                          <div className="w-10 h-10 rounded-lg overflow-hidden bg-muted/40 flex-shrink-0 relative">
+                            {track.thumbnail ? (
+                              <img src={track.thumbnail} alt={track.title} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-muted">
+                                <Music className="w-5 h-5 text-muted-foreground" />
+                              </div>
+                            )}
+                            {isCurrentlyPlaying && (
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                <div className="flex gap-0.5 items-end h-4">
+                                  {[1,2,3].map(i => (
+                                    <motion.div key={i} className="w-1 bg-emerald-400 rounded-full" animate={{ height: isPlaying ? ["4px","16px","8px","14px","4px"] : "4px" }} transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }} />
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-foreground line-clamp-2">
-                          {track.title}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground truncate">
-                          {track.artist || track.channel}
-                        </p>
-                      </div>
-                    </div>
-                  ))
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-xs font-medium line-clamp-2 ${isCurrentlyPlaying ? "text-emerald-300" : "text-foreground"}`}>
+                              {track.title}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground truncate">
+                              {track.artist || track.channel} {track.sourceType === "local" ? "· Upload" : "· YouTube"}
+                            </p>
+                          </div>
+                          {!isCurrentlyPlaying && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setQueue(prev => prev.filter((_, i) => i !== idx)); }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive transition-all"
+                              title="Remove from queue"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })
                 )}
               </div>
+              {queue.length > 0 && (
+                <div className="p-3 border-t border-emerald-400/15">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full border-emerald-400/25 hover:border-emerald-400/50 h-8 text-xs gap-1.5"
+                    onClick={() => { setShowPlaylist(false); setShowSourcePicker(true); }}
+                  >
+                    <Music className="w-3.5 h-3.5" />
+                    Add More Music
+                  </Button>
+                </div>
+              )}
             </motion.div>
           )}
 
           {showChat && (
             <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isMobile ? "100%" : 300, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`h-full bg-gradient-to-b from-emerald-950/95 to-emerald-900/90 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col ${isMobile ? "absolute inset-0 z-20" : "w-[300px]"}`}
             >
-              <div className="p-3 border-b border-glass-border">
+              <div className="p-3 border-b border-glass-border flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-foreground">Live Chat</h3>
+                {isMobile && <button onClick={() => setShowChat(false)} className="text-muted-foreground hover:text-foreground"><ChevronLeft className="w-5 h-5" /></button>}
               </div>
               <div className="flex-1 overflow-y-auto p-3 space-y-3">
                 {messages.map((msg, idx) => (
@@ -1778,7 +1894,7 @@ const MusicRoom = () => {
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <div className="p-3 border-t border-glass-border flex items-center gap-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.5rem)" }}>
+              <div className="p-3 border-t border-glass-border flex items-center gap-2" style={{ paddingBottom: isMobile ? "calc(env(safe-area-inset-bottom, 0px) + 3.5rem)" : "0.75rem" }}>
                 <Input
                   placeholder="Say something..."
                   value={chatMessage}
@@ -1799,10 +1915,11 @@ const MusicRoom = () => {
 
           {showMixer && !showHostControls && (
             <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className="h-full bg-gradient-to-b from-emerald-950/65 to-emerald-900/35 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col"
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`h-full bg-gradient-to-b from-emerald-950/95 to-emerald-900/90 backdrop-blur-xl border-l border-emerald-400/20 overflow-hidden flex flex-col ${isMobile ? "absolute inset-0 z-20" : "w-[320px]"}`}
             >
               <div className="p-4 space-y-6 overflow-y-auto flex-1">
                 {/* Music volume */}
@@ -1905,10 +2022,11 @@ const MusicRoom = () => {
 
           {showHostControls && canOpenHostControls && (
             <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isMobile ? "100%" : 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className="h-full"
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`h-full ${isMobile ? "absolute inset-0 z-20" : "w-[320px]"}`}
             >
               <HostControlsPanel
                 open={showHostControls}
@@ -2031,6 +2149,15 @@ const MusicRoom = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Mobile bottom toolbar removed — all items now in header ⋮ dropdown */}
+
+      <InviteFriendsModal
+        open={showInviteFriends}
+        onClose={() => setShowInviteFriends(false)}
+        roomCode={roomCode}
+        participantIds={(dbParticipants || []).map(p => p.userId).filter(Boolean)}
+      />
 
       <div ref={ytPlayer.wrapperRef} className="pointer-events-none" style={{ position: "fixed", bottom: 0, left: 0, width: 1, height: 1, opacity: 0.01, zIndex: -1 }} />
     </div>

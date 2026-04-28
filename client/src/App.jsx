@@ -63,6 +63,50 @@ function App() {
         publishableKey={CLERK_KEY}
         signInUrl="/sign-in"
         signUpUrl="/sign-up"
+        appearance={{
+          variables: {
+            colorPrimary: "#00c3ff",
+            colorBackground: "#111827",
+            colorInputBackground: "#1a2332",
+            colorInputText: "#e5e7eb",
+            colorText: "#e5e7eb",
+            colorTextSecondary: "#9ca3af",
+            colorDanger: "#ef4444",
+            colorSuccess: "#10b981",
+            colorWarning: "#f59e0b",
+            colorNeutral: "#e5e7eb",
+            borderRadius: "0.75rem",
+            fontFamily: "'Inter', system-ui, sans-serif",
+          },
+          elements: {
+            rootBox: "mx-auto",
+            card: "bg-[#111827] border border-[#1e293b] shadow-2xl rounded-2xl",
+            headerTitle: "text-[#e5e7eb]",
+            headerSubtitle: "text-[#9ca3af]",
+            socialButtonsBlockButton: "bg-[#1a2332] border-[#1e293b] text-[#e5e7eb] hover:bg-[#1e293b]",
+            socialButtonsBlockButtonText: "text-[#e5e7eb]",
+            dividerLine: "bg-[#1e293b]",
+            dividerText: "text-[#6b7280]",
+            formFieldLabel: "text-[#d1d5db]",
+            formFieldInput: "bg-[#1a2332] border-[#2d3748] text-[#e5e7eb] placeholder:text-[#6b7280]",
+            formButtonPrimary: "bg-[#00c3ff] hover:bg-[#00a8d6] text-[#0a0e17]",
+            formFieldAction: "text-[#00c3ff]",
+            footerActionLink: "text-[#00c3ff] hover:text-[#00a8d6]",
+            footerActionText: "text-[#9ca3af]",
+            identityPreviewText: "text-[#e5e7eb]",
+            identityPreviewEditButton: "text-[#00c3ff]",
+            formResendCodeLink: "text-[#00c3ff]",
+            otpCodeFieldInput: "bg-[#1a2332] border-[#2d3748] text-[#e5e7eb]",
+            alertText: "text-[#e5e7eb]",
+            formFieldErrorText: "text-[#ef4444]",
+            formFieldSuccessText: "text-[#10b981]",
+            userButtonPopoverCard: "bg-[#111827] border-[#1e293b]",
+            userButtonPopoverActionButton: "text-[#e5e7eb] hover:bg-[#1a2332]",
+            userButtonPopoverActionButtonText: "text-[#e5e7eb]",
+            userButtonPopoverFooter: "border-[#1e293b]",
+            modalBackdrop: "bg-black/60 backdrop-blur-sm",
+          },
+        }}
       >
         <AuthProvider>
           <AuthSyncBridge>

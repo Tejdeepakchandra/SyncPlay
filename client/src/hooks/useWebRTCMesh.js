@@ -9,12 +9,30 @@ import { socket } from "@/services/socket";
 
 const ICE_SERVERS = {
   iceServers: [
+    // STUN servers (free, for direct P2P when possible)
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun2.l.google.com:19302" },
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" },
+    // Free TURN servers (relay for clients behind symmetric NAT)
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ],
+  iceCandidatePoolSize: 4,
 };
 
 export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, userId, isHost = false }) => {
@@ -43,16 +61,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
   });
 
   useEffect(() => {
-    console.log(`[WebRTC Mesh] 🔧 Init props:`, {
-      roomCode,
-      localStreamExists: !!localStream,
-      participantIds: participantIds,
-      enabled,
-      userId,
-      isHost,
-      userIdType: typeof userId,
-    });
-    console.log(`[WebRTC Mesh] participantIds array:`, participantIds);
     localStreamRef.current = localStream;
     participantIdsRef.current = participantIds;
     enabledRef.current = enabled;
@@ -62,12 +70,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
   // Stream management
   const addRemoteStream = (peerId, stream) => {
-    console.log(`[WebRTC Mesh] 📺 Adding remote stream from ${peerId}:`, {
-      hasVideo: stream.getVideoTracks().length > 0,
-      videoTracks: stream.getVideoTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })),
-      hasAudio: stream.getAudioTracks().length > 0,
-      audioTracks: stream.getAudioTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })),
-    });
     setRemoteStreams((prev) => {
       const existingStream = prev.get(peerId);
       if (existingStream === stream) {
@@ -76,13 +78,11 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
       const next = new Map(prev);
       next.set(peerId, stream);
-      console.log(`[WebRTC Mesh] Stream map updated - total streams: ${next.size}`);
       return next;
     });
   };
 
   const removeRemoteStream = (peerId) => {
-    console.log(`[WebRTC Mesh] ❌ Removing remote stream from ${peerId}`);
     remoteMediaStreamsRef.current.delete(peerId);
     setRemoteStreams((prev) => {
       const next = new Map(prev);
@@ -113,19 +113,16 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     
     // If I'm authenticated and they're a guest → I initiate
     if (iAmAuthenticated && theyAreGuest) {
-      console.log(`[WebRTC Mesh] 🎯 I'm authenticated, they're guest → I INITIATE`);
       return true;
     }
     
     // If they're authenticated and I'm a guest → They initiate, I wait
     if (theyAreAuthenticated && !iAmAuthenticated) {
-      console.log(`[WebRTC Mesh] 🎯 They're authenticated, I'm guest → I WAIT`);
       return false;
     }
     
     // Both authenticated or both guests → use lexicographic (stable tiebreaker)
     const result = selfId < peerId;
-    console.log(`[WebRTC Mesh] 🎯 Both same type → lexicographic: ${selfId} < ${peerId} = ${result}`);
     return result;
   }, []);
 
@@ -138,31 +135,20 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     const myId = userIdRef.current;
     if (!myId) return null;
 
-    console.log(`[WebRTC Mesh] Creating peer connection for ${peerId}`);
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peersRef.current.set(peerId, pc);
 
     // Add local tracks
     if (localStreamRef.current) {
       const tracks = localStreamRef.current.getTracks();
-      console.log(`[WebRTC Mesh] Adding ${tracks.length} local tracks to ${peerId}`);
       tracks.forEach((track) => {
-        console.log(`[WebRTC Mesh] Adding ${track.kind} track (enabled=${track.enabled}) to ${peerId}`);
         pc.addTrack(track, localStreamRef.current);
       });
     } else {
-      console.warn("[WebRTC Mesh] No local stream available when creating peer");
     }
 
     // Handle remote tracks
     pc.ontrack = (e) => {
-      console.log(`[WebRTC Mesh] 🎥 ONTRACK EVENT from ${peerId}:`, {
-        kind: e.track.kind,
-        trackEnabled: e.track.enabled,
-        trackMuted: e.track.muted,
-        trackReadyState: e.track.readyState,
-        streamsCount: e.streams.length,
-      });
 
       // Keep a stable remote stream per peer and merge tracks into it.
       // This avoids replacing stream objects (which can interrupt hidden audio playback).
@@ -197,10 +183,28 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       addRemoteStream(peerId, peerStream);
     };
 
+    // Handle negotiation needed (e.g. when track is added dynamically)
+    pc.onnegotiationneeded = async () => {
+      try {
+        if (pc.signalingState !== "stable") return;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          socket.emit("webrtc-mesh:offer", {
+            roomCode,
+            to: peerId,
+            from: myId,
+            sdp: pc.localDescription,
+          });
+        }
+      } catch (err) {
+        console.error("[WebRTC Mesh] ❌ Negotiation error:", err);
+      }
+    };
+
     // Handle ICE candidates
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        console.log(`[WebRTC Mesh] 🧊 ICE candidate generated for ${peerId}`);
         socket.emit("webrtc-mesh:ice-candidate", {
           roomCode,
           to: peerId,
@@ -213,13 +217,10 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     // Flush any queued ICE candidates for this peer
     if (iceCandidateQueueRef.current.has(peerId)) {
       const queuedCandidates = iceCandidateQueueRef.current.get(peerId);
-      console.log(`[WebRTC Mesh] 🧊 Flushing ${queuedCandidates.length} queued ICE candidates for ${peerId}`);
       queuedCandidates.forEach((candidate) => {
         try {
           pc.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log(`[WebRTC Mesh] 🧊 Added queued ICE candidate from ${peerId}`);
         } catch (err) {
-          console.warn(`[WebRTC Mesh] ⚠️ Failed to add queued candidate from ${peerId}:`, err.message);
         }
       });
       iceCandidateQueueRef.current.delete(peerId);
@@ -227,9 +228,7 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     // Handle connection state
     pc.onconnectionstatechange = () => {
-      console.log(`[WebRTC Mesh] 🔌 Connection state with ${peerId}: ${pc.connectionState}`);
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-        console.log(`[WebRTC Mesh] ❌ Connection failed/closed with ${peerId}`);
         removeRemoteStream(peerId);
         peersRef.current.delete(peerId);
       }
@@ -237,12 +236,10 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     // Log signaling state changes
     pc.onsignalingstatechange = () => {
-      console.log(`[WebRTC Mesh] 📡 Signaling state with ${peerId}: ${pc.signalingState}`);
     };
 
     // Log ICE connection state
     pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC Mesh] 🧊 ICE connection state with ${peerId}: ${pc.iceConnectionState}`);
     };
 
     return pc;
@@ -256,7 +253,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] 📝 Creating offer to ${peerId}, hasLocalStream=${!!localStreamRef.current}, myId=${myId}`);
     
     const pc = createPeer(peerId);
     if (!pc) {
@@ -264,22 +260,16 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] Peer created, signalingState=${pc.signalingState}`);
     if (pc.signalingState !== "stable") {
-      console.warn(`[WebRTC Mesh] ❌ Cannot create offer - signaling state: ${pc.signalingState}`);
       return;
     }
 
     try {
-      console.log(`[WebRTC Mesh] 🎬 Creating offer... (peerId=${peerId})`);
       const offer = await pc.createOffer();
-      console.log(`[WebRTC Mesh] ✅ Offer created, setting local description...`);
       await pc.setLocalDescription(offer);
 
-      console.log(`[WebRTC Mesh] After setLocalDescription, signalingState=${pc.signalingState}`);
 
       if (pc.localDescription) {
-        console.log(`[WebRTC Mesh] 📤 Sending OFFER to ${peerId}, localDesc=${pc.localDescription.type}`);
         socket.emit("webrtc-mesh:offer", {
           roomCode,
           to: peerId,
@@ -304,20 +294,14 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] 👥 Participant IDs changed, checking for new connections needed...`, {
-      currentParticipants: participantIds,
-      existingPeers: Array.from(peersRef.current.keys()),
-    });
 
     // Prune peers that are no longer participants
     const participantSet = new Set(participantIds || []);
     Array.from(peersRef.current.entries()).forEach(([peerId, pc]) => {
       if (!participantSet.has(peerId)) {
-        console.log(`[WebRTC Mesh] 🧹 Closing stale peer ${peerId} (no longer in participants)`);
         try {
           pc.close();
         } catch (err) {
-          console.warn(`[WebRTC Mesh] ⚠️ Error closing stale peer ${peerId}:`, err?.message || err);
         }
         peersRef.current.delete(peerId);
         removeRemoteStream(peerId);
@@ -334,23 +318,18 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
         return;
       }
 
-      console.log(`[WebRTC Mesh] 🆕 New participant detected: ${participantId}, checking if should initiate...`);
       
       // Only initiate if we should (use local function, not dependency)
       if (shouldInitiateRef.current?.(userIdRef.current, participantId)) {
-        console.log(`[WebRTC Mesh] 📱 I AM initiator for new participant ${participantId} - creating offer`);
         createAndSendOfferRef.current?.(participantId);
       } else {
-        console.log(`[WebRTC Mesh] ⏳ I AM answerer for new participant ${participantId} - waiting for offer`);
       }
     });
   }, [participantIds, roomCode]);
 
   // Socket event handlers - wrapped in useCallback for stable references
   const handleMeshJoin = useCallback(({ from }) => {
-    console.log(`[WebRTC Mesh] 🔔 Join event from ${from}, myId=${userIdRef.current}`);
     if (!localStreamRef.current || from === userIdRef.current) {
-      console.warn(`[WebRTC Mesh] ❌ Skipping - no local stream or same user`);
       return;
     }
 
@@ -367,29 +346,22 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
           existingPeer.iceConnectionState === "disconnected");
 
       if (isStuckInitiatorPeer) {
-        console.log(
-          `[WebRTC Mesh] 🔄 Existing peer with ${from} is stuck (${existingPeer.signalingState}/${existingPeer.connectionState}/${existingPeer.iceConnectionState}). Restarting negotiation.`
-        );
         try {
           existingPeer.close();
         } catch (err) {
-          console.warn(`[WebRTC Mesh] ⚠️ Error closing stuck peer ${from}:`, err?.message || err);
         }
         peersRef.current.delete(from);
         createAndSendOffer(from);
         return;
       }
 
-      console.log(`[WebRTC Mesh] ⏭️  Peer already exists with state=${existingPeer.signalingState}, skipping duplicate setup from join event`);
       return;
     }
 
     // Use deterministic initiator selection - no timeouts to avoid bidirectional offers
     if (shouldInitiate(userIdRef.current, from)) {
-      console.log(`[WebRTC Mesh] 📱 I AM initiator - creating offer to ${from}`);
       createAndSendOffer(from);
     } else {
-      console.log(`[WebRTC Mesh] ⏳ I AM answerer - waiting for offer from ${from}`);
     }
   }, [createAndSendOffer, shouldInitiate]);
 
@@ -402,16 +374,13 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] 📨 Received OFFER from ${from} to ${to}, signalingEnabled=${enabledRef.current}`);
     
     if (!enabledRef.current) {
-      console.warn(`[WebRTC Mesh] ⏸️ Mesh disabled, queueing offer from ${from}`);
       pendingOffersRef.current.set(from, { from, to, sdp });
       return;
     }
 
     if (!localStreamRef.current) {
-      console.warn(`[WebRTC Mesh] ⏸️ Local stream not ready, queueing offer from ${from}`);
       pendingOffersRef.current.set(from, { from, to, sdp });
       return;
     }
@@ -422,23 +391,18 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] Setting remote description from offer, signalingState=${pc.signalingState}`);
     
     if (pc.signalingState !== "stable") {
-      console.warn(`[WebRTC Mesh] ⚠️ Signaling state not stable: ${pc.signalingState}`);
       return;
     }
 
     try {
-      console.log(`[WebRTC Mesh] 🎬 Setting remote description...`);
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      console.log(`[WebRTC Mesh] ✅ Remote description set, creating answer...`);
       
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
       if (pc.localDescription) {
-        console.log(`[WebRTC Mesh] 📤 Sending ANSWER to ${from}`);
         socket.emit("webrtc-mesh:answer", {
           roomCode,
           to: from,
@@ -458,11 +422,9 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     const existingPeer = peersRef.current.get(from);
     if (existingPeer) {
-      console.log(`[WebRTC Mesh] 👋 Peer ${from} left mesh, closing peer connection`);
       try {
         existingPeer.close();
       } catch (err) {
-        console.warn(`[WebRTC Mesh] ⚠️ Error closing peer on leave ${from}:`, err?.message || err);
       }
       peersRef.current.delete(from);
     }
@@ -479,7 +441,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     const queuedOffers = Array.from(pendingOffersRef.current.values());
     pendingOffersRef.current.clear();
-    console.log(`[WebRTC Mesh] ▶️ Processing ${queuedOffers.length} queued offers after enabling mesh`);
 
     queuedOffers.forEach((offerPayload) => {
       handleMeshOffer(offerPayload);
@@ -495,10 +456,8 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
 
-    console.log(`[WebRTC Mesh] 📥 Received ANSWER from ${from} to ${to}`);
     
     if (!enabledRef.current) {
-      console.warn(`[WebRTC Mesh] ❌ Mesh disabled, ignoring answer`);
       return;
     }
 
@@ -508,16 +467,12 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       return;
     }
     
-    console.log(`[WebRTC Mesh] Current signalingState=${pc.signalingState}`);
     if (pc.signalingState !== "have-local-offer") {
-      console.warn(`[WebRTC Mesh] ⚠️ Expected 'have-local-offer', got '${pc.signalingState}'`);
       return;
     }
 
     try {
-      console.log(`[WebRTC Mesh] 🎬 Setting answer remote description...`);
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      console.log(`[WebRTC Mesh] ✅ Answer set, connection established`);
     } catch (err) {
       console.error(`[WebRTC Mesh] ❌ Answer handling error:`, err);
     }
@@ -530,7 +485,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     const pc = peersRef.current.get(from);
     if (!pc) {
-      console.log(`[WebRTC Mesh] 🧊 Queuing ICE candidate from ${from} (peer not ready yet)`);
       if (!iceCandidateQueueRef.current.has(from)) {
         iceCandidateQueueRef.current.set(from, []);
       }
@@ -540,9 +494,7 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     try {
       pc.addIceCandidate(new RTCIceCandidate(candidate));
-      console.log(`[WebRTC Mesh] 🧊 Added ICE candidate from ${from}`);
     } catch (err) {
-      console.warn(`[WebRTC Mesh] ⚠️ Failed to add ICE candidate from ${from}:`, err.message);
     }
   }, []);
 
@@ -560,19 +512,8 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
   // Setup Socket.IO listeners
   useEffect(() => {
-    console.log(`[WebRTC Mesh] 📡 Listeners setup effect triggered:`, {
-      roomCode,
-      userId,
-      enabled,
-      guardsPass: !!roomCode && !!userId && enabled,
-    });
     
     if (!roomCode || !userId || !enabled) {
-      console.log(`[WebRTC Mesh] ⏭️  Skipping setup - guards blocked:`, {
-        roomCodeMissing: !roomCode,
-        userIdMissing: !userId,
-        enabledFalse: !enabled,
-      });
       return;
     }
 
@@ -587,7 +528,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     const wrappedCandidateHandler = (data) => handlersRef.current.handleMeshIceCandidate(data);
 
     // Register listeners using wrapped handlers
-    console.log(`[WebRTC Mesh] 📡 Registering socket listeners for ${myId}`);
     socket.on("webrtc-mesh:join", wrappedJoinHandler);
     socket.on("webrtc-mesh:leave", wrappedLeaveHandler);
     socket.on("webrtc-mesh:offer", wrappedOfferHandler);
@@ -598,7 +538,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       const reconnectUserId = userIdRef.current;
       if (!roomCode || !reconnectUserId || !enabledRef.current) return;
 
-      console.log(`[WebRTC Mesh] 🔄 Socket reconnected, rejoining mesh for ${reconnectUserId}`);
       closeAllPeersRef.current?.();
       socket.emit("webrtc-mesh:join", { roomCode, from: reconnectUserId });
 
@@ -617,7 +556,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
 
     const handleDisconnect = () => {
       if (!enabledRef.current) return;
-      console.log("[WebRTC Mesh] ⚠️ Socket disconnected, clearing peers for clean recovery");
       closeAllPeersRef.current?.();
     };
 
@@ -625,28 +563,22 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     socket.on("disconnect", handleDisconnect);
 
     // Announce join to mesh
-    console.log(`[WebRTC Mesh] 📢 Announcing join to mesh: ${myId}`);
     socket.emit("webrtc-mesh:join", { roomCode, from: myId });
 
     // Handle own join - since Socket.IO doesn't echo messages back to sender,
     // we need to manually trigger join logic for all other participants
     if (localStreamRef.current) {
-      console.log(`[WebRTC Mesh] 🔄 Processing own join for ${myId}`);
       (participantIdsRef.current || []).forEach((participantId) => {
         if (participantId !== myId) {
-          console.log(`[WebRTC Mesh] 🔔 Processing existing participant ${participantId}`);
           if (shouldInitiateRef.current?.(myId, participantId)) {
-            console.log(`[WebRTC Mesh] 📱 I AM initiator for ${participantId} - creating offer`);
             createAndSendOfferRef.current?.(participantId);
           } else {
-            console.log(`[WebRTC Mesh] ⏳ I AM answerer for ${participantId} - waiting for offer`);
           }
         }
       });
     }
 
     return () => {
-      console.log(`[WebRTC Mesh] 🛑 Cleaning up mesh connections`);
       socket.emit("webrtc-mesh:leave", { roomCode, from: myId });
       closeAllPeersRef.current?.();
       socket.off("webrtc-mesh:join", wrappedJoinHandler);
@@ -668,10 +600,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     if (!enabled || !localStreamRef.current) return;
 
     const tracks = localStreamRef.current.getTracks();
-    console.log(`[WebRTC Mesh] 📝 Updating ${tracks.length} tracks across ${peersRef.current.size} peers`, {
-      videoTracks: localStreamRef.current.getVideoTracks().length,
-      audioTracks: localStreamRef.current.getAudioTracks().length,
-    });
 
     // Update all existing peers with current tracks
     peersRef.current.forEach((pc, peerId) => {
@@ -681,7 +609,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       tracks.forEach((track) => {
         const hasSender = senders.some((s) => s.track?.kind === track.kind);
         if (!hasSender) {
-          console.log(`[WebRTC Mesh] ➕ Adding ${track.kind} track to ${peerId} (was missing)`);
           pc.addTrack(track, localStreamRef.current);
         }
       });
@@ -689,7 +616,6 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       // Remove any senders for tracks that no longer exist
       senders.forEach((sender) => {
         if (sender.track && !tracks.some(t => t.kind === sender.track.kind)) {
-          console.log(`[WebRTC Mesh] ➖ Removing ${sender.track.kind} track from ${peerId} (no longer exists)`);
           pc.removeTrack(sender);
         }
       });

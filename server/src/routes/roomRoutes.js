@@ -164,25 +164,18 @@ const scoreRoom = ({ room, friendHostIds, preferredGenres, preferredLanguages, i
  */
 router.post('/', validateRoomCreation, async (req, res, next) => {
   const startTime = Date.now();
-  console.log(`[ROOMS] 🚀 POST /rooms START - userId: ${req.userId}`);
   
   try {
-    console.log(`[ROOMS] 📥 Request body:`, { 
-      name: req.body.name, 
-      type: req.body.type 
-    });
     
     const hostId = req.userId; // From auth middleware
     
     if (!hostId) {
-      console.log(`[ROOMS] ❌ No userId in request`);
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
       });
     }
     
-    console.log(`[ROOMS] 🔄 Calling roomService.createRoom...`);
     const room = await roomService.createRoom(req.body, hostId);
 
     const invitedUserIds = (room.invitedUsers || [])
@@ -209,7 +202,6 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
       });
     }
     
-    console.log(`[ROOMS] ✅ Room created: ${room.roomCode} in ${Date.now() - startTime}ms`);
     const io = req.app.get('io');
     if (io) {
       io.emit('discovery:rooms-updated', {
@@ -231,7 +223,6 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.log(`[ROOMS] ❌ Error after ${Date.now() - startTime}ms:`, error.message);
     next(error);
   }
 });
@@ -612,6 +603,19 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
       lastUpdated: now,
       updatedBy: req.userId,
     };
+
+    // Track this upload for cleanup when room ends
+    if (!room.uploadedAssets) room.uploadedAssets = [];
+    const alreadyTracked = room.uploadedAssets.some(a => a.publicId === mediaPublicId);
+    if (!alreadyTracked) {
+      room.uploadedAssets.push({
+        publicId: mediaPublicId,
+        resourceType: 'video',
+        url: mediaUrl,
+        uploadedBy: req.userId,
+        uploadedAt: now,
+      });
+    }
 
     await room.save();
 

@@ -144,6 +144,43 @@
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Space Grotesk', 'Inter', sans-serif;
   }
+
+  /* Global thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.08) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.08);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.15);
+  }
+
+  /* Light theme scrollbar */
+  [data-theme="arctic-frost"] {
+    scrollbar-color: rgba(0,0,0,0.12) transparent;
+  }
+
+  [data-theme="arctic-frost"] ::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.12);
+  }
+
+  [data-theme="arctic-frost"] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0,0,0,0.2);
+  }
 }
 
 @layer components {
@@ -322,4 +359,13 @@
     transition: none !important;
     box-shadow: none !important;
   }
+}
+
+/* YouTube iframe: fill container fully on mobile */
+iframe[src*="youtube.com"],
+iframe[src*="youtube-nocookie.com"] {
+  width: 100% !important;
+  height: 100% !important;
+  border: 0;
+  display: block;
 }

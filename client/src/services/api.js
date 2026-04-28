@@ -14,7 +14,6 @@ const api = axios.create({
 api.interceptors.request.use(
   (config) => {
     const method = config.method?.toUpperCase() || 'GET';
-    console.log(`[API] 📤 ${method} ${config.url}`);
     return config;
   },
   (error) => {
@@ -25,7 +24,6 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   (response) => {
-    console.log(`[API] ✅ ${response.status} ${response.config.url}`);
     return response;
   },
   (error) => {
