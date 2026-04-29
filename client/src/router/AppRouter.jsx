@@ -14,6 +14,7 @@ import ProfileActivity from "@/pages/ProfileActivity";
 import ProfileAchievements from "@/pages/ProfileAchievements";
 import ProfileFavorites from "@/pages/ProfileFavorites";
 import ProfileRoomDetails from "@/pages/ProfileRoomDetails";
+import ProfileMomentsPage from "@/pages/ProfileMoments";
 import SignIn from "@/pages/SignIn";
 import SignUp from "@/pages/Signup";
 import NotFound from "@/pages/NotFound";
@@ -43,6 +44,7 @@ export function AppRouter() {
         <Route path="/profile/activity" element={<ProfileActivity />} />
         <Route path="/profile/achievements" element={<ProfileAchievements />} />
         <Route path="/profile/favorites" element={<ProfileFavorites />} />
+        <Route path="/profile/moments" element={<ProfileMomentsPage />} />
         <Route path="/profile/room/:roomCode" element={<ProfileRoomDetails />} />
       </Route>
       <Route path="*" element={<NotFound />} />

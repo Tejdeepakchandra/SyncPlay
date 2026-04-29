@@ -11,7 +11,6 @@ const clerk = new Clerk({ secretKey: process.env.CLERK_SECRET_KEY });
 const generateGuestId = (socket, clientGuestId = null) => {
   // If client provided a unique guest ID, use it (multiple guests from same IP)
   if (clientGuestId && clientGuestId.startsWith('guest-')) {
-    console.log(`🔐 Using client-provided guest ID: ${clientGuestId}`);
     return clientGuestId;
   }
   
@@ -20,7 +19,6 @@ const generateGuestId = (socket, clientGuestId = null) => {
   const ua = socket.handshake.headers['user-agent'] || 'unknown';
   const hash = require('crypto').createHash('md5').update(ip + ua).digest('hex');
   const guestId = `guest-${hash.substring(0, 8)}`;
-  console.log(`🔐 Generated guest ID from IP+UA: ${guestId}`);
   return guestId;
 };
 
@@ -47,7 +45,6 @@ const authenticateSocket = async (socket, next) => {
       const decoded = jwt.decode(token, { complete: true });
       
       if (!decoded || !decoded.payload.sub) {
-        console.log('❌ Socket: Invalid token structure');
         socket.userId = generateGuestId(socket);
         socket.userRole = 'guest';
         socket.isGuest = true;
@@ -75,11 +72,9 @@ const authenticateSocket = async (socket, next) => {
           isOnline: true 
         }).catch(err => console.error('Socket: Failed to update user status:', err.message));
         
-        console.log(`✅ Socket authenticated: ${socket.id} → User: ${user.username} (${clerkUserId})`);
       } else {
         // User has valid Clerk token but NOT in MongoDB yet
         // This happens right after OAuth signin (webhook pending)
-        console.log(`⚠️ Socket: User not in DB yet (clerkId: ${clerkUserId.substring(0, 10)}...)`);
         
         socket.userId = clerkUserId;
         socket.clerkId = clerkUserId;

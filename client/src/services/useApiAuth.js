@@ -1,31 +1,35 @@
 import { useAuth as useClerkAuth } from '@clerk/clerk-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
+
+// Global flag so components can check if auth is attached
+let _authReady = false;
+export const isApiAuthReady = () => _authReady;
 
 export const useApiAuth = () => {
   const { getToken, isSignedIn, isLoaded } = useClerkAuth();
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn) {
-      if (!isLoaded) {
-        console.log('🔐 useApiAuth: Waiting for Clerk auth to load');
-      } else {
-        console.log('🔐 useApiAuth: Not signed in, skipping interceptor setup');
-      }
+    if (!isLoaded) {
+      _authReady = false;
+      setReady(false);
       return;
     }
 
-    console.log('🔐 useApiAuth: Setting up request interceptor');
+    if (!isSignedIn) {
+      // Not signed in — auth is "ready" (just no token to attach)
+      _authReady = true;
+      setReady(true);
+      return;
+    }
 
     // Set up axios interceptor to include Clerk token
     const interceptor = api.interceptors.request.use(async (config) => {
       try {
         const token = await getToken();
         if (token) {
-          console.log('🔐 useApiAuth: Adding token to request:', config.url);
           config.headers.Authorization = `Bearer ${token}`;
-        } else {
-          console.warn('🔐 useApiAuth: No token available');
         }
       } catch (error) {
         console.error('🔐 useApiAuth: Failed to get auth token:', error);
@@ -33,9 +37,15 @@ export const useApiAuth = () => {
       return config;
     });
 
+    _authReady = true;
+    setReady(true);
+
     return () => {
-      console.log('🔐 useApiAuth: Removing request interceptor');
       api.interceptors.request.eject(interceptor);
+      _authReady = false;
+      setReady(false);
     };
   }, [getToken, isLoaded, isSignedIn]);
+
+  return { ready };
 };

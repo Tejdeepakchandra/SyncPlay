@@ -95,7 +95,7 @@ const VideoGrid = ({
 
         return (
           <motion.div
-            key={p.name}
+            key={p.odlUserId || p.userId || `${p.name}-${i}`}
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             className={`relative ${tileSize} rounded-xl overflow-hidden border ${

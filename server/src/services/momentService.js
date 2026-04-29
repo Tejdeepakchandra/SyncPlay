@@ -2,17 +2,16 @@ const Moment = require('../models/mongodb/Moment');
 const Room = require('../models/mongodb/Room');
 const User = require('../models/mongodb/User');
 const redisClient = require('../config/redis');
-const { createRedisKey } = require('../utils/helpers');
-const { v4: uuidv4 } = require('uuid');
+const { createRedisKey, generateEventId } = require('../utils/helpers');
+const { MOMENT_LIMITS, MOMENT_CLIP, REDIS_KEYS } = require('../utils/constants');
 
 class MomentService {
   constructor() {
-    // Detection thresholds
-    this.REACTION_THRESHOLD = 5;      // 5 reactions in window
-    this.COMMENT_THRESHOLD = 3;       // 3 comments in window
+    // Detection thresholds (base values — scaled dynamically by room size)
+    this.BASE_REACTION_THRESHOLD = 5;
+    this.BASE_COMMENT_THRESHOLD = 3;
     this.WINDOW_SIZE = 3000;          // 3 seconds window
     this.INTENSITY_HIGH = 0.7;        // High intensity triggers auto-capture
-    this.DEDUPE_WINDOW = 10;          // 10 seconds dedupe window
     this.MAX_WINDOW_ITEMS = 20;       // Only keep last 20 items for performance
     
     // Redis key prefixes
@@ -22,12 +21,129 @@ class MomentService {
   }
 
   /**
+   * Dynamic threshold based on room size.
+   * 2-user room → both must react. 8-user room → at least 4.
+   */
+  getReactionThreshold(participantCount) {
+    if (participantCount <= 2) return 2;
+    return Math.max(2, Math.ceil(participantCount * 0.5));
+  }
+
+  getCommentThreshold(participantCount) {
+    if (participantCount <= 2) return 2;
+    return Math.max(2, Math.ceil(participantCount * 0.4));
+  }
+
+  /**
+   * Check per-type room limits before creating a moment.
+   * Returns { allowed: true } or { allowed: false, ...details }.
+   */
+  async checkRoomLimits(roomCode, type) {
+    // Get room-specific limits (or use defaults)
+    const room = await Room.findOne({ roomCode }).select('settings').lean();
+    const limits = room?.settings?.momentCapture?.limits || MOMENT_LIMITS;
+    const limit = limits[type];
+
+    if (limit == null) return { allowed: true };
+
+    const count = await Moment.countDocuments({
+      roomCode,
+      type,
+      status: { $nin: ['failed'] },
+      mergedInto: { $exists: false }
+    });
+
+    if (count >= limit) {
+      return {
+        allowed: false,
+        limitReached: true,
+        momentType: type,
+        currentCount: count,
+        maxAllowed: limit
+      };
+    }
+
+    // Also check total moments per room
+    const totalCount = await Moment.countDocuments({
+      roomCode,
+      status: { $nin: ['failed'] },
+      mergedInto: { $exists: false }
+    });
+
+    if (totalCount >= MOMENT_CLIP.MAX_PER_ROOM) {
+      return {
+        allowed: false,
+        limitReached: true,
+        momentType: 'total',
+        currentCount: totalCount,
+        maxAllowed: MOMENT_CLIP.MAX_PER_ROOM
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Check for nearby existing moment of same type and merge if overlapping.
+   * Returns the existing moment if merged, null if no overlap found.
+   */
+  async checkAndMergeOverlap(roomCode, type, videoTimestamp, newParticipants = []) {
+    const nearby = await Moment.findOne({
+      roomCode,
+      type,
+      status: { $nin: ['failed'] },
+      mergedInto: { $exists: false },
+      timestamp: {
+        $gte: videoTimestamp - MOMENT_CLIP.OVERLAP_WINDOW,
+        $lte: videoTimestamp + MOMENT_CLIP.OVERLAP_WINDOW
+      }
+    }).sort({ timestamp: 1 });
+
+    if (!nearby) return null;
+
+    // Extend the existing moment's clip range
+    const existingStart = nearby.clipRange?.startTime ?? (nearby.timestamp - MOMENT_CLIP.OFFSET_BEFORE);
+    const existingEnd = nearby.clipRange?.endTime ?? (nearby.timestamp + MOMENT_CLIP.OFFSET_AFTER);
+    const newStart = videoTimestamp - MOMENT_CLIP.OFFSET_BEFORE;
+    const newEnd = videoTimestamp + MOMENT_CLIP.OFFSET_AFTER;
+
+    nearby.clipRange = {
+      startTime: Math.min(existingStart, newStart),
+      endTime: Math.max(existingEnd, newEnd)
+    };
+    nearby.duration = nearby.clipRange.endTime - nearby.clipRange.startTime;
+
+    // Add new participants (deduplicated)
+    const existingUserIds = new Set(nearby.participants.map(p => p.userId));
+    for (const p of newParticipants) {
+      if (p.userId && !existingUserIds.has(p.userId)) {
+        nearby.participants.push(p);
+      }
+    }
+
+    await nearby.save();
+    return nearby;
+  }
+
+  /**
    * Add reaction to window and check for spike — ATOMIC with Lua
    */
   async addReaction(roomCode, userId, reaction, videoTimestamp, username = 'Guest') {
     try {
       const now = Date.now();
       const windowKey = createRedisKey(this.REACTION_KEY, roomCode);
+
+      // Get room participant count for dynamic threshold
+      const room = await Room.findOne({ roomCode }).select('participants settings').lean();
+      if (!room) return { detected: false, error: 'Room not found' };
+
+      // Check if moment capture is enabled
+      if (room.settings?.momentCapture?.enabled === false) {
+        return { detected: false, disabled: true };
+      }
+
+      const participantCount = room.participants?.length || 1;
+      const threshold = this.getReactionThreshold(participantCount);
       
       // ATOMIC OPERATION using Lua script
       const luaScript = `
@@ -80,7 +196,7 @@ class MomentService {
         arguments: [
           now.toString(),
           this.WINDOW_SIZE.toString(),
-          this.REACTION_THRESHOLD.toString(),
+          threshold.toString(),
           this.MAX_WINDOW_ITEMS.toString(),
           JSON.stringify({ userId, reaction, videoTimestamp, username, now })
         ]
@@ -105,13 +221,14 @@ class MomentService {
       
       // Calculate intensity (0-1)
       const intensity = Math.min(
-        (parsedCount / this.REACTION_THRESHOLD) * 0.5 + 
-        (parsedUniqueCount / 3) * 0.5,
+        (parsedCount / threshold) * 0.5 + 
+        (parsedUniqueCount / Math.max(2, participantCount * 0.5)) * 0.5,
         1
       );
 
-      // Check for spike
-      if (parsedCount >= this.REACTION_THRESHOLD && parsedUniqueCount >= 3) {
+      // Check for spike (using dynamic threshold)
+      const minUniqueUsers = Math.max(2, Math.ceil(participantCount * 0.5));
+      if (parsedCount >= threshold && parsedUniqueCount >= minUniqueUsers) {
         // Calculate average timestamp
         const avgTimestamp = reactions.reduce(
           (sum, r) => sum + (r.videoTimestamp || 0), 0
@@ -121,15 +238,28 @@ class MomentService {
         const existing = await Moment.findOne({
           roomCode,
           type: 'reaction_spike',
+          mergedInto: { $exists: false },
           timestamp: { 
-            $gte: avgTimestamp - this.DEDUPE_WINDOW, 
-            $lte: avgTimestamp + this.DEDUPE_WINDOW 
+            $gte: avgTimestamp - MOMENT_CLIP.DEDUPE_WINDOW, 
+            $lte: avgTimestamp + MOMENT_CLIP.DEDUPE_WINDOW 
           }
         });
 
         let moment = null;
         if (!existing) {
-          // Create moment
+          // Check room limits
+          const limitCheck = await this.checkRoomLimits(roomCode, 'reaction_spike');
+          if (!limitCheck.allowed) {
+            return {
+              detected: true,
+              moment: null,
+              limitReached: true,
+              ...limitCheck,
+              count: parsedCount,
+              intensity
+            };
+          }
+
           const result = await this.createMoment({
             roomCode,
             type: 'reaction_spike',
@@ -138,7 +268,8 @@ class MomentService {
             reactionCount: parsedCount,
             uniqueReactors: parsedUniqueCount,
             reactions,
-            participants: uniqueUsers
+            participants: uniqueUsers,
+            participantCount
           });
           moment = result.moment;
         }
@@ -171,6 +302,17 @@ class MomentService {
     try {
       const now = Date.now();
       const windowKey = createRedisKey(this.COMMENT_KEY, roomCode);
+
+      // Get room participant count for dynamic threshold
+      const room = await Room.findOne({ roomCode }).select('participants settings').lean();
+      if (!room) return { detected: false, error: 'Room not found' };
+
+      if (room.settings?.momentCapture?.enabled === false) {
+        return { detected: false, disabled: true };
+      }
+
+      const participantCount = room.participants?.length || 1;
+      const threshold = this.getCommentThreshold(participantCount);
       
       const luaScript = `
         local windowKey = KEYS[1]
@@ -212,7 +354,7 @@ class MomentService {
         arguments: [
           now.toString(),
           this.WINDOW_SIZE.toString(),
-          this.COMMENT_THRESHOLD.toString(),
+          threshold.toString(),
           this.MAX_WINDOW_ITEMS.toString(),
           JSON.stringify({ userId, text: text.substring(0, 100), videoTimestamp, username, now })
         ]
@@ -235,12 +377,13 @@ class MomentService {
       const uniqueUsers = JSON.parse(usersJson);
       
       const intensity = Math.min(
-        (parsedCount / this.COMMENT_THRESHOLD) * 0.6 + 
-        (parsedUniqueCount / 2) * 0.4,
+        (parsedCount / threshold) * 0.6 + 
+        (parsedUniqueCount / Math.max(2, participantCount * 0.4)) * 0.4,
         1
       );
 
-      if (parsedCount >= this.COMMENT_THRESHOLD && parsedUniqueCount >= 2) {
+      const minUniqueUsers = Math.max(2, Math.ceil(participantCount * 0.4));
+      if (parsedCount >= threshold && parsedUniqueCount >= minUniqueUsers) {
         const avgTimestamp = comments.reduce(
           (sum, c) => sum + (c.videoTimestamp || 0), 0
         ) / comments.length;
@@ -249,14 +392,28 @@ class MomentService {
         const existing = await Moment.findOne({
           roomCode,
           type: 'comment_cluster',
+          mergedInto: { $exists: false },
           timestamp: { 
-            $gte: avgTimestamp - this.DEDUPE_WINDOW, 
-            $lte: avgTimestamp + this.DEDUPE_WINDOW 
+            $gte: avgTimestamp - MOMENT_CLIP.DEDUPE_WINDOW, 
+            $lte: avgTimestamp + MOMENT_CLIP.DEDUPE_WINDOW 
           }
         });
 
         let moment = null;
         if (!existing) {
+          // Check room limits
+          const limitCheck = await this.checkRoomLimits(roomCode, 'comment_cluster');
+          if (!limitCheck.allowed) {
+            return {
+              detected: true,
+              moment: null,
+              limitReached: true,
+              ...limitCheck,
+              count: parsedCount,
+              intensity
+            };
+          }
+
           const result = await this.createMoment({
             roomCode,
             type: 'comment_cluster',
@@ -265,7 +422,8 @@ class MomentService {
             commentCount: parsedCount,
             uniqueReactors: parsedUniqueCount,
             comments,
-            participants: uniqueUsers
+            participants: uniqueUsers,
+            participantCount
           });
           moment = result.moment;
         }
@@ -288,10 +446,32 @@ class MomentService {
   }
 
   /**
-   * Manual bookmark moment
+   * Manual bookmark moment — with overlap merge
    */
   async addBookmark(roomCode, userId, videoTimestamp, note = '', username = 'Guest') {
     try {
+      // Check room limits first
+      const limitCheck = await this.checkRoomLimits(roomCode, 'bookmark');
+      if (!limitCheck.allowed) {
+        const error = new Error('Bookmark limit reached');
+        error.limitReached = true;
+        error.details = limitCheck;
+        throw error;
+      }
+
+      // Check for nearby bookmark to merge with
+      const mergedMoment = await this.checkAndMergeOverlap(
+        roomCode,
+        'bookmark',
+        videoTimestamp,
+        [{ userId, username, displayName: username, reactionCount: 0 }]
+      );
+
+      if (mergedMoment) {
+        return { moment: mergedMoment, merged: true };
+      }
+
+      // Create new bookmark
       const result = await this.createMoment({
         roomCode,
         type: 'bookmark',
@@ -307,7 +487,7 @@ class MomentService {
         }]
       });
       
-      return result.moment;
+      return { moment: result.moment, merged: false };
     } catch (error) {
       console.error('Add bookmark error:', error);
       throw error;
@@ -315,14 +495,13 @@ class MomentService {
   }
 
   /**
-   * Create moment in database — FIXED N+1 query
+   * Create moment in database with clip range and host capture info
    */
   async createMoment(momentData) {
     const { roomCode, type, timestamp, intensity, participants = [] } = momentData;
     
     // Get room info
     const room = await Room.findOne({ roomCode });
-    
     if (!room) throw new Error('Room not found');
     
     // BATCH FETCH all user data — FIXED N+1
@@ -371,13 +550,21 @@ class MomentService {
     };
 
     // Generate capture job ID
-    const captureJobId = uuidv4();
+    const captureJobId = generateEventId();
+
+    // Calculate clip range
+    const clipRange = {
+      startTime: Math.max(0, timestamp - MOMENT_CLIP.OFFSET_BEFORE),
+      endTime: timestamp + MOMENT_CLIP.OFFSET_AFTER
+    };
 
     // Create moment
     const moment = new Moment({
       roomId: room._id,
       roomCode,
       timestamp,
+      duration: MOMENT_CLIP.DURATION,
+      clipRange,
       type,
       intensity,
       mediaSource,
@@ -385,6 +572,10 @@ class MomentService {
       reactions: momentData.reactions || [],
       comments: momentData.comments || [],
       captureJobId,
+      capturedBy: {
+        userId: room.hostId,
+        isHost: true
+      },
       stats: {
         reactionCount: momentData.reactionCount || 0,
         commentCount: momentData.commentCount || 0,
@@ -394,8 +585,14 @@ class MomentService {
     });
     
     await moment.save();
+
+    // Update room stats
+    await Room.updateOne(
+      { roomCode },
+      { $inc: { 'stats.momentCount': 1 } }
+    );
     
-    // Return event data instead of emitting
+    // Return event data — capture only if intensity is high enough
     return {
       moment,
       captureEvent: intensity > this.INTENSITY_HIGH ? {
@@ -403,6 +600,7 @@ class MomentService {
         captureJobId,
         roomCode,
         timestamp: moment.timestamp,
+        clipRange,
         duration: moment.duration,
         intensity
       } : null
@@ -429,11 +627,12 @@ class MomentService {
       
       const moments = await Moment.find({ 
         roomId: room._id,
-        status: 'ready'
+        status: 'ready',
+        mergedInto: { $exists: false }
       })
       .sort({ timestamp: 1 })
       .limit(limit)
-      .populate('participants.userId', 'username displayName avatar');
+      .lean();
       
       return moments;
       
@@ -444,13 +643,41 @@ class MomentService {
   }
 
   /**
+   * Get all moments for a room (any status) — used for session-end merge
+   */
+  async getAllRoomMoments(roomCode) {
+    return Moment.find({
+      roomCode,
+      status: 'ready',
+      mergedInto: { $exists: false },
+      'capturedVideo.url': { $exists: true }
+    }).sort({ timestamp: 1 }).lean();
+  }
+
+  /**
+   * Get moment counts by type for a room (for limit display)
+   */
+  async getRoomMomentCounts(roomCode) {
+    const pipeline = [
+      { $match: { roomCode, status: { $nin: ['failed'] }, mergedInto: { $exists: false } } },
+      { $group: { _id: '$type', count: { $sum: 1 } } }
+    ];
+    const results = await Moment.aggregate(pipeline);
+    
+    const counts = {};
+    for (const r of results) {
+      counts[r._id] = r.count;
+    }
+    return counts;
+  }
+
+  /**
    * Get moment by ID
    */
   async getMomentById(momentId) {
     try {
       const moment = await Moment.findById(momentId)
-        .populate('roomId', 'name roomCode')
-        .populate('participants.userId', 'username displayName avatar');
+        .populate('roomId', 'name roomCode');
       
       if (!moment) throw new Error('Moment not found');
       
@@ -478,13 +705,15 @@ class MomentService {
         throw new Error('Invalid capture job ID');
       }
       
-      // Check if user was a participant
-      const isParticipant = moment.participants.some(
-        p => p.userId?.toString() === userId || p.userId === userId
-      );
-      
-      if (!isParticipant) {
-        throw new Error('User was not a participant in this moment');
+      // Only host can upload captures
+      if (moment.capturedBy?.userId !== userId) {
+        // Also check if user was a participant (backward compat)
+        const isParticipant = moment.participants.some(
+          p => p.userId?.toString() === userId || p.userId === userId
+        );
+        if (!isParticipant) {
+          throw new Error('User was not a participant in this moment');
+        }
       }
       
       return moment;
@@ -496,7 +725,7 @@ class MomentService {
   }
 
   /**
-   * Process uploaded moment video
+   * Process uploaded moment video (called after host uploads to Cloudinary)
    */
   async processUploadedMoment(momentId, captureJobId, videoData) {
     try {
@@ -507,19 +736,19 @@ class MomentService {
         throw new Error('Invalid capture job ID');
       }
       
-      // Update moment with video data
+      // Update moment with video data from Cloudinary
       moment.capturedVideo = {
         url: videoData.url,
-        thumbnailUrl: videoData.thumbnail,
+        thumbnailUrl: videoData.thumbnail || videoData.thumbnailUrl,
         webmUrl: videoData.webmUrl,
         mp4Url: videoData.mp4Url,
         duration: videoData.duration,
         size: videoData.size,
-        format: videoData.format,
+        format: videoData.format || 'webm',
         width: videoData.width,
         height: videoData.height
       };
-      
+      moment.cloudinaryPublicId = videoData.publicId || videoData.public_id;
       moment.status = 'ready';
       await moment.save();
       
@@ -535,6 +764,34 @@ class MomentService {
       
       throw error;
     }
+  }
+
+  /**
+   * Mark user as watching a moment (for sync skip)
+   */
+  async setUserWatchingMoment(userId, roomCode, momentId) {
+    const key = createRedisKey(REDIS_KEYS.MOMENT_WATCHING, `${roomCode}:${userId}`);
+    await redisClient.set(key, JSON.stringify({
+      momentId,
+      startedAt: Date.now()
+    }), { EX: 300 }); // 5 min max — auto-cleanup
+  }
+
+  /**
+   * Clear user watching state (for resync)
+   */
+  async clearUserWatchingMoment(userId, roomCode) {
+    const key = createRedisKey(REDIS_KEYS.MOMENT_WATCHING, `${roomCode}:${userId}`);
+    await redisClient.del(key);
+  }
+
+  /**
+   * Check if user is currently watching a moment
+   */
+  async isUserWatchingMoment(userId, roomCode) {
+    const key = createRedisKey(REDIS_KEYS.MOMENT_WATCHING, `${roomCode}:${userId}`);
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
   }
 
   /**
@@ -556,15 +813,36 @@ class MomentService {
         }
       }
       
+      // Get cloudinary public ID for cleanup
+      const publicId = moment.cloudinaryPublicId;
+      
       await Moment.findByIdAndDelete(momentId);
+
+      // Decrement room stats
+      await Room.updateOne(
+        { _id: moment.roomId },
+        { $inc: { 'stats.momentCount': -1 } }
+      );
       
-      // Delete from cloud storage (implement separately)
-      
-      return { success: true };
+      return { success: true, deletedPublicId: publicId };
       
     } catch (error) {
       console.error('Delete moment error:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Clean up all moment data for a room (used on session end after merge)
+   */
+  async cleanupRoomMomentKeys(roomCode) {
+    try {
+      const reactionKey = createRedisKey(this.REACTION_KEY, roomCode);
+      const commentKey = createRedisKey(this.COMMENT_KEY, roomCode);
+      await redisClient.del(reactionKey);
+      await redisClient.del(commentKey);
+    } catch (error) {
+      console.error('Cleanup room moment keys error:', error);
     }
   }
 }

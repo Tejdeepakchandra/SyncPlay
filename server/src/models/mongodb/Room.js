@@ -233,6 +233,15 @@ const roomSchema = new mongoose.Schema({
     allowQueue: {
       type: Boolean,
       default: true
+    },
+    // Moment capture settings
+    momentCapture: {
+      enabled: { type: Boolean, default: true },
+      limits: {
+        bookmark: { type: Number, default: 4 },
+        reaction_spike: { type: Number, default: 3 },
+        comment_cluster: { type: Number, default: 2 }
+      }
     }
   },
   
@@ -246,6 +255,15 @@ const roomSchema = new mongoose.Schema({
       playedBy: String
     }]
   },
+
+  // Track all Cloudinary assets uploaded to this room for cleanup on end
+  uploadedAssets: [{
+    publicId: { type: String, required: true },
+    resourceType: { type: String, default: 'video' },
+    url: String,
+    uploadedBy: String,
+    uploadedAt: { type: Date, default: Date.now },
+  }],
   
   // Sync State (Live in Redis, but persisted for recovery)
   syncState: {
@@ -292,6 +310,19 @@ const roomSchema = new mongoose.Schema({
   version: {
     type: Number,
     default: 0
+  },
+  
+  // Session highlights — final merged video from all captured moments
+  sessionHighlights: {
+    finalVideoUrl: String,
+    finalVideoPublicId: String,
+    clipCount: { type: Number, default: 0 },
+    mergedAt: Date,
+    status: {
+      type: String,
+      enum: ['pending', 'merging', 'ready', 'failed', null],
+      default: null
+    }
   }
 }, {
   timestamps: true

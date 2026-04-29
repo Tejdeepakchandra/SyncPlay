@@ -7,7 +7,8 @@ import {
   Youtube, Upload, Monitor, ChevronLeft,
   Send, Smile, SkipForward, Settings,
   Wifi, WifiOff, Mic, MicOff, Video, VideoOff, Users, X,
-  Headphones, Sliders, Film, UserMinus, Check
+  Headphones, Sliders, Film, UserMinus, Check, UserPlus,
+  MoreVertical, Camera
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
@@ -24,6 +25,7 @@ import { useWebRTCSignaling } from "@/hooks/useWebRTCSignaling";
 import { useYouTubePlayer } from "@/hooks/useYouTubePlayer";
 import { useMediaSession } from "@/hooks/useMediaSession";
 import { useMomentsStore } from "@/stores/momentsStore";
+import { useMomentCapture } from "@/hooks/useMomentCapture";
 
 // Components
 import FloatingParticipantBubbles from "@/components/FloatingParticipantBubbles";
@@ -35,6 +37,12 @@ import YouTubeSearchTab from "@/components/YouTubeSearchTab";
 import GuestNameDialog from "@/components/GuestNameDialog";
 import WaitingAreaDialog from "@/components/WaitingAreaDialog";
 import JoinRequestNotification from "@/components/JoinRequestNotification";
+import { MomentTimeline } from "@/components/MomentTimeline";
+import MomentPlaybackOverlay from "@/components/MomentPlaybackOverlay";
+import CaptureIndicator from "@/components/CaptureIndicator";
+import MomentLimitToast from "@/components/MomentLimitToast";
+import ScreenCaptureModal from "@/components/ScreenCaptureModal";
+import InviteFriendsModal from "@/components/InviteFriendsModal";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -81,6 +89,7 @@ const MovieRoom = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showHostControls, setShowHostControls] = useState(false);
+  const [showInviteFriends, setShowInviteFriends] = useState(false);
   const [showMixer, setShowMixer] = useState(false);
   const [lightsOff, setLightsOff] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
@@ -90,6 +99,7 @@ const MovieRoom = () => {
   const [participants, setParticipants] = useState([]);
   const [syncStatus, setSyncStatus] = useState("synced");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showVideoChat, setShowVideoChat] = useState(false);
   const [mediaSource, setMediaSource] = useState("none");
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState(null);
@@ -141,6 +151,7 @@ const MovieRoom = () => {
   const chatEndRef = useRef(null);
   const reactionIdRef = useRef(0);
   const containerRef = useRef(null);
+  const videoAreaRef = useRef(null);
   const uploadVideoRef = useRef(null);
   const screenVideoRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -155,6 +166,9 @@ const MovieRoom = () => {
   const lastYoutubeNativeTimeRef = useRef(0);
   const lastYoutubeControlEmitRef = useRef({ event: null, at: 0, time: 0 });
   const nativeBridgeMutedUntilRef = useRef(0);
+  // Tracks when the last remote sync action (onPlay/onPause/onSeek from server)
+  // was applied. Used to prevent onStateChange from re-broadcasting back.
+  const remoteSyncAppliedAtRef = useRef(0);
   const uploadReadyToastRef = useRef(false);
   const desiredPlayingRef = useRef(false);
   const lastChatSendAtRef = useRef(0);
@@ -185,6 +199,7 @@ const MovieRoom = () => {
   const isTabletViewport = viewportSize.width >= 768 && viewportSize.width < 1024;
   const isMobileOrTabletViewport = viewportSize.width < 1024;
   const isPortraitCompact = isCompactViewport && viewportSize.height >= viewportSize.width;
+  const isLandscapeMobile = viewportSize.height < 500 && viewportSize.width > viewportSize.height;
   const useTouchSizedControls = isCompactViewport || isTabletViewport;
   const controlBtnSizeClass = useTouchSizedControls ? "h-10 w-10" : "h-8 w-8";
   const compactToggleBtnSizeClass = useTouchSizedControls ? "h-9 w-9" : "h-7 w-7";
@@ -335,14 +350,7 @@ const MovieRoom = () => {
 
       if (hidden) {
         if (mediaSource === "youtube" && isPlaying) {
-          const now = Date.now();
-          if (now - lastBackgroundYoutubeToastAtRef.current > 12000) {
-            lastBackgroundYoutubeToastAtRef.current = now;
-            toast("YouTube background limit", {
-              description: "YouTube may pause in background on mobile. Uploaded media is used for reliable background listening.",
-              duration: 3200,
-            });
-          }
+          // YouTube may pause in background on mobile — no toast needed
         }
 
         if (showVideoChat && !deafenVoiceChat) {
@@ -493,8 +501,16 @@ const MovieRoom = () => {
       const previousTime = lastYoutubeNativeTimeRef.current;
       const now = Date.now();
 
-      // Keep YouTube native controls and room controls perfectly aligned.
-      const nativeBridgeMuted = Date.now() < nativeBridgeMutedUntilRef.current;
+      // Keep YouTube native controls and room controls aligned.
+      const nativeBridgeMuted = now < nativeBridgeMutedUntilRef.current;
+
+      // Extend mute window while YouTube is buffering after a remote/local action.
+      // YouTube can buffer for 2-5+ seconds; without this, the mute expires during
+      // buffering and the subsequent "playing" state change re-broadcasts.
+      if (nativeBridgeMuted && (state === "buffering" || state === "unstarted")) {
+        nativeBridgeMutedUntilRef.current = now + 1500;
+      }
+
       if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current && !roomSync.controlPending && !nativeBridgeMuted) {
         const jumpDelta = Math.abs(currentTime - previousTime);
         if (state === "buffering" && jumpDelta > 0.9) {
@@ -539,12 +555,39 @@ const MovieRoom = () => {
         lastYoutubeNativeTimeRef.current = currentTime;
       }
 
+      // Process any remote actions that were queued while the player was buffering
+      if (state === "playing" || state === "paused") {
+        const pending = pendingRemoteActionRef.current;
+        if (pending && Date.now() - pendingRemoteActionSetAtRef.current <= 7000) {
+          const isSameMedia = pending.mediaKey === getYoutubeMediaKey();
+          if (isSameMedia) {
+            nativeBridgeMutedUntilRef.current = Date.now() + 1500;
+            if (pending.type === "play" && state !== "playing") {
+              if (Number.isFinite(pending.time) && Math.abs((ytPlayer.currentTime || 0) - pending.time) > 1.5) {
+                ytPlayer.seekTo(pending.time, true);
+              }
+              ytPlayer.play();
+            } else if (pending.type === "pause" && state !== "paused") {
+              if (Number.isFinite(pending.time) && Math.abs((ytPlayer.currentTime || 0) - pending.time) > 1.5) {
+                ytPlayer.seekTo(pending.time, true);
+              }
+              ytPlayer.pause();
+            }
+          }
+          pendingRemoteActionRef.current = null;
+        }
+      }
+
       if (state === "playing") {
         setIsPlaying(true);
         desiredPlayingRef.current = true;
       } else if (state === "paused") {
+        // Only update UI state if we're NOT in a muted window.
+        // During mute, YouTube may briefly pause while buffering after seekTo/play;
+        // flipping desiredPlayingRef to false here would cause a conflicting pause broadcast
+        // once the mute window expires.
         const nativeBridgeMutedNow = Date.now() < nativeBridgeMutedUntilRef.current;
-        if (!(nativeBridgeMutedNow && previousState === "playing")) {
+        if (!nativeBridgeMutedNow) {
           setIsPlaying(false);
           desiredPlayingRef.current = false;
         }
@@ -554,7 +597,7 @@ const MovieRoom = () => {
         if (canControl && mediaSource === "youtube" && !suppressRemoteSyncRef.current) {
           roomSync.broadcastPause(currentDuration || 0, currentDuration || 0);
         }
-        toast("🎬 Video finished!", { description: "Pick another video to continue watching." });
+        toast("🎬 Video finished!", { description: "Pick another video to continue watching.", duration: 2000, id: "yt-ended" });
       } else if (state === "error") {
         setIsPlaying(false);
         toast.error("Unable to play this YouTube video", {
@@ -597,14 +640,14 @@ const MovieRoom = () => {
         if (Number.isFinite(pending.time)) {
           ytPlayer.seekTo(pending.time, true);
         }
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        nativeBridgeMutedUntilRef.current = Date.now() + 800;
         ytPlayer.play();
         pendingRemoteActionRef.current = null;
       } else if (pending?.type === "pause") {
         if (Number.isFinite(pending.time)) {
           ytPlayer.seekTo(pending.time, true);
         }
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        nativeBridgeMutedUntilRef.current = Date.now() + 800;
         ytPlayer.pause();
         pendingRemoteActionRef.current = null;
       }
@@ -614,6 +657,14 @@ const MovieRoom = () => {
       }
     },
     onVideoChange: (newVideoId) => {
+      // Suppress auto-play detection during media change transitions
+      if (Date.now() < adGuardUntilRef.current) return;
+      // Also suppress if we already have this video
+      if (newVideoId === youtubeVideoId) return;
+
+      nativeBridgeMutedUntilRef.current = Date.now() + 3000;
+      suppressRemoteSyncRef.current = true;
+      setTimeout(() => { suppressRemoteSyncRef.current = false; }, 2500);
       setYoutubeVideoId(newVideoId);
       setFallbackYoutubeVideoId(newVideoId);
       setMediaSource("youtube");
@@ -625,11 +676,11 @@ const MovieRoom = () => {
           videoId: newVideoId,
           title: "YouTube Video",
         });
-        roomSync.broadcastPause(0, ytPlayer.duration || 0);
       }
-      toast("▶️ Switched to suggested video", {
+      toast(`▶️ Switched to suggested video`, {
         description: "Video is loaded for everyone. Press play when all are ready.",
-        duration: 2500,
+        duration: 2000,
+        id: "yt-switched",
       });
     },
   });
@@ -643,12 +694,12 @@ const MovieRoom = () => {
     canControlOverride: canControl,
     timeUnit: "seconds",
     enableDriftCorrection: true,
-    driftIntervalMs: 1000,
+    driftIntervalMs: 3000,
     getCurrentPosition: () => {
       if (mediaSource === "youtube" && (ytPlayer.playerState === "buffering" || ytPlayer.playerState === "unstarted")) {
         return Number.NaN;
       }
-      if (mediaSource === "youtube") return ytPlayer.currentTime || 0;
+      if (mediaSource === "youtube") return ytPlayer.getRealtimePosition?.() ?? ytPlayer.currentTime ?? 0;
       if (mediaSource === "upload") {
         const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
         return uploadMedia?.currentTime || 0;
@@ -660,13 +711,22 @@ const MovieRoom = () => {
       const resolvedYoutubeId = resolveYoutubeVideoId(media);
 
       if (mediaType === "youtube" && resolvedYoutubeId) {
+        // Skip if we're already showing this exact video (prevents flicker from own broadcast)
+        if (resolvedYoutubeId === youtubeVideoId && mediaSource === "youtube") {
+          return;
+        }
         adGuardUntilRef.current = Date.now() + 12000;
+        // Mute native bridge to suppress stale state changes from old video unloading
+        nativeBridgeMutedUntilRef.current = Date.now() + 3000;
+        suppressRemoteSyncRef.current = true;
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 2500);
+        pendingRemoteActionRef.current = null;
         setYoutubeVideoId(resolvedYoutubeId);
         setFallbackYoutubeVideoId(resolvedYoutubeId);
         setMediaSource("youtube");
         setIsPlaying(false);
+        setProgress(0);
         desiredPlayingRef.current = false;
-        // Keep pending play/pause action so onReady can apply out-of-order control events.
       } else if (mediaType === "upload" && media?.videoUrl) {
         setUploadedVideoUrl(media.videoUrl);
         setFallbackYoutubeVideoId(null);
@@ -695,8 +755,8 @@ const MovieRoom = () => {
       suppressRemoteSyncRef.current = true;
       if (mediaSource === "youtube") {
         const hasPlayer = !!ytPlayer.player?.current;
-        const canApplyImmediately = hasPlayer && ["playing", "paused", "cued"].includes(ytPlayer.playerState);
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        const canApplyImmediately = hasPlayer && ["playing", "paused", "cued", "unstarted"].includes(ytPlayer.playerState);
+        nativeBridgeMutedUntilRef.current = Date.now() + 1500;
         if (canApplyImmediately) {
           if (Number.isFinite(timeSec)) {
             ytPlayer.seekTo(timeSec, true);
@@ -711,17 +771,20 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 1200);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
         const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         const canApplyImmediately = !!video && video.readyState >= 2;
+        nativeBridgeMutedUntilRef.current = Date.now() + 600;
         if (canApplyImmediately) {
           pendingRemoteActionRef.current = null;
           if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
             video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
           }
-          video.play().catch(() => {});
+          desiredPlayingRef.current = true;
+          setIsPlaying(true);
+          video.play().catch(() => { setIsPlaying(false); });
         } else {
           pendingRemoteActionRef.current = {
             type: "play",
@@ -730,7 +793,7 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        suppressRemoteSyncRef.current = false;
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 500);
       } else {
         // Play can arrive before media-change; keep pending and apply when media becomes ready.
         pendingRemoteActionRef.current = {
@@ -748,8 +811,8 @@ const MovieRoom = () => {
       suppressRemoteSyncRef.current = true;
       if (mediaSource === "youtube") {
         const hasPlayer = !!ytPlayer.player?.current;
-        const canApplyImmediately = hasPlayer && ["playing", "paused", "cued"].includes(ytPlayer.playerState);
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        const canApplyImmediately = hasPlayer && ["playing", "paused", "cued", "unstarted"].includes(ytPlayer.playerState);
+        nativeBridgeMutedUntilRef.current = Date.now() + 1500;
         if (canApplyImmediately) {
           if (Number.isFinite(timeSec)) {
             ytPlayer.seekTo(timeSec, true);
@@ -764,15 +827,18 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 1200);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
         const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         if (video) {
+          nativeBridgeMutedUntilRef.current = Date.now() + 600;
           pendingRemoteActionRef.current = null;
           if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
             video.currentTime = Math.max(0, Math.min(video.duration, timeSec));
           }
+          desiredPlayingRef.current = false;
+          setIsPlaying(false);
           video.pause();
           setTimeout(() => video.pause(), 0);
         } else {
@@ -783,7 +849,7 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        suppressRemoteSyncRef.current = false;
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 500);
       } else {
         pendingRemoteActionRef.current = {
           type: "pause",
@@ -803,7 +869,7 @@ const MovieRoom = () => {
       }
       suppressRemoteSyncRef.current = true;
       if (mediaSource === "youtube") {
-        const canApplyImmediately = ["playing", "paused", "cued"].includes(ytPlayer.playerState);
+        const canApplyImmediately = ["playing", "paused", "cued", "unstarted"].includes(ytPlayer.playerState);
         nativeBridgeMutedUntilRef.current = Date.now() + 1200;
         if (canApplyImmediately) {
           ytPlayer.seekTo(timeSec, true);
@@ -837,7 +903,7 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        suppressRemoteSyncRef.current = false;
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 500);
       } else {
         suppressRemoteSyncRef.current = false;
       }
@@ -853,7 +919,7 @@ const MovieRoom = () => {
         // YouTube supports only discrete playback rates; use micro-seek for smooth sub-second drift fixes.
         if (hasTarget && Math.abs(drift) >= 0.08) {
           suppressRemoteSyncRef.current = true;
-          nativeBridgeMutedUntilRef.current = Date.now() + 700;
+          nativeBridgeMutedUntilRef.current = Date.now() + 250;
           ytPlayer.seekTo(targetPosition, true);
           if (desiredPlayingRef.current) {
             ytPlayer.play();
@@ -865,8 +931,11 @@ const MovieRoom = () => {
           }, 220);
         }
         return;
-      } else if (mediaSource === "upload" && uploadVideoRef.current) {
-        uploadVideoRef.current.playbackRate = rate;
+      } else if (mediaSource === "upload") {
+        const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+        if (uploadMedia) {
+          uploadMedia.playbackRate = rate;
+        }
       }
 
       if (rateResetTimerRef.current) {
@@ -875,8 +944,11 @@ const MovieRoom = () => {
       rateResetTimerRef.current = setTimeout(() => {
         if (mediaSource === "youtube") {
           ytPlayer.setPlaybackRate?.(1);
-        } else if (mediaSource === "upload" && uploadVideoRef.current) {
-          uploadVideoRef.current.playbackRate = 1;
+        } else if (mediaSource === "upload") {
+          const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
+          if (uploadMedia) {
+            uploadMedia.playbackRate = 1;
+          }
         }
       }, 1200);
     },
@@ -892,12 +964,7 @@ const MovieRoom = () => {
     },
     onSyncConflict: ({ event, error }) => {
       setSyncStatus("syncing");
-      toast("Sync conflict resolved", {
-        description: error
-          ? `Your ${event} action was rejected (${error}). Room state was reapplied.`
-          : `Your ${event} action was stale and was rolled back to room authority.`,
-        duration: 2200,
-      });
+      // Silently resolve — no toast spam on rapid actions
     },
   });
 
@@ -1020,6 +1087,57 @@ const MovieRoom = () => {
 
   const addMoment = useMomentsStore((s) => s.addMoment);
   const joinTimeRef = useRef(Date.now());
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // MOMENT CAPTURE SYSTEM
+  // ═══════════════════════════════════════════════════════════════════════
+  const momentCapture = useMomentCapture(effectiveRoomId, effectiveRoomId, isHost);
+  const [playingMomentData, setPlayingMomentData] = useState(null);
+  const prevVolumeRef = useRef(null); // Store volume before muting for moment preview
+
+  // Mute/unmute main audio when playing moment preview
+  useEffect(() => {
+    if (playingMomentData) {
+      // Mute main audio
+      if (mediaSource === "youtube") {
+        prevVolumeRef.current = ytPlayer.volume ?? 100;
+        ytPlayer.mute?.();
+      } else if (mediaSource === "upload") {
+        const vid = backgroundUploadAudioRef.current || uploadVideoRef.current;
+        if (vid) { prevVolumeRef.current = vid.volume; vid.volume = 0; }
+      }
+    } else {
+      // Restore main audio (NO seek — just unmute)
+      if (mediaSource === "youtube") {
+        ytPlayer.unmute?.();
+      } else if (mediaSource === "upload") {
+        const vid = backgroundUploadAudioRef.current || uploadVideoRef.current;
+        if (vid) vid.volume = prevVolumeRef.current ?? 1;
+      }
+      prevVolumeRef.current = null;
+    }
+  }, [playingMomentData, mediaSource]);
+
+  // Clear moment icons when media changes (new video loaded)
+  const prevMediaIdRef = useRef(null);
+  useEffect(() => {
+    const currentMediaId = youtubeVideoId || uploadedVideoUrl || mediaSource;
+    if (prevMediaIdRef.current && prevMediaIdRef.current !== currentMediaId) {
+      // Media changed — clear stale moments from previous video
+      momentCapture.clearMoments();
+      setPlayingMomentData(null);
+    }
+    prevMediaIdRef.current = currentMediaId;
+  }, [youtubeVideoId, uploadedVideoUrl, mediaSource]);
+
+  // Update remote streams for capture buffer audio mixing
+  useEffect(() => {
+    if (!isHost || !meshStreams.remoteStreams) return;
+    const streams = Object.values(meshStreams.remoteStreams)
+      .map(s => s?.stream)
+      .filter(Boolean);
+    momentCapture.updateRemoteStreams(streams);
+  }, [isHost, meshStreams.remoteStreams, momentCapture]);
 
   // Initialize
   useEffect(() => {
@@ -1168,13 +1286,41 @@ const MovieRoom = () => {
     return () => clearInterval(interval);
   }, [isPlaying, mediaSource]);
 
-  // Sync progress from YouTube
+  // Single authoritative time ref — used by both progress bar and MomentTimeline
+  const realtimePositionRef = useRef(0);
+
+  // Sync progress from YouTube — use realtime position for smoother updates
   useEffect(() => {
     if (mediaSource !== "youtube") return;
-    if (ytPlayer.duration > 0) {
+    if (!isPlaying && ytPlayer.duration > 0) {
+      const pos = ytPlayer.getRealtimePosition?.() ?? ytPlayer.currentTime ?? 0;
+      realtimePositionRef.current = pos;
       setProgress(ytPlayer.progressPercent);
+      return;
     }
-  }, [mediaSource, ytPlayer.progressPercent, ytPlayer.duration]);
+    if (!isPlaying) return;
+    const timer = setInterval(() => {
+      const pos = ytPlayer.getRealtimePosition?.() ?? ytPlayer.currentTime ?? 0;
+      const dur = ytPlayer.duration;
+      realtimePositionRef.current = pos;
+      if (dur > 0 && Number.isFinite(pos)) {
+        setProgress((pos / dur) * 100);
+      }
+    }, 200);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaSource, isPlaying]);
+
+  // Also keep realtimePositionRef updated for upload media
+  useEffect(() => {
+    if (mediaSource !== "upload") return;
+    const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
+    if (!video) return;
+    const timer = setInterval(() => {
+      realtimePositionRef.current = video.currentTime || 0;
+    }, 200);
+    return () => clearInterval(timer);
+  }, [mediaSource]);
 
   // Media Session API
   useMediaSession({
@@ -1209,6 +1355,7 @@ const MovieRoom = () => {
     if (roomSync.controlPending) return;
     if (!canControl) return;
     if (mediaSource === "youtube") {
+      nativeBridgeMutedUntilRef.current = Date.now() + 800;
       if (isPlaying) {
         desiredPlayingRef.current = false;
         ytPlayer.pause();
@@ -1257,26 +1404,25 @@ const MovieRoom = () => {
     setProgress(pct);
     const duration = getCurrentMediaDuration();
     const targetSec = duration > 0 ? (pct / 100) * duration : 0;
-    const shouldResumeAfterSeek = desiredPlayingRef.current;
     roomSync.broadcastSeek(targetSec, duration);
     if (mediaSource === "youtube") {
       suppressRemoteSyncRef.current = true;
-      nativeBridgeMutedUntilRef.current = Date.now() + 460;
-      if (shouldResumeAfterSeek) {
-        // Authoritative seek will apply via sync update for all clients at nearly the same moment.
-      } else {
-        ytPlayer.seekTo(targetSec, true);
-        ytPlayer.pause();
+      nativeBridgeMutedUntilRef.current = Date.now() + 800;
+      // Always seek locally for instant visual feedback
+      ytPlayer.seekTo(targetSec, true);
+      if (desiredPlayingRef.current) {
+        ytPlayer.play();
       }
       setTimeout(() => {
         suppressRemoteSyncRef.current = false;
-      }, 260);
+      }, 800);
     } else if (mediaSource === "upload" && (backgroundUploadAudioRef.current || uploadVideoRef.current)) {
       const uploadMedia = backgroundUploadAudioRef.current || uploadVideoRef.current;
-      if (shouldResumeAfterSeek) {
-        // Keep local playback state; authoritative seek update will set the target time.
+      uploadMedia.currentTime = targetSec;
+      if (desiredPlayingRef.current) {
+        uploadMedia.play().catch(() => setIsPlaying(false));
       } else {
-        uploadMedia.currentTime = targetSec;
+        uploadMedia.pause();
       }
     }
   }, [canControl, mediaSource, ytPlayer, roomSync, getCurrentMediaDuration]);
@@ -1297,8 +1443,12 @@ const MovieRoom = () => {
     }
 
     sendChatMessage(text);
+    // Send to moment detection for chat spike detection
+    const videoTimestamp = ytPlayer.currentTime > 0 ? ytPlayer.currentTime
+      : (backgroundUploadAudioRef.current || uploadVideoRef.current)?.currentTime || 0;
+    momentCapture.sendComment(text, videoTimestamp);
     setChatMessage("");
-  }, [chatMessage, roomSettings.chatEnabled, roomSettings.slowMode, sendChatMessage]);
+  }, [chatMessage, roomSettings.chatEnabled, roomSettings.slowMode, sendChatMessage, momentCapture, mediaSource, ytPlayer]);
 
   const handleReaction = useCallback((emoji) => {
     if (!roomSettings.reactionsEnabled) {
@@ -1311,6 +1461,11 @@ const MovieRoom = () => {
     setFloatingReactions(prev => [...prev, { id, emoji, x }]);
     setTimeout(() => setFloatingReactions(prev => prev.filter(r => r.id !== id)), 2000);
 
+    // Send to moment detection + broadcast
+    const videoTimestamp = ytPlayer.currentTime > 0 ? ytPlayer.currentTime
+      : (backgroundUploadAudioRef.current || uploadVideoRef.current)?.currentTime || 0;
+    momentCapture.sendReaction(emoji, videoTimestamp);
+
     socket.emit('room:reaction', { roomCode, emoji }, (response) => {
       if (response && response.success === false) {
         toast.error(response.error || "Failed to send reaction");
@@ -1318,7 +1473,7 @@ const MovieRoom = () => {
     });
 
     setShowReactionPicker(false);
-  }, [roomSettings.reactionsEnabled, roomCode]);
+  }, [roomSettings.reactionsEnabled, roomCode, momentCapture, mediaSource, ytPlayer]);
 
   const handleSkipForward = useCallback(() => {
     const newProgress = Math.min(progress + 5, 100);
@@ -1343,6 +1498,13 @@ const MovieRoom = () => {
   }, []);
 
   const handleBookmarkMoment = useCallback(() => {
+    const videoTimestamp = ytPlayer.currentTime > 0 ? ytPlayer.currentTime
+      : (backgroundUploadAudioRef.current || uploadVideoRef.current)?.currentTime || 0;
+
+    // Send to moment system — triggers host capture (5s before + 10s after)
+    momentCapture.createBookmark(videoTimestamp, `Bookmarked at ${formatTime(progress)}`);
+
+    // Also save to local moments store for activity feed
     addMoment({
       type: "video-clip",
       activityType: "movie",
@@ -1350,7 +1512,7 @@ const MovieRoom = () => {
       detail: `Manually saved at ${formatTime(progress)}`,
       emoji: "🎬",
       thumbnailEmoji: ["🍿", "🎬", "⭐", "📌", "🔖"][Math.floor(Math.random() * 5)],
-      duration: "1:00",
+      duration: "0:15",
       clipLabel: "⭐ Bookmarked",
       triggerType: "bookmark",
       viewCount: participants.length,
@@ -1361,10 +1523,10 @@ const MovieRoom = () => {
       mood: "⭐",
     });
     toast.success("⭐ Moment Bookmarked!", {
-      description: "A 1-min highlight clip has been saved to your Moments.",
+      description: "Capturing 15s clip (5s before + 10s after).",
       duration: 3000,
     });
-  }, [addMoment, progress, uniqueParticipantCount, room?.name]);
+  }, [addMoment, progress, uniqueParticipantCount, room?.name, momentCapture, mediaSource, ytPlayer]);
 
   // Media source handlers
   const handleScreenShare = useCallback(async () => {
@@ -1538,12 +1700,20 @@ const MovieRoom = () => {
       return;
     }
 
+    // Mute bridge to suppress stale events from old video unloading
+    adGuardUntilRef.current = Date.now() + 12000;
+    nativeBridgeMutedUntilRef.current = Date.now() + 3000;
+    suppressRemoteSyncRef.current = true;
+    setTimeout(() => { suppressRemoteSyncRef.current = false; }, 2500);
+    pendingRemoteActionRef.current = null;
+
     setYoutubeVideoId(normalizedId);
     setFallbackYoutubeVideoId(normalizedId);
     setMediaSource("youtube");
     setShowYoutubeSearch(false);
     setIsPlaying(false);
     setProgress(0);
+    desiredPlayingRef.current = false;
     toast(`🎬 Loaded: ${video.title}`, {
       description: "Video is synced in paused state. Press play when everyone is ready.",
       duration: 3200,
@@ -1553,24 +1723,37 @@ const MovieRoom = () => {
       videoId: normalizedId,
       title: video.title,
     });
-    roomSync.broadcastPause(0, ytPlayer.duration || 0);
-  }, [roomSync, ytPlayer.duration]);
+  }, [roomSync]);
 
   const handleToggleVideoChat = useCallback(async () => {
     if (!showVideoChat) {
-      if (!webrtc.stream) {
-        await webrtc.startMedia(!videoBlockedByHost, !micBlockedByHost);
+      let stream = webrtc.stream;
+      if (!stream) {
+        // Always request at least audio — getUserMedia({video:false, audio:false}) throws.
+        // If host has blocked both, we still need a stream for mesh connectivity;
+        // tracks will be disabled after.
+        const requestVideo = !videoBlockedByHost;
+        const requestAudio = true; // Always request audio; mute via track.enabled later
+        stream = await webrtc.startMedia(requestVideo, requestAudio);
       }
 
-      // If media stream already exists from a previous session, re-enable tracks on rejoin.
-      if (webrtc.stream) {
-        webrtc.stream.getAudioTracks().forEach((track) => {
-          track.enabled = !micBlockedByHost;
+      // Only enable video chat if we actually got a media stream
+      if (!stream) {
+        // On first failure, browser may have auto-denied. Show helpful message.
+        toast.error(webrtc.error || "Camera/mic permission needed", {
+          description: "Click the camera icon in your browser's address bar to allow access, then try again.",
+          duration: 5000,
         });
-        webrtc.stream.getVideoTracks().forEach((track) => {
-          track.enabled = !videoBlockedByHost;
-        });
+        return;
       }
+
+      // Re-enable/disable tracks based on host restrictions
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !micBlockedByHost;
+      });
+      stream.getVideoTracks().forEach((track) => {
+        track.enabled = !videoBlockedByHost;
+      });
 
       setShowVideoChat(true);
       toast.success("📹 Video chat enabled", {
@@ -1664,7 +1847,6 @@ const MovieRoom = () => {
 
     // Make sure this is NOT the current user (can't change own permissions)
     if (targetUserId === myUserId) {
-      console.warn('⚠️ Cannot change own permissions via host controls');
       return;
     }
 
@@ -1893,33 +2075,79 @@ const MovieRoom = () => {
       if (video.duration) setProgress((video.currentTime / video.duration) * 100);
     };
     const onPlay = () => {
-      // Upload-only guard: if room authority says paused, do not allow local resumed playback.
-      if (!desiredPlayingRef.current) {
-        video.pause();
-        setIsPlaying(false);
+      if (!canControl) {
+        if (!desiredPlayingRef.current) {
+          video.pause();
+          setIsPlaying(false);
+        }
         return;
       }
-      setIsPlaying(true);
+      const muted = Date.now() < nativeBridgeMutedUntilRef.current;
+      if (!suppressRemoteSyncRef.current && !roomSync.controlPending && !muted) {
+         desiredPlayingRef.current = true;
+         setIsPlaying(true);
+         roomSync.broadcastPlay(video.currentTime, video.duration);
+      } else {
+         setIsPlaying(true);
+      }
     };
     const onPause = () => {
-      setIsPlaying(false);
+      if (!canControl) {
+         setIsPlaying(false);
+         return;
+      }
+      const muted = Date.now() < nativeBridgeMutedUntilRef.current;
+      if (!suppressRemoteSyncRef.current && !roomSync.controlPending && !muted && video.currentTime < video.duration) {
+         desiredPlayingRef.current = false;
+         setIsPlaying(false);
+         roomSync.broadcastPause(video.currentTime, video.duration);
+      } else if (!muted) {
+         setIsPlaying(false);
+      }
+    };
+    const onSeeked = () => {
+      if (!canControl) return;
+      if (!suppressRemoteSyncRef.current && !roomSync.controlPending) {
+         roomSync.broadcastSeek(video.currentTime, video.duration);
+      }
     };
     const onEnded = () => {
       setIsPlaying(false);
       desiredPlayingRef.current = false;
       toast("🎬 Movie finished!");
+      if (canControl && !roomSync.controlPending) {
+         roomSync.broadcastPause(video.duration, video.duration);
+      }
+    };
+    const onCanPlay = () => {
+      const pending = pendingRemoteActionRef.current;
+      if (pending && Date.now() - pendingRemoteActionSetAtRef.current <= 7000) {
+        if (pending.type === "play") {
+          desiredPlayingRef.current = true;
+          video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+        } else {
+          desiredPlayingRef.current = false;
+          video.pause();
+          setIsPlaying(false);
+        }
+        pendingRemoteActionRef.current = null;
+      }
     };
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
+    video.addEventListener("seeked", onSeeked);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("ended", onEnded);
+    video.addEventListener("canplay", onCanPlay);
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("timeupdate", onTime);
       video.removeEventListener("ended", onEnded);
+      video.removeEventListener("canplay", onCanPlay);
     };
-  }, [mediaSource]);
+  }, [mediaSource, canControl, roomSync]);
 
   // Sync upload video volume
   useEffect(() => {
@@ -1985,7 +2213,6 @@ const MovieRoom = () => {
         description: error || "Host has disabled your microphone",
         duration: 3000,
       });
-      console.log('[PERMISSION-DENIED] Audio:', { error, error_code });
     };
 
     const handleVideoPermissionDenied = (event) => {
@@ -1994,7 +2221,6 @@ const MovieRoom = () => {
         description: error || "Host has disabled your camera",
         duration: 3000,
       });
-      console.log('[PERMISSION-DENIED] Video:', { error, error_code });
     };
 
     const handleChatPermissionDenied = (event) => {
@@ -2003,12 +2229,10 @@ const MovieRoom = () => {
         description: error || "Host has disabled your chat",
         duration: 3000,
       });
-      console.log('[PERMISSION-DENIED] Chat:', { error, error_code });
     };
 
     const handlePermissionUpdated = (event) => {
       const { targetUserId, restrictions, permissions, updatedBy } = event.detail;
-      console.log('[PERMISSION-UPDATED]:', { targetUserId, restrictions, permissions, updatedBy });
 
       // Apply restrictions immediately for current user so mic/video can't remain active.
       if (targetUserId === myUserId && webrtc.stream) {
@@ -2135,6 +2359,7 @@ const MovieRoom = () => {
     setShowChat(false);
     setShowHostControls(false);
     setShowMixer(false);
+    setShowMobileMenu(false);
   };
 
   const handleRequestLeave = useCallback(() => {
@@ -2200,7 +2425,8 @@ const MovieRoom = () => {
   }, []);
 
   // Show guest name dialog if not authenticated and room is accessible
-  if (!user && accessStatus === "granted" && !joinStatus) {
+  // Skip if guestName exists — auto-rejoin from sessionStorage is in progress
+  if (!user && accessStatus === "granted" && !joinStatus && !guestName) {
     return (
       <GuestNameDialog
         roomName={room?.name || "Movie Room"}
@@ -2249,8 +2475,8 @@ const MovieRoom = () => {
           {floatingReactions.map(r => (
             <motion.div
               key={r.id}
-              initial={{ opacity: 1, y: window.innerHeight - 100, x: `${r.x}%` }}
-              animate={{ opacity: 0, y: window.innerHeight - 500 }}
+              initial={{ opacity: 1, bottom: 160, x: `${r.x}%` }}
+              animate={{ opacity: 0, bottom: 560 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 2, ease: "easeOut" }}
               className="absolute text-3xl"
@@ -2279,7 +2505,7 @@ const MovieRoom = () => {
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="glass-nav px-3 sm:px-4 py-2.5 sm:py-3 flex items-start sm:items-center justify-between gap-2 z-30 relative"
+            className={`glass-nav px-3 sm:px-4 flex items-center justify-between gap-2 z-30 relative ${isLandscapeMobile ? "py-1" : "py-2.5 sm:py-3"}`}
           >
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <button
@@ -2288,18 +2514,19 @@ const MovieRoom = () => {
                 title="Leave Room"
               >
                 <ChevronLeft className="w-5 h-5" />
-                <span className="text-xs font-medium">Leave</span>
+                <span className="text-xs font-medium hidden sm:inline">Leave</span>
               </button>
               <div className="min-w-0">
-                <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[10rem] sm:max-w-none">
+                <h1 className="font-display text-sm font-semibold text-foreground truncate max-w-[8rem] sm:max-w-none">
                   {room?.name || "Movie Room"}
                 </h1>
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  <p className="text-xs text-muted-foreground truncate max-w-[11rem] sm:max-w-none">
-                    {uniqueParticipantCount} watching · Room {roomCode?.slice(0, 6)}
+                <div className={`flex items-center gap-1.5 sm:gap-2 ${isLandscapeMobile ? "hidden" : ""}`}>
+                  <p className="text-[11px] text-muted-foreground truncate max-w-[7rem] sm:max-w-none">
+                    {uniqueParticipantCount} watching · {roomCode?.slice(0, 6)}
                   </p>
+                  {/* Badges — hidden on compact portrait mobile to prevent collision with header icons */}
                   <span
-                    className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
+                    className={`hidden sm:inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${
                       syncStatus === "synced"
                         ? "bg-secondary/20 text-secondary"
                         : "bg-accent/20 text-accent"
@@ -2313,7 +2540,7 @@ const MovieRoom = () => {
                     {syncStatus === "synced" ? "Synced" : "Syncing..."}
                   </span>
                   {mediaSource !== "none" && (
-                    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary">
+                    <span className="hidden sm:inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/20 text-primary">
                       {mediaSource === "screen" ? (
                         <Monitor className="w-2.5 h-2.5" />
                       ) : mediaSource === "youtube" ? (
@@ -2328,84 +2555,97 @@ const MovieRoom = () => {
               </div>
             </div>
 
-            <div className={`flex items-center gap-1 relative ${
-              isCompactViewport
-                ? "max-w-[56vw] flex-wrap justify-end overflow-visible"
-                : "max-w-[48vw] sm:max-w-none overflow-visible"
-            }`}>
-              <RoomInfoBar
-                roomId={effectiveRoomId}
-                roomType="movie"
-                roomName={room?.name || "Movie Room"}
-                host={
-                  isHost
-                    ? "You (Host)"
-                    : (room?.participants?.find(p => p.userId === room?.hostId)?.displayName || 
-                       room?.participants?.find(p => p.userId === room?.hostId)?.username || 
-                       "Host")
-                }
-                participantCount={uniqueParticipantCount}
-                isHost={isHost}
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => setLightsOff(true)}
-                className="text-muted-foreground"
-                title="Lights off"
-              >
-                <Moon className="w-4 h-4" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => {
-                  if (showChat) {
-                    setShowChat(false);
-                  } else {
-                    closeAllPanels();
-                    setShowChat(true);
+            <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
+              {/* Desktop toolbar buttons — ordered right→left: Settings, Mixer, Friends, Chat, RoomInfo, Story, LightsOff */}
+              <div className="hidden sm:flex items-center gap-0.5">
+                <Button size="icon" variant="ghost" onClick={() => setLightsOff(true)} className="text-muted-foreground" title="Lights off"><Moon className="w-4 h-4" /></Button>
+                <RoomInfoBar
+                  roomId={effectiveRoomId}
+                  roomType="movie"
+                  roomName={room?.name || "Movie Room"}
+                  host={
+                    isHost
+                      ? "You (Host)"
+                      : (room?.participants?.find(p => p.userId === room?.hostId)?.displayName || 
+                         room?.participants?.find(p => p.userId === room?.hostId)?.username || 
+                         "Host")
                   }
-                }}
-                className={showChat ? "text-primary" : "text-muted-foreground"}
-                title="Chat"
-              >
-                <MessageSquare className="w-4 h-4" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => {
-                  if (showMixer) {
-                    setShowMixer(false);
-                  } else {
-                    closeAllPanels();
-                    setShowMixer(true);
+                  participantCount={uniqueParticipantCount}
+                  isHost={isHost}
+                />
+                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={showChat ? "text-primary" : "text-muted-foreground"} title="Chat"><MessageSquare className="w-4 h-4" /></Button>
+                {user && (
+                  <Button size="icon" variant="ghost" onClick={() => setShowInviteFriends(true)} className="text-muted-foreground hover:text-primary" title="Invite Friends"><UserPlus className="w-4 h-4" /></Button>
+                )}
+                <Button size="icon" variant="ghost" onClick={() => { if (showMixer) { setShowMixer(false); } else { closeAllPanels(); setShowMixer(true); } }} className={showMixer ? "text-primary" : "text-muted-foreground"} title="Mixer"><Sliders className="w-4 h-4" /></Button>
+                {canOpenHostControls && (
+                  <Button size="icon" variant="ghost" onClick={() => { if (showHostControls) { setShowHostControls(false); } else { closeAllPanels(); setShowHostControls(true); } }} className={showHostControls ? "text-primary" : "text-muted-foreground"} title="Host Controls"><Settings className="w-4 h-4" /></Button>
+                )}
+              </div>
+
+              {/* Mobile toolbar: RoomInfo, LightsOff, Chat, ⋮ dropdown */}
+              <div className="flex sm:hidden items-center gap-0">
+                <RoomInfoBar
+                  roomId={effectiveRoomId}
+                  roomType="movie"
+                  roomName={room?.name || "Movie Room"}
+                  host={
+                    isHost
+                      ? "You (Host)"
+                      : (room?.participants?.find(p => p.userId === room?.hostId)?.displayName || 
+                         room?.participants?.find(p => p.userId === room?.hostId)?.username || 
+                         "Host")
                   }
-                }}
-                className={showMixer ? "text-primary" : "text-muted-foreground"}
-                title="Volume Mixer"
-              >
-                <Sliders className="w-4 h-4" />
-              </Button>
-              {canOpenHostControls && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => {
-                    if (showHostControls) {
-                      setShowHostControls(false);
-                    } else {
-                      closeAllPanels();
-                      setShowHostControls(true);
-                    }
-                  }}
-                  className={showHostControls ? "text-primary" : "text-muted-foreground"}
-                  title={userRole === "host" ? "Host Controls" : "Co-Host Controls"}
-                >
-                  <Settings className="w-4 h-4" />
-                </Button>
-              )}
+                  participantCount={uniqueParticipantCount}
+                  isHost={isHost}
+                />
+                <Button size="icon" variant="ghost" onClick={() => setLightsOff(true)} className="text-muted-foreground h-8 w-8" title="Lights off"><Moon className="w-3.5 h-3.5" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={`h-8 w-8 ${showChat ? "text-primary" : "text-muted-foreground"}`} title="Chat"><MessageSquare className="w-3.5 h-3.5" /></Button>
+
+                {/* ⋮ Dropdown menu */}
+                <div className="relative">
+                  <Button size="icon" variant="ghost" onClick={() => setShowMobileMenu(!showMobileMenu)} className={`h-8 w-8 ${showMobileMenu ? "text-primary" : "text-muted-foreground"}`} title="More"><MoreVertical className="w-4 h-4" /></Button>
+                  <AnimatePresence>
+                    {showMobileMenu && (
+                      <>
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          onClick={() => setShowMobileMenu(false)}
+                          className="fixed inset-0 z-[98]"
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, y: -8, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -8, scale: 0.95 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute right-0 top-full mt-1 z-[99] w-48 rounded-xl border border-glass-border bg-card/95 backdrop-blur-xl shadow-2xl overflow-hidden"
+                        >
+                          <div className="py-1">
+                            {canOpenHostControls && (
+                              <button onClick={() => { setShowMobileMenu(false); if (showHostControls) { setShowHostControls(false); } else { closeAllPanels(); setShowHostControls(true); } }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showHostControls ? "text-primary bg-primary/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                                <Settings className="w-4 h-4" />
+                                <span>Settings</span>
+                              </button>
+                            )}
+                            <button onClick={() => { setShowMobileMenu(false); if (showMixer) { setShowMixer(false); } else { closeAllPanels(); setShowMixer(true); } }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showMixer ? "text-primary bg-primary/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                              <Sliders className="w-4 h-4" />
+                              <span>Volume Mixer</span>
+                            </button>
+                            {user && (
+                              <button onClick={() => { setShowMobileMenu(false); setShowInviteFriends(true); }} className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-foreground/80 hover:bg-muted/40 transition-colors">
+                                <UserPlus className="w-4 h-4" />
+                                <span>Add Friends</span>
+                              </button>
+                            )}
+                          </div>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
             </div>
           </motion.header>
         )}
@@ -2414,7 +2654,7 @@ const MovieRoom = () => {
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Video area */}
-        <div className="flex-1 flex flex-col relative overflow-hidden">
+        <div className="flex-1 flex flex-col relative overflow-hidden" ref={videoAreaRef}>
           {/* Floating participant bubbles */}
           <AnimatePresence>
             {showVideoChat && (
@@ -2428,6 +2668,7 @@ const MovieRoom = () => {
                 hiddenVideoUserIds={videoDisbldUsers}
                 voiceChatVolume={voiceChatVolume}
                 deafened={deafenVoiceChat}
+                containerRef={videoAreaRef}
               />
             )}
           </AnimatePresence>
@@ -2550,7 +2791,7 @@ const MovieRoom = () => {
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-6"
                 >
-                  <div className="w-20 h-20 rounded-full bg-foreground/5 flex items-center justify-center mx-auto border border-glass-border">
+                  <div className={`w-20 h-20 rounded-full bg-foreground/5 flex items-center justify-center mx-auto border border-glass-border ${isLandscapeMobile ? "hidden" : ""}`}>
                     <Play className="w-8 h-8 text-muted-foreground" />
                   </div>
                   <div>
@@ -2558,12 +2799,12 @@ const MovieRoom = () => {
                     <p className="text-muted-foreground text-xs">Pick how you want to watch together</p>
                   </div>
 
-                  <div className="flex flex-col sm:flex-row items-center gap-3 justify-center w-full max-w-sm mx-auto">
+                  <div className="flex flex-col sm:flex-row items-center gap-3 justify-center w-full max-w-md mx-auto" style={isLandscapeMobile ? { flexDirection: 'row', gap: '0.5rem' } : {}}>
                     <motion.button
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={handleYoutubeUrl}
-                      className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4 rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all w-full sm:w-28"
+                      className={`flex ${isLandscapeMobile ? 'flex-col items-center gap-1 p-2' : 'flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4'} rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all ${isLandscapeMobile ? 'w-24 text-center' : 'w-full sm:w-28'}`}
                     >
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0">
                         <Youtube className="w-5 h-5 sm:w-6 sm:h-6 text-destructive" />
@@ -2578,7 +2819,7 @@ const MovieRoom = () => {
                       whileTap={{ scale: 0.95 }}
                       onClick={handleUploadVideo}
                       disabled={isUploadingMedia}
-                      className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4 rounded-2xl bg-foreground/5 border border-glass-border hover:border-secondary/40 hover:bg-secondary/5 transition-all w-full sm:w-28"
+                      className={`flex ${isLandscapeMobile ? 'flex-col items-center gap-1 p-2' : 'flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4'} rounded-2xl bg-foreground/5 border border-glass-border hover:border-secondary/40 hover:bg-secondary/5 transition-all ${isLandscapeMobile ? 'w-24 text-center' : 'w-full sm:w-28'}`}
                     >
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-secondary/10 flex items-center justify-center flex-shrink-0">
                         <Upload className="w-5 h-5 sm:w-6 sm:h-6 text-secondary" />
@@ -2595,7 +2836,7 @@ const MovieRoom = () => {
                       whileTap={{ scale: 0.95 }}
                       onClick={handleScreenShare}
                       disabled={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing}
-                      className="flex flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4 rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all w-full sm:w-28 disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:border-glass-border disabled:hover:bg-foreground/5"
+                      className={`flex ${isLandscapeMobile ? 'flex-col items-center gap-1 p-2' : 'flex-row sm:flex-col items-center gap-3 sm:gap-2 p-3 sm:p-4'} rounded-2xl bg-foreground/5 border border-glass-border hover:border-primary/40 hover:bg-primary/5 transition-all ${isLandscapeMobile ? 'w-24 text-center' : 'w-full sm:w-28'} disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:border-glass-border disabled:hover:bg-foreground/5`}
                     >
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
                         <Monitor className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
@@ -2706,20 +2947,34 @@ const MovieRoom = () => {
             )}
           </div>
 
-          {/* Progress bar */}
+          {/* Progress bar with moment markers */}
           {mediaSource !== "none" && (
-            <div
-              className="relative h-1.5 bg-muted/50 cursor-pointer group"
-              onClick={e => {
-                if (!canControl) return;
-                const rect = e.currentTarget.getBoundingClientRect();
-                handleSeek(((e.clientX - rect.left) / rect.width) * 100);
-              }}
-            >
-              <div className="absolute inset-y-0 left-0 gradient-movie transition-all" style={{ width: `${progress}%` }} />
-              <div
-                className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-primary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ left: `${progress}%`, transform: `translateX(-50%) translateY(-50%)` }}
+            <div className="px-2 md:px-4">
+              <MomentTimeline
+                duration={
+                  ytPlayer.duration > 0 ? ytPlayer.duration
+                  : (backgroundUploadAudioRef.current || uploadVideoRef.current)?.duration || 0
+                }
+                currentTime={
+                  realtimePositionRef.current || (
+                    ytPlayer.duration > 0 ? (ytPlayer.getRealtimePosition?.() ?? ytPlayer.currentTime ?? 0)
+                    : (backgroundUploadAudioRef.current || uploadVideoRef.current)?.currentTime || 0
+                  )
+                }
+                moments={momentCapture.moments}
+                onMomentClick={(moment) => {
+                  if (moment.ready && moment.videoUrl) {
+                    momentCapture.startWatching(moment.momentId || moment._id);
+                    setPlayingMomentData(moment);
+                  }
+                }}
+                onSeek={(timestamp) => {
+                  if (!canControl) return;
+                  const dur = ytPlayer.duration > 0 ? ytPlayer.duration : ((backgroundUploadAudioRef.current || uploadVideoRef.current)?.duration || 1);
+                  handleSeek((timestamp / dur) * 100);
+                }}
+                isCapturing={momentCapture.isExtracting}
+                currentMoment={momentCapture.currentMoment}
               />
             </div>
           )}
@@ -2731,11 +2986,7 @@ const MovieRoom = () => {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className={`px-2 md:px-4 py-2 md:py-2.5 bg-card/90 backdrop-blur-sm border-t border-glass-border gap-1.5 ${
-                  isPortraitCompact
-                    ? "grid grid-cols-3 items-center"
-                    : "flex items-center justify-between"
-                }`}
+                className={`px-2 md:px-4 py-1.5 md:py-2.5 bg-card/90 backdrop-blur-sm border-t border-glass-border gap-1 flex items-center justify-between`}
                 style={{
                   paddingBottom: isPortraitCompact
                     ? "calc(env(safe-area-inset-bottom, 0px) + 0.2rem)"
@@ -2743,7 +2994,7 @@ const MovieRoom = () => {
                 }}
               >
                 {/* Left controls */}
-                <div className={`flex items-center gap-1.5 min-w-0 ${isPortraitCompact ? "col-start-1 justify-start" : ""}`}>
+                <div className="flex items-center gap-1 min-w-0">
                   {mediaSource !== "none" && (
                     <>
                       <Button size="icon" variant="ghost" onClick={handleTogglePlay} className={controlBtnSizeClass}>
@@ -2768,15 +3019,16 @@ const MovieRoom = () => {
                   >
                     {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                   </Button>
-                  {mediaSource !== "none" && (
+                  {/* Hide time on portrait mobile when voice chat is on to save space */}
+                  {mediaSource !== "none" && !(isPortraitCompact && showVideoChat) && (
                     <span className="text-xs text-muted-foreground ml-1">
                       {formatTime(progress)} / {totalDuration}
                     </span>
                   )}
                 </div>
 
-                {/* Center controls */}
-                <div className={`flex items-center gap-1 ${isPortraitCompact ? "col-span-3 row-start-2 justify-center pt-0.5" : ""}`}>
+                {/* Center controls — bookmark → media → reactions */}
+                <div className="flex items-center gap-0.5 sm:gap-1">
                   <Button
                     size="icon"
                     variant="ghost"
@@ -2787,21 +3039,21 @@ const MovieRoom = () => {
                     <Bookmark className="w-4 h-4" />
                   </Button>
 
-                  {/* Media buttons */}
-                  <div className="flex items-center gap-0.5 mx-1 px-1.5 md:px-2 py-1 rounded-full bg-muted/30 border border-glass-border">
+                  {/* Media source buttons — hidden on portrait mobile when voice chat is on */}
+                  <div className={`${isPortraitCompact && showVideoChat ? "hidden" : "flex"} items-center gap-0 sm:gap-0.5 mx-0.5 sm:mx-1 px-1 sm:px-1.5 md:px-2 py-0.5 sm:py-1 rounded-full bg-muted/30 border border-glass-border`}>
                     <Button
                       size="icon"
                       variant="ghost"
                       onClick={handleScreenShare}
                       title={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing ? "Screen share disabled by host" : (webrtc.screenSharing ? "Stop Screen Share" : "Screen Share")}
                       disabled={!isHost && !roomSettings.allowScreenShare && !webrtc.screenSharing}
-                      className={`${compactToggleBtnSizeClass} rounded-full ${
+                      className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full ${
                         mediaSource === "screen"
                           ? "text-primary bg-primary/10"
                           : "text-muted-foreground"
                       }`}
                     >
-                      <Monitor className="w-3.5 h-3.5" />
+                      <Monitor className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                     </Button>
                     <Button
                       size="icon"
@@ -2809,22 +3061,22 @@ const MovieRoom = () => {
                       onClick={handleUploadVideo}
                       title="Upload Video"
                       disabled={isUploadingMedia}
-                      className={`${compactToggleBtnSizeClass} rounded-full ${
+                      className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full ${
                         mediaSource === "upload"
                           ? "text-secondary bg-secondary/10"
                           : "text-muted-foreground"
                       }`}
                     >
-                      <Upload className="w-3.5 h-3.5" />
+                      <Upload className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                     </Button>
                     <Button
                       size="icon"
                       variant="ghost"
                       onClick={handleYoutubeUrl}
                       title="YouTube URL"
-                      className={`${compactToggleBtnSizeClass} rounded-full text-muted-foreground`}
+                      className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full text-muted-foreground`}
                     >
-                      <Youtube className="w-3.5 h-3.5" />
+                      <Youtube className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                     </Button>
                   </div>
 
@@ -2843,7 +3095,7 @@ const MovieRoom = () => {
                           initial={{ opacity: 0, y: 10, scale: 0.9 }}
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                          className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 glass-panel px-2 py-1.5 flex items-center gap-1"
+                          className="absolute bottom-full mb-2 right-0 sm:left-1/2 sm:-translate-x-1/2 sm:right-auto glass-panel px-2 py-1.5 flex items-center gap-1 z-50"
                         >
                           {reactionEmojis.map(emoji => (
                             <button
@@ -2860,8 +3112,8 @@ const MovieRoom = () => {
                   </div>
                 </div>
 
-                {/* Right controls */}
-                <div className={`flex items-center gap-1 min-w-0 ${isPortraitCompact ? "col-start-3 justify-end" : ""}`}>
+                {/* Right controls — voice/users only */}
+                <div className="flex items-center gap-0.5 flex-shrink-0">
                   <Button
                     size="icon"
                     variant="ghost"
@@ -2872,24 +3124,24 @@ const MovieRoom = () => {
                     <Users className="w-4 h-4" />
                   </Button>
 
-                  {/* Voice controls when video chat is on */}
+                  {/* Voice controls when video chat is on — visible on all viewports */}
                   {showVideoChat && (
-                    <div className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted/30 border border-glass-border">
+                    <div className="flex items-center gap-0 sm:gap-0.5 px-1 sm:px-1.5 py-0.5 rounded-full bg-muted/30 border border-glass-border">
                       <Button
                         size="icon"
                         variant="ghost"
                         onClick={handleToggleMyAudio}
                         title={webrtc.audioEnabled ? "Mute" : "Unmute"}
-                        className={`${compactToggleBtnSizeClass} rounded-full ${
+                        className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full ${
                           webrtc.audioEnabled
                             ? "text-foreground"
                             : "text-destructive bg-destructive/10"
                         }`}
                       >
                         {webrtc.audioEnabled ? (
-                          <Mic className="w-3.5 h-3.5" />
+                          <Mic className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         ) : (
-                          <MicOff className="w-3.5 h-3.5" />
+                          <MicOff className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         )}
                       </Button>
                       <Button
@@ -2897,16 +3149,16 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleToggleMyVideo}
                         title={webrtc.videoEnabled ? "Camera Off" : "Camera On"}
-                        className={`${compactToggleBtnSizeClass} rounded-full ${
+                        className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full ${
                           webrtc.videoEnabled
                             ? "text-foreground"
                             : "text-destructive bg-destructive/10"
                         }`}
                       >
                         {webrtc.videoEnabled ? (
-                          <Video className="w-3.5 h-3.5" />
+                          <Video className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         ) : (
-                          <VideoOff className="w-3.5 h-3.5" />
+                          <VideoOff className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         )}
                       </Button>
                       <Button
@@ -2914,27 +3166,28 @@ const MovieRoom = () => {
                         variant="ghost"
                         onClick={handleToggleDeafen}
                         title={deafenVoiceChat ? "Undeafen" : "Deafen"}
-                        className={`${compactToggleBtnSizeClass} rounded-full ${
+                        className={`h-7 w-7 sm:${compactToggleBtnSizeClass} rounded-full ${
                           deafenVoiceChat
                             ? "text-destructive bg-destructive/10"
                             : "text-muted-foreground"
                         }`}
                       >
                         {deafenVoiceChat ? (
-                          <VolumeX className="w-3.5 h-3.5" />
+                          <VolumeX className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         ) : (
-                          <Headphones className="w-3.5 h-3.5" />
+                          <Headphones className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         )}
                       </Button>
                     </div>
                   )}
 
+                  {/* Fullscreen — hidden on portrait mobile */}
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={handleToggleFullscreen}
                     title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-                    className={controlBtnSizeClass}
+                    className={`${controlBtnSizeClass} ${isPortraitCompact ? "hidden" : ""}`}
                   >
                     {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
                   </Button>
@@ -2950,13 +3203,14 @@ const MovieRoom = () => {
           {showChat && !showMixer && !lightsOff && (
             <motion.aside
               key="chat"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isCompactViewport ? "100%" : 300, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className={`border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
+              initial={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              animate={{ x: 0, width: isCompactViewport ? "100%" : 300, opacity: 1 }}
+              exit={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`border-l border-glass-border backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
                 isCompactViewport
-                  ? "absolute inset-0 z-30 border-l-0"
-                  : ""
+                  ? "absolute inset-0 z-30 border-l-0 bg-[#0b0f19]"
+                  : "bg-card/95"
               }`}
             >
               <div className="p-3 border-b border-glass-border flex items-center justify-between">
@@ -3034,7 +3288,7 @@ const MovieRoom = () => {
                     value={chatMessage}
                     onChange={e => setChatMessage(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleSendMessage()}
-                    className="bg-muted/50 border-glass-border text-sm"
+                    className="bg-[#141a2a] border-glass-border text-sm text-foreground"
                     disabled={!roomSettings.chatEnabled}
                   />
                   <Button
@@ -3054,13 +3308,14 @@ const MovieRoom = () => {
           {showMixer && !showChat && !lightsOff && (
             <motion.aside
               key="mixer"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isCompactViewport ? "100%" : 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className={`border-l border-glass-border bg-card/95 backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
+              initial={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              animate={{ x: 0, width: isCompactViewport ? "100%" : 320, opacity: 1 }}
+              exit={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`border-l border-glass-border backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
                 isCompactViewport
-                  ? "absolute inset-0 z-30 border-l-0"
-                  : ""
+                  ? "absolute inset-0 z-30 border-l-0 bg-[#0b0f19]"
+                  : "bg-card/95"
               }`}
             >
               <div className="p-3 border-b border-glass-border flex items-center justify-between">
@@ -3355,6 +3610,9 @@ const MovieRoom = () => {
               isHost={userRole === "host"}
               hideVideoControls={false}
               panelTheme="movie"
+              isCaptureBuffering={momentCapture.isBuffering}
+              onStartCapture={momentCapture.startCapture}
+              onStopCapture={momentCapture.stopCapture}
             />
           )}
 
@@ -3366,6 +3624,17 @@ const MovieRoom = () => {
               setShowUserSettings(false);
               setSelectedUserSettings(null);
             }}
+          />
+
+
+          {/* Mobile toolbar items are now integrated into the video controls bar */}
+
+          {/* Invite Friends Modal */}
+          <InviteFriendsModal
+            open={showInviteFriends}
+            onClose={() => setShowInviteFriends(false)}
+            roomCode={roomCode}
+            participantIds={(dbParticipants || []).map(p => p.userId).filter(Boolean)}
           />
         </AnimatePresence>
       </div>
@@ -3422,6 +3691,47 @@ const MovieRoom = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* ─── Moment Capture Overlays ─── */}
+
+      {/* Capture indicator for host */}
+      {isHost && (
+        <CaptureIndicator
+          isBuffering={momentCapture.isBuffering}
+          isExtracting={momentCapture.isExtracting}
+          bufferStatus={momentCapture.bufferStatus}
+          captureProgress={momentCapture.captureProgress}
+        />
+      )}
+
+      {/* Limit warning toast */}
+      <MomentLimitToast
+        warning={momentCapture.limitWarning}
+        onDismiss={momentCapture.dismissLimitWarning}
+        onDeleteMoment={momentCapture.deleteMoment}
+        moments={momentCapture.moments}
+      />
+
+      {/* Independent moment playback overlay — fully decoupled from main player */}
+      <MomentPlaybackOverlay
+        moment={playingMomentData}
+        isVisible={!!playingMomentData}
+        onClose={() => {
+          // Just close — do NOT seek main video. It continues from current position.
+          setPlayingMomentData(null);
+          momentCapture.stopWatching();
+        }}
+      />
+
+      {/* Screen capture permission modal (host only, delayed) */}
+      {isHost && (
+        <ScreenCaptureModal
+          isVisible={momentCapture.showCaptureModal}
+          onAllow={momentCapture.startCapture}
+          onLater={momentCapture.dismissCaptureModal}
+          onDismiss={momentCapture.dismissCaptureModal}
+        />
+      )}
     </div>
   );
 };

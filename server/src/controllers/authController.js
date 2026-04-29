@@ -1,5 +1,6 @@
 const { Webhook } = require('svix');
 const User = require('../models/mongodb/User');
+const emailService = require('../services/emailService');
 
 /**
  * Clerk Webhook Handler
@@ -8,7 +9,6 @@ const User = require('../models/mongodb/User');
  */
 const clerkWebhook = async (req, res) => {
   try {
-    console.log('🔔 CLERK WEBHOOK RECEIVED');
     
     // Get raw body - express.raw() gives us a Buffer
     const rawBody = req.body;
@@ -18,8 +18,6 @@ const clerkWebhook = async (req, res) => {
     const svixTimestamp = req.headers['svix-timestamp'];
     const svixSignature = req.headers['svix-signature'];
 
-    console.log('   Event ID:', svixId);
-    console.log('   Signature:', svixSignature?.substring(0, 20) + '...');
 
     // Verify webhook signature
     const wh = new Webhook(process.env.CLERK_WEBHOOK_SECRET);
@@ -31,7 +29,6 @@ const clerkWebhook = async (req, res) => {
         'svix-timestamp': svixTimestamp,
         'svix-signature': svixSignature,
       });
-      console.log('   ✅ Webhook signature verified');
     } catch (err) {
       console.error('   ❌ Webhook signature verification failed:', err.message);
       console.error('   Secret present:', !!process.env.CLERK_WEBHOOK_SECRET);
@@ -41,28 +38,50 @@ const clerkWebhook = async (req, res) => {
     const eventType = evt.type;
     const data = evt.data;
 
-    console.log(`   Event type: ${eventType}`);
-    console.log('   User ID:', data?.id);
-    console.log('   Email:', data?.email_addresses?.[0]?.email_address);
 
     switch (eventType) {
-      case 'user.created':
-        console.log('   👤 Creating new user...');
-        await syncUser(data);
+      case 'user.created': {
+        const savedUser = await syncUser(data);
+        // Send welcome email (async, don't block webhook response)
+        const email = data.email_addresses?.[0]?.email_address;
+        if (email) {
+          const name = data.first_name
+            ? `${data.first_name} ${data.last_name || ''}`.trim()
+            : data.username || 'there';
+          emailService.sendWelcomeEmail({ to: email, name }).catch((err) => {
+            console.error('[WEBHOOK] Welcome email error:', err.message);
+          });
+        }
         break;
+      }
       
       case 'user.updated':
-        console.log('   ♻️ Updating user...');
         await syncUser(data);
         break;
       
+      case 'session.created': {
+        // Sign-in notification email
+        const sessionUser = data?.user || data;
+        const signInEmail = sessionUser?.email_addresses?.[0]?.email_address;
+        if (signInEmail) {
+          const signInName = sessionUser?.first_name
+            ? `${sessionUser.first_name} ${sessionUser.last_name || ''}`.trim()
+            : sessionUser?.username || 'there';
+          emailService.sendSignInEmail({
+            to: signInEmail,
+            name: signInName,
+          }).catch((err) => {
+            console.error('[WEBHOOK] Sign-in email error:', err.message);
+          });
+        }
+        break;
+      }
+      
       case 'user.deleted':
-        console.log('   🗑️ Deleting user...');
         await deleteUser(data.id);
         break;
       
       default:
-        console.log(`   ⚠️ Unhandled event type: ${eventType}`);
     }
 
     res.status(200).json({ success: true });
@@ -78,12 +97,9 @@ const clerkWebhook = async (req, res) => {
  */
 const syncUser = async (clerkUser) => {
   try {
-    console.log('   📝 syncUser called for:', clerkUser.id);
     const email = clerkUser.email_addresses?.[0]?.email_address;
     const username = clerkUser.username || email?.split('@')[0] || `user_${clerkUser.id.slice(-6)}`;
     
-    console.log('      Email:', email);
-    console.log('      Username:', username);
 
     const userData = {
       clerkId: clerkUser.id,
@@ -97,7 +113,6 @@ const syncUser = async (clerkUser) => {
       isOnline: true
     };
 
-    console.log('      Upserting user to MongoDB with data:', userData);
 
     const result = await User.findOneAndUpdate(
       { clerkId: clerkUser.id },
@@ -105,7 +120,6 @@ const syncUser = async (clerkUser) => {
       { upsert: true, new: true }
     );
 
-    console.log(`      ✅ User synced successfully: ${result._id} (${username})`);
     return result;
   } catch (error) {
     console.error('      ❌ Error syncing user:', error.message);
@@ -118,7 +132,6 @@ const syncUser = async (clerkUser) => {
  */
 const deleteUser = async (clerkId) => {
   await User.findOneAndDelete({ clerkId });
-  console.log(`User deleted: ${clerkId}`);
 };
 
 module.exports = { clerkWebhook, syncUser };

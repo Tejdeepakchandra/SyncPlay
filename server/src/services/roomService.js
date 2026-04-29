@@ -58,18 +58,14 @@ class RoomService {
   async createRoom(roomData, hostId) {
     try {
       const startTime = Date.now();
-      console.log(`[ROOM-SERVICE] 🔄 Creating room for user ${hostId.substring(0, 8)}...`);
       
       // Create room immediately - don't wait for user to exist in DB
       // User creation happens async via Clerk webhook
       
       // Generate unique room code
-      console.log(`[ROOM-SERVICE] 📝 Generating room code...`);
       const roomCode = await Room.generateRoomCode(roomData.type);
-      console.log(`[ROOM-SERVICE] ✓ Room code: ${roomCode}`);
 
       // Create room with minimal participant info
-      console.log(`[ROOM-SERVICE] 💾 Saving room to MongoDB...`);
       const room = new Room({
         roomCode,
         name: roomData.name,
@@ -110,7 +106,6 @@ class RoomService {
       });
 
       await room.save();
-      console.log(`[ROOM-SERVICE] ✓ Room saved (${Date.now() - startTime}ms)`);
 
       // Initialize PostgreSQL analytics rows for this room/day.
       await analyticsService.ensureRoom(
@@ -126,7 +121,6 @@ class RoomService {
       });
 
       // Store in Redis for quick access
-      console.log(`[ROOM-SERVICE] 📤 Caching in Redis...`);
       const redisKey = createRedisKey(REDIS_KEYS.ROOM, roomCode);
       await redisClient.set(redisKey, JSON.stringify({
         id: room._id.toString(),
@@ -152,7 +146,6 @@ class RoomService {
         last_activity: Date.now().toString()
       });
 
-      console.log(`[ROOM-SERVICE] ✅ Room created successfully (${Date.now() - startTime}ms)`);
       return room;
 
     } catch (error) {
@@ -234,22 +227,13 @@ class RoomService {
       });
       let hostTransfer = null;
 
-      console.log(`[ROOM-SERVICE] 🔍 Join analysis for ${userId}:`, {
-        isHost,
-        isAlreadyParticipant,
-        isInvited,
-        privacy: room.settings.privacy,
-        participantIds: room.participants.map(p => p.userId)
-      });
 
       // HOST BYPASS - Host created the room, they can join directly
       if (isHost) {
-        console.log(`[ROOM-SERVICE] 👑 Host ${userId} joining their room (${roomCode})`);
         // Update host's displayName with the one sent from client
         const hostParticipant = room.participants.find(p => p.userId === userId);
         if (hostParticipant && guestName) {
           hostParticipant.displayName = guestName;
-          console.log(`[ROOM-SERVICE] ✏️ Updated host displayName to: "${guestName}"`);
         }
         // Skip all access control - host has all rights
       }
@@ -278,7 +262,6 @@ class RoomService {
       }
       // ALREADY APPROVED - If user is already in participants, they were approved and can join
       else if (isAlreadyParticipant) {
-        console.log(`[ROOM-SERVICE] ✅ Already approved participant ${userId} re-joining (${roomCode})`);
         // Skip all access control - they're already in the room
       }
       // PRIVATE/INVITE-ONLY ROOM ACCESS LOGIC (only for non-hosts and non-approved)
@@ -289,7 +272,6 @@ class RoomService {
         // For invite-only: everyone must be invited
         if (!isInvited) {
           // Guest is not invited - put in waiting area and request approval
-          console.log(`[ROOM-SERVICE] 🚪 Guest ${guestName} (${userId}) requesting access to private room`);
           
           // Add to join requests if not already there
           if (!room.joinRequests.some(jr => jr.userId === userId)) {
@@ -596,7 +578,6 @@ async getRoomParticipants(roomCode) {
       .lean();
 
     if (!room) {
-      console.warn(`[ROOM-SERVICE] Room not found: ${roomCode}`);
       return [];
     }
 
@@ -627,7 +608,13 @@ async getRoomParticipants(roomCode) {
       }
 
       // Update settings
-      room.settings = { ...room.settings, ...settings };
+      for (const [key, value] of Object.entries(settings)) {
+        if (room.settings[key] !== undefined || ['chatEnabled', 'reactionsEnabled', 'allowScreenShare', 'slowMode', 'momentCapture'].includes(key)) {
+          room.settings[key] = value;
+        }
+      }
+      
+      room.markModified('settings');
       room.version += 1;
       await room.save();
 
@@ -659,9 +646,23 @@ async getRoomParticipants(roomCode) {
         throw new Error('Only host can end room');
       }
 
-      // Update status
-      const cloudinaryPublicId = room?.media?.current?.metadata?.cloudinary?.publicId;
-      const cloudinaryResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+      // Collect ALL Cloudinary assets to clean up (current media + all uploaded during session)
+      const assetsToClean = new Map(); // publicId -> resourceType (deduped)
+
+      // Current media
+      const currentPublicId = room?.media?.current?.metadata?.cloudinary?.publicId;
+      const currentResourceType = room?.media?.current?.metadata?.cloudinary?.resourceType || 'video';
+      if (currentPublicId) {
+        assetsToClean.set(currentPublicId, currentResourceType);
+      }
+
+      // All uploaded assets tracked during room lifetime
+      const uploadedAssets = room.uploadedAssets || [];
+      for (const asset of uploadedAssets) {
+        if (asset.publicId && !assetsToClean.has(asset.publicId)) {
+          assetsToClean.set(asset.publicId, asset.resourceType || 'video');
+        }
+      }
 
       room.status = ROOM_STATUS.ENDED;
       room.endedAt = new Date();
@@ -680,22 +681,24 @@ async getRoomParticipants(roomCode) {
         queue: [],
         history: [],
       };
+      room.uploadedAssets = []; // Clear tracked assets
       room.version += 1;
       await room.save();
 
-      if (cloudinaryPublicId) {
-        try {
-          const result = await cloudinary.deleteAsset(cloudinaryPublicId, cloudinaryResourceType);
-          const ok = result?.result === 'ok' || result?.result === 'not_found';
-          if (!ok) {
-            throw new Error(`Delete failed: ${result?.result || 'unknown'}`);
+      // Clean up all Cloudinary assets (fire-and-forget)
+      if (assetsToClean.size > 0) {
+        console.log(`[ROOM-END] Cleaning up ${assetsToClean.size} Cloudinary asset(s) for room ${roomCode}`);
+        for (const [publicId, resourceType] of assetsToClean) {
+          try {
+            const result = await cloudinary.deleteAsset(publicId, resourceType);
+            const ok = result?.result === 'ok' || result?.result === 'not_found';
+            if (!ok) throw new Error(`Delete failed: ${result?.result || 'unknown'}`);
+            console.log(`[ROOM-END] ✅ Deleted ${publicId}`);
+          } catch (_error) {
+            // Enqueue for retry
+            await mediaCleanupService.enqueue(publicId, resourceType, 'room-ended');
+            console.log(`[ROOM-END] ⏳ Enqueued ${publicId} for retry`);
           }
-        } catch (_error) {
-          await mediaCleanupService.enqueue(
-            cloudinaryPublicId,
-            cloudinaryResourceType,
-            'room-ended'
-          );
         }
       }
 
@@ -728,11 +731,133 @@ async getRoomParticipants(roomCode) {
       const metaKey = createRedisKey(REDIS_KEYS.ROOM_METADATA, roomCode);
       await redisClient.del(metaKey);
 
+      // ── SESSION-END MOMENT MERGE (async — don't block room end) ──
+      this._mergeSessionMoments(room, roomCode).catch(err => {
+        console.error('[ROOM-SERVICE] Session merge failed:', err.message);
+      });
+
       return room;
 
     } catch (error) {
       console.error('End room error:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Merge all captured moments for a room into a single session highlights video.
+   * Called async after room ends — does NOT block the endRoom response.
+   */
+  async _mergeSessionMoments(room, roomCode) {
+    const Moment = require('../models/mongodb/Moment');
+    const momentService = require('./momentService');
+    const videoProcessor = require('../utils/videoProcessor');
+
+    try {
+      // Get all ready moments with captured video
+      const moments = await Moment.find({
+        roomCode,
+        status: 'ready',
+        mergedInto: { $exists: false },
+        'capturedVideo.url': { $exists: true },
+        cloudinaryPublicId: { $exists: true, $ne: null }
+      }).sort({ timestamp: 1 }).lean();
+
+      if (moments.length === 0) {
+        return;
+      }
+
+
+      // Update room to "merging" status
+      await Room.updateOne(
+        { roomCode },
+        { $set: { 'sessionHighlights.status': 'merging', 'sessionHighlights.clipCount': moments.length } }
+      );
+
+      // Collect Cloudinary public IDs
+      const clipPublicIds = moments.map(m => m.cloudinaryPublicId).filter(Boolean);
+
+      if (clipPublicIds.length === 0) {
+        await Room.updateOne({ roomCode }, { $set: { 'sessionHighlights.status': 'failed' } });
+        return;
+      }
+
+      // Merge via Cloudinary
+      const mergeResult = await videoProcessor.mergeClips(
+        clipPublicIds,
+        `sessions/${roomCode}`,
+        roomCode
+      );
+
+      if (mergeResult.fallback) {
+        // Merge failed — keep individual clips as fallback
+        await Room.updateOne(
+          { roomCode },
+          { $set: { 'sessionHighlights.status': 'failed' } }
+        );
+        return;
+      }
+
+      // Save final video to Room
+      await Room.updateOne(
+        { roomCode },
+        {
+          $set: {
+            'sessionHighlights.finalVideoUrl': mergeResult.secure_url,
+            'sessionHighlights.finalVideoPublicId': mergeResult.public_id,
+            'sessionHighlights.clipCount': moments.length,
+            'sessionHighlights.mergedAt': new Date(),
+            'sessionHighlights.status': 'ready',
+          }
+        }
+      );
+
+      // Save final video to each participant's activity
+      const participantHistory = room.participantHistory || [];
+      for (const participant of participantHistory) {
+        if (!participant.userId || participant.userId.startsWith('guest-')) continue;
+
+        try {
+          await User.findOneAndUpdate(
+            { clerkId: participant.userId },
+            {
+              $push: {
+                'favorites.activities': {
+                  activityId: room._id.toString(),
+                  label: `${room.name || 'Watch Party'} — Highlights`,
+                  type: 'session_highlights',
+                  videoUrl: mergeResult.secure_url,
+                  thumbnailUrl: moments[0]?.capturedVideo?.thumbnailUrl || null,
+                  roomCode,
+                  clipCount: moments.length,
+                  duration: mergeResult.duration || null,
+                  addedAt: new Date(),
+                }
+              }
+            }
+          );
+        } catch (userErr) {
+          console.error(`[SESSION-MERGE] Failed to save activity for ${participant.userId}:`, userErr.message);
+        }
+      }
+
+      // Queue individual temp clips for deletion (keep for 1 hour buffer)
+      for (const publicId of clipPublicIds) {
+        // Don't delete if merge returned singleClip (it IS the final video)
+        if (mergeResult.singleClip && publicId === mergeResult.public_id) continue;
+        await mediaCleanupService.enqueue(publicId, 'video', 'session-merged');
+      }
+
+      // Clean up moment Redis keys
+      await momentService.cleanupRoomMomentKeys(roomCode);
+
+
+    } catch (error) {
+      console.error(`[SESSION-MERGE] ❌ Error merging moments for ${roomCode}:`, error.message);
+      await Room.updateOne(
+        { roomCode },
+        { $set: { 'sessionHighlights.status': 'failed' } }
+      ).catch(() => {});
     }
   }
 

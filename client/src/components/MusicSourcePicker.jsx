@@ -125,7 +125,7 @@ const MusicSourcePicker = ({
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.95 }}
-          className="relative z-10 flex flex-col items-center justify-center h-full gap-6 p-6 md:p-8"
+          className="relative z-10 flex flex-col items-center justify-center h-full gap-3 sm:gap-6 p-4 sm:p-6 md:p-8"
         >
           <motion.div
             className="w-16 h-16 rounded-full bg-emerald-400/10 border border-emerald-300/30 flex items-center justify-center shadow-lg"
@@ -135,11 +135,11 @@ const MusicSourcePicker = ({
             <Disc3 className="w-8 h-8 text-emerald-300" />
           </motion.div>
           <div className="text-center">
-            <h2 className="font-display text-xl md:text-2xl font-bold text-foreground mb-2">Pick Your Music Vibe</h2>
-            <p className="text-sm text-muted-foreground max-w-md text-center">Search YouTube, drop your own audio file, or start from trending tracks.</p>
+            <h2 className="font-display text-lg sm:text-xl md:text-2xl font-bold text-foreground mb-1 sm:mb-2">Pick Your Music Vibe</h2>
+            <p className="text-xs sm:text-sm text-muted-foreground max-w-md text-center hidden sm:block">Search YouTube, drop your own audio file, or start from trending tracks.</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full max-w-2xl">
+          <div className="grid grid-cols-2 gap-3 w-full max-w-2xl">
             <motion.button
               whileHover={{ y: -2, scale: 1.01 }}
               whileTap={{ scale: 0.99 }}
@@ -199,7 +199,7 @@ const MusicSourcePicker = ({
               }
               handleDrop(e);
             }}
-            className={`w-full max-w-2xl rounded-2xl border border-dashed p-4 text-center transition-colors ${isDragOver ? "border-emerald-300 bg-emerald-400/10" : "border-emerald-300/25 bg-emerald-950/25"} ${isUploading ? "opacity-70" : ""}`}
+            className={`w-full max-w-2xl rounded-2xl border border-dashed p-3 sm:p-4 text-center transition-colors hidden sm:block ${isDragOver ? "border-emerald-300 bg-emerald-400/10" : "border-emerald-300/25 bg-emerald-950/25"} ${isUploading ? "opacity-70" : ""}`}
           >
             <p className="text-xs text-muted-foreground">Drag and drop audio files here to upload instantly</p>
           </motion.div>

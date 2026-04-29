@@ -33,7 +33,6 @@ module.exports = (socket, io) => {
         if (!roomCode) {
           return callback({ success: false, error: 'Missing room code' });
         }
-        console.log(`[ROOM:JOIN] 🚪 User ${socket.userId} attempting to join room ${roomCode} (guestName: "${guestName}")`);
         
         const result = await roomService.joinRoom(
           roomCode,
@@ -41,11 +40,9 @@ module.exports = (socket, io) => {
           guestName  // Pass guest name (for guests entering a private room)
         );
 
-        console.log(`[ROOM:JOIN] 📊 joinRoom returned status: "${result.status}"`);
 
         // Check if waiting for approval (private room, not invited)
         if (result.status === 'waiting_for_approval') {
-          console.log(`[ROOM:JOIN] ⏳ ${guestName} (${socket.userId}) put in waiting area for approval`);
           
           // Notify host of waiting join request
           const room = await Room.findOne({ roomCode });
@@ -65,7 +62,6 @@ module.exports = (socket, io) => {
         }
 
         // NORMAL JOIN (public room or invited user in private room or already approved)
-        console.log(`[ROOM:JOIN] ✅ Proceeding with normal join for ${socket.userId}`);
         
         // Join socket.io room
         socket.join(roomCode);
@@ -78,7 +74,6 @@ module.exports = (socket, io) => {
 
         // Get current participants
         const participants = await roomService.getRoomParticipants(roomCode);
-        console.log(`[ROOM:JOIN] 📤 Sending success response, participants count: ${participants.length}`);
 
         // Find the newly joined participant from the database for full data
         const newParticipant = participants.find(p => p.userId === socket.userId);
@@ -270,12 +265,9 @@ module.exports = (socket, io) => {
       if (!roomCode) {
         return callback({ success: false, error: 'Missing room code' });
       }
-      console.log(`[ROOM] 🔔 Host ${socket.userId} accepting join request for guest ${userId} in room ${roomCode}`);
       
       const result = await roomService.acceptJoinRequest(roomCode, socket.userId, userId);
       
-      console.log(`[ROOM] ✅ Host accepted join request for ${userId}. Broadcasting room:join-accepted...`);
-      console.log(`[ROOM] 📢 Broadcasting with userId: ${userId}, roomCode: ${roomCode}`);
       
       // Broadcast to ALL connected clients (not just room) so guest can receive it
       // even if they're not in the socket.io room yet
@@ -301,7 +293,6 @@ module.exports = (socket, io) => {
       }
       const result = await roomService.rejectJoinRequest(roomCode, socket.userId, userId);
       
-      console.log(`[ROOM] ❌ Host rejected join request for ${userId}`);
       
       // Broadcast rejection to all connected clients
       io.emit('room:join-rejected', {
@@ -472,7 +463,6 @@ module.exports = (socket, io) => {
       if (!roomCode) {
         return done({ success: false, error: 'Missing room code' });
       }
-      console.log(`[PERMISSIONS] 🔒 Host ${socket.userId} updating permissions for ${targetUserId}:`, restrictions);
 
       const room = await Room.findOne({ roomCode });
       if (!room) {
@@ -520,7 +510,6 @@ module.exports = (socket, io) => {
       room.version += 1;
       await room.save();
 
-      console.log(`[PERMISSIONS] ✅ Permissions updated for ${targetUserId}`);
 
       // Notify the affected user about restriction
       io.to(roomCode).emit('room:participant-permissions-updated', {
@@ -567,7 +556,6 @@ module.exports = (socket, io) => {
       if (!roomCode) {
         return done({ success: false, error: 'Missing room code' });
       }
-      console.log(`[ROLE] 👑 Host ${socket.userId} updating role for ${targetUserId} to ${newRole}`);
 
       const normalizedRole = newRole === 'cohost' ? 'co-host' : newRole;
 
@@ -611,7 +599,6 @@ module.exports = (socket, io) => {
       room.version += 1;
       await room.save();
 
-      console.log(`[ROLE] ✅ Role updated for ${targetUserId} to ${normalizedRole}`);
 
       // Broadcast role change to all users in room
       io.to(roomCode).emit('room:participant-role-updated', {

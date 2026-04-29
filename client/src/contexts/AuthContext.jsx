@@ -6,10 +6,10 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const auth = useAuth();
-  useApiAuth(); // Set up API auth interceptor
+  const { ready: apiReady } = useApiAuth(); // Set up API auth interceptor
   
   return (
-    <AuthContext.Provider value={auth}>
+    <AuthContext.Provider value={{ ...auth, apiReady }}>
       {children}
     </AuthContext.Provider>
   );

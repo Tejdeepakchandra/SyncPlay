@@ -56,7 +56,6 @@ const setupSocketHandlers = (io) => {
 
   io.on('connection', (socket) => {
     const userDisplay = socket.isGuest ? `guest (${socket.userId.substring(0, 8)})` : socket.username || socket.userId;
-    console.log(`🔌 Socket connected: ${socket.id} → ${userDisplay}`);
 
     if (!userSocketIds.has(socket.userId)) {
       userSocketIds.set(socket.userId, new Set());
@@ -98,7 +97,6 @@ const setupSocketHandlers = (io) => {
 
     // Auto-leave room and cleanup on disconnect — FIXED
     socket.on('disconnect', async () => {
-      console.log(`🔌 Socket disconnected: ${socket.id} (User: ${socket.userId})`);
 
       const userSockets = userSocketIds.get(socket.userId);
       if (userSockets) {
@@ -116,6 +114,22 @@ const setupSocketHandlers = (io) => {
       // Delay auto-leave to survive refresh/transient reconnect.
       if (socket.roomCode) {
         const leaveKey = makeLeaveKey(socket.userId, socket.roomCode);
+
+        // Cancel any active capture if this user was the host
+        const captureService = require('../services/captureService');
+        captureService.hasActiveCapture(socket.roomCode).then(async (check) => {
+          if (check.active) {
+            const status = await captureService.getCaptureStatus(check.captureId);
+            if (status && status.hostId === socket.userId) {
+              await captureService.cancelCapture(check.captureId, 'Host disconnected');
+              io.to(socket.roomCode).emit('moment:capture-error', {
+                captureJobId: check.captureId,
+                reason: 'Host disconnected during capture',
+              });
+            }
+          }
+        }).catch(() => {});
+
         const timer = setTimeout(async () => {
           pendingLeaveTimers.delete(leaveKey);
 

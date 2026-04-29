@@ -337,13 +337,13 @@ export default function Friends() {
         prev.map((row) =>
           row?.friendProfile?.id === targetUserId
             ? {
-                ...row,
-                friendProfile: {
-                  ...row.friendProfile,
-                  is_online: isOnline,
-                  status,
-                },
-              }
+              ...row,
+              friendProfile: {
+                ...row.friendProfile,
+                is_online: isOnline,
+                status,
+              },
+            }
             : row
         )
       );
@@ -352,13 +352,13 @@ export default function Friends() {
         prev.map((row) =>
           row?.requester?.id === targetUserId
             ? {
-                ...row,
-                requester: {
-                  ...row.requester,
-                  is_online: isOnline,
-                  status,
-                },
-              }
+              ...row,
+              requester: {
+                ...row.requester,
+                is_online: isOnline,
+                status,
+              },
+            }
             : row
         )
       );
@@ -367,10 +367,10 @@ export default function Friends() {
         prev.map((row) =>
           row?.id === targetUserId
             ? {
-                ...row,
-                is_online: isOnline,
-                status,
-              }
+              ...row,
+              is_online: isOnline,
+              status,
+            }
             : row
         )
       );
@@ -549,9 +549,9 @@ export default function Friends() {
         stories: group.stories.map((story) =>
           story.id === storyId
             ? {
-                ...story,
-                has_viewed: true,
-              }
+              ...story,
+              has_viewed: true,
+            }
             : story
         ),
       }))
@@ -703,187 +703,187 @@ export default function Friends() {
           onCreateStory={() => setCreateStoryOpen(true)}
         />
 
-      <div className="flex gap-1.5 p-1.5 bg-card/60 border border-border/70 rounded-2xl mb-5 backdrop-blur">
-        {TABS.map((t) => {
-          const count = t === "friends" ? friends.length : t === "requests" ? requests.length : undefined;
-          const active = tab === t;
-          return (
-            <button key={t} onClick={() => setTab(t)} className="flex-1 py-3 text-sm font-medium transition-all relative rounded-xl capitalize">
-              {active && <motion.div layoutId="friends-tab" className="absolute inset-0 bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] rounded-xl" />}
-              <span className={`relative z-10 ${active ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-                {t}
-                {typeof count === "number" && count > 0 && (
-                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full ${active ? "bg-primary-foreground/20" : "bg-muted"}`}>{count}</span>
-                )}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+        <div className="flex gap-1.5 p-1.5 bg-card/60 border border-border/70 rounded-2xl mb-5 backdrop-blur">
+          {TABS.map((t) => {
+            const count = t === "friends" ? friends.length : t === "requests" ? requests.length : undefined;
+            const active = tab === t;
+            return (
+              <button key={t} onClick={() => setTab(t)} className="flex-1 py-3 text-sm font-medium transition-all relative rounded-xl capitalize">
+                {active && <motion.div layoutId="friends-tab" className="absolute inset-0 bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] rounded-xl" />}
+                <span className={`relative z-10 ${active ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                  {t}
+                  {typeof count === "number" && count > 0 && (
+                    <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full ${active ? "bg-primary-foreground/20" : "bg-muted"}`}>{count}</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
 
-      <div className="relative mb-8">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input
-          placeholder="Search by name or username..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="pl-11 bg-card/70 border-border/70 rounded-2xl h-12 focus-visible:ring-primary/40"
-        />
-      </div>
+        <div className="relative mb-8">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search by name or username..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-11 bg-card/70 border-border/70 rounded-2xl h-12 focus-visible:ring-primary/40"
+          />
+        </div>
 
-      <AnimatePresence mode="wait">
-        {tab === "friends" && (
-          <motion.div key="friends" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }} className="space-y-2">
-            {loadingFriends && friends.length === 0 ? (
-              <div className="text-center py-20 text-muted-foreground">Loading...</div>
-            ) : (
-              <>
-                {onlineFriends.length > 0 && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Online</p>}
-                {onlineFriends.map((friendRow) => {
-                  const friend = friendRow.friendProfile;
-                  return (
-                    <motion.div key={friendRow.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.08))] border border-border/70 rounded-2xl p-4 flex items-center gap-4 hover:border-primary/40 transition-colors shadow-lg shadow-black/5">
-                      <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center text-2xl relative">{friend.avatar_emoji || "🧑"}
-                        {friend.is_online ? <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-secondary border-2 border-card" /> : null}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-foreground text-sm truncate">{friend.display_name}</p>
-                        <p className="text-xs text-muted-foreground">@{friend.username}</p>
-                      </div>
-                      <Button size="icon" variant="ghost" onClick={() => handleOpenDM(friend.id)}>
-                        <MessageCircle className="w-4 h-4" />
-                      </Button>
-                      <div className="relative" data-friend-menu-root="true">
-                        <Button size="icon" variant="ghost" onClick={() => setMoreMenuOpen(moreMenuOpen === friendRow.id ? null : friendRow.id)}>
-                          <MoreHorizontal className="w-4 h-4" />
+        <AnimatePresence mode="wait">
+          {tab === "friends" && (
+            <motion.div key="friends" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }} className="space-y-2">
+              {loadingFriends && friends.length === 0 ? (
+                <div className="text-center py-20 text-muted-foreground">Loading...</div>
+              ) : (
+                <>
+                  {onlineFriends.length > 0 && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Online</p>}
+                  {onlineFriends.map((friendRow) => {
+                    const friend = friendRow.friendProfile;
+                    return (
+                      <motion.div key={friendRow.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.08))] border border-border/70 rounded-2xl p-4 flex items-center gap-4 hover:border-primary/40 transition-colors shadow-lg shadow-black/5">
+                        <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center text-2xl relative">{friend.avatar_emoji || "🧑"}
+                          {friend.is_online ? <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-secondary border-2 border-card" /> : null}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-foreground text-sm truncate">{friend.display_name}</p>
+                          <p className="text-xs text-muted-foreground">@{friend.username}</p>
+                        </div>
+                        <Button size="icon" variant="ghost" onClick={() => handleOpenDM(friend.id)}>
+                          <MessageCircle className="w-4 h-4" />
                         </Button>
-                        <AnimatePresence>
-                          {moreMenuOpen === friendRow.id && (
-                            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl p-1 z-30" onMouseDown={(e) => e.stopPropagation()}>
-                              <button onClick={() => handleInviteToRoom(friend)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
-                                <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" /> Invite to Room
-                              </button>
-                              <button onClick={handleCopyProfile} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
-                                <Copy className="w-3.5 h-3.5 text-muted-foreground" /> Copy Profile Link
-                              </button>
-                              <div className="my-1 h-px bg-border" />
-                              <button onClick={() => handleRemoveFriend(friendRow.id, friend.display_name)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg">
-                                <UserMinus className="w-3.5 h-3.5" /> Remove Friend
-                              </button>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
+                        <div className="relative" data-friend-menu-root="true">
+                          <Button size="icon" variant="ghost" onClick={() => setMoreMenuOpen(moreMenuOpen === friendRow.id ? null : friendRow.id)}>
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                          <AnimatePresence>
+                            {moreMenuOpen === friendRow.id && (
+                              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl p-1 z-30" onMouseDown={(e) => e.stopPropagation()}>
+                                <button onClick={() => handleInviteToRoom(friend)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" /> Invite to Room
+                                </button>
+                                <button onClick={handleCopyProfile} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <Copy className="w-3.5 h-3.5 text-muted-foreground" /> Copy Profile Link
+                                </button>
+                                <div className="my-1 h-px bg-border" />
+                                <button onClick={() => handleRemoveFriend(friendRow.id, friend.display_name)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg">
+                                  <UserMinus className="w-3.5 h-3.5" /> Remove Friend
+                                </button>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+
+                  {offlineFriends.length > 0 && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-6 mb-2">Offline</p>}
+                  {offlineFriends.map((friendRow) => {
+                    const friend = friendRow.friendProfile;
+                    return (
+                      <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 opacity-70 hover:opacity-85 transition-opacity">
+                        <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center text-2xl">{friend.avatar_emoji || "🧑"}</div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-foreground text-sm truncate">{friend.display_name}</p>
+                          <p className="text-xs text-muted-foreground">{friend.status || "Offline"}</p>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+
+                  {filteredFriends.length === 0 && (
+                    <motion.div variants={item} className="text-center py-20">
+                      <Users className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                      <p className="text-muted-foreground">No friends found</p>
                     </motion.div>
-                  );
-                })}
-
-                {offlineFriends.length > 0 && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-6 mb-2">Offline</p>}
-                {offlineFriends.map((friendRow) => {
-                  const friend = friendRow.friendProfile;
-                  return (
-                    <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 opacity-70 hover:opacity-85 transition-opacity">
-                      <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center text-2xl">{friend.avatar_emoji || "🧑"}</div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-foreground text-sm truncate">{friend.display_name}</p>
-                        <p className="text-xs text-muted-foreground">{friend.status || "Offline"}</p>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-
-                {filteredFriends.length === 0 && (
-                  <motion.div variants={item} className="text-center py-20">
-                    <Users className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-                    <p className="text-muted-foreground">No friends found</p>
-                  </motion.div>
-                )}
-              </>
-            )}
-          </motion.div>
-        )}
-
-        {tab === "requests" && (
-          <motion.div key="requests" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }} className="space-y-3">
-            {requests.length === 0 ? (
-              <motion.div variants={item} className="text-center py-20">
-                <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-                <p className="text-muted-foreground">No pending requests</p>
-              </motion.div>
-            ) : (
-              requests.map((req) => (
-                <motion.div key={req.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--primary)/0.06))] border border-border/70 rounded-2xl p-4 flex items-center gap-4 shadow-lg shadow-black/5">
-                  <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center text-2xl">{req.requester.avatar_emoji || "🧑"}</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground text-sm">{req.requester.display_name}</p>
-                    <p className="text-xs text-muted-foreground">@{req.requester.username} • {timeAgo(req.created_at)}</p>
-                  </div>
-                  <Button size="sm" className="h-9 rounded-xl bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAcceptRequest(req.id, req.requester.display_name)}>
-                    <Check className="w-3.5 h-3.5 mr-1" /> Accept
-                  </Button>
-                  <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => handleDeclineRequest(req.id, req.requester.display_name)}>
-                    <X className="w-4 h-4" />
-                  </Button>
-                </motion.div>
-              ))
-            )}
-          </motion.div>
-        )}
-
-        {tab === "discover" && (
-          <motion.div key="discover" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }}>
-            <motion.div variants={item} className="flex items-center gap-2 mb-4">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <p className="text-sm font-semibold text-foreground">Suggested for you</p>
+                  )}
+                </>
+              )}
             </motion.div>
-            {suggestedUsers.length === 0 ? (
-              <motion.div variants={item} className="text-center py-20">
-                <Globe className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-                <p className="text-muted-foreground">No suggestions available</p>
-              </motion.div>
-            ) : (
-              <div className="grid sm:grid-cols-2 gap-3">
-                {suggestedUsers.map((suggested) => (
-                  <motion.div key={suggested.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.12))] border border-border/70 rounded-2xl p-5 flex flex-col items-center text-center hover:border-primary/35 transition-colors shadow-lg shadow-black/5">
-                    <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-3">{suggested.avatar_emoji || "🧑"}</div>
-                    <p className="font-semibold text-foreground text-sm">{suggested.display_name}</p>
-                    <p className="text-xs text-muted-foreground mb-3">@{suggested.username}</p>
-                    {sentRequests.has(suggested.id) ? (
-                      <Button size="sm" variant="outline" className="w-full" onClick={() => handleUndoRequest(suggested.id)}>
-                        <Check className="w-3.5 h-3.5 mr-1" /> Request Sent
-                      </Button>
-                    ) : (
-                      <Button size="sm" className="w-full bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAddFriend(suggested.id, suggested.display_name)}>
-                        <UserPlus className="w-3.5 h-3.5 mr-1" /> Add Friend
-                      </Button>
-                    )}
+          )}
+
+          {tab === "requests" && (
+            <motion.div key="requests" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }} className="space-y-3">
+              {requests.length === 0 ? (
+                <motion.div variants={item} className="text-center py-20">
+                  <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                  <p className="text-muted-foreground">No pending requests</p>
+                </motion.div>
+              ) : (
+                requests.map((req) => (
+                  <motion.div key={req.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--primary)/0.06))] border border-border/70 rounded-2xl p-4 flex items-center gap-4 shadow-lg shadow-black/5">
+                    <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center text-2xl">{req.requester.avatar_emoji || "🧑"}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-foreground text-sm">{req.requester.display_name}</p>
+                      <p className="text-xs text-muted-foreground">@{req.requester.username} • {timeAgo(req.created_at)}</p>
+                    </div>
+                    <Button size="sm" className="h-9 rounded-xl bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAcceptRequest(req.id, req.requester.display_name)}>
+                      <Check className="w-3.5 h-3.5 mr-1" /> Accept
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => handleDeclineRequest(req.id, req.requester.display_name)}>
+                      <X className="w-4 h-4" />
+                    </Button>
                   </motion.div>
-                ))}
-              </div>
-            )}
-          </motion.div>
+                ))
+              )}
+            </motion.div>
+          )}
+
+          {tab === "discover" && (
+            <motion.div key="discover" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }}>
+              <motion.div variants={item} className="flex items-center gap-2 mb-4">
+                <Sparkles className="w-4 h-4 text-primary" />
+                <p className="text-sm font-semibold text-foreground">Suggested for you</p>
+              </motion.div>
+              {suggestedUsers.length === 0 ? (
+                <motion.div variants={item} className="text-center py-20">
+                  <Globe className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                  <p className="text-muted-foreground">No suggestions available</p>
+                </motion.div>
+              ) : (
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {suggestedUsers.map((suggested) => (
+                    <motion.div key={suggested.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.12))] border border-border/70 rounded-2xl p-5 flex flex-col items-center text-center hover:border-primary/35 transition-colors shadow-lg shadow-black/5">
+                      <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-3">{suggested.avatar_emoji || "🧑"}</div>
+                      <p className="font-semibold text-foreground text-sm">{suggested.display_name}</p>
+                      <p className="text-xs text-muted-foreground mb-3">@{suggested.username}</p>
+                      {sentRequests.has(suggested.id) ? (
+                        <Button size="sm" variant="outline" className="w-full" onClick={() => handleUndoRequest(suggested.id)}>
+                          <Check className="w-3.5 h-3.5 mr-1" /> Request Sent
+                        </Button>
+                      ) : (
+                        <Button size="sm" className="w-full bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAddFriend(suggested.id, suggested.display_name)}>
+                          <UserPlus className="w-3.5 h-3.5 mr-1" /> Add Friend
+                        </Button>
+                      )}
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {storyViewerGroupIndex !== null && storiesByUser[storyViewerGroupIndex] && (
+          <StoryViewer
+            storiesByUser={storiesByUser}
+            startGroupIndex={storyViewerGroupIndex}
+            currentUserId={clerkUser?.id || null}
+            onClose={() => setStoryViewerGroupIndex(null)}
+            onViewStory={handleViewStory}
+            onReactStory={handleReactStory}
+            onReplyStory={handleReplyStory}
+            onDeleteStory={handleDeleteStory}
+          />
         )}
-      </AnimatePresence>
 
-      {storyViewerGroupIndex !== null && storiesByUser[storyViewerGroupIndex] && (
-        <StoryViewer
-          storiesByUser={storiesByUser}
-          startGroupIndex={storyViewerGroupIndex}
-          currentUserId={clerkUser?.id || null}
-          onClose={() => setStoryViewerGroupIndex(null)}
-          onViewStory={handleViewStory}
-          onReactStory={handleReactStory}
-          onReplyStory={handleReplyStory}
-          onDeleteStory={handleDeleteStory}
+        <CreateStoryDialog
+          open={createStoryOpen}
+          onClose={() => setCreateStoryOpen(false)}
+          onSubmit={handleCreateStory}
+          submitting={creatingStory}
         />
-      )}
-
-      <CreateStoryDialog
-        open={createStoryOpen}
-        onClose={() => setCreateStoryOpen(false)}
-        onSubmit={handleCreateStory}
-        submitting={creatingStory}
-      />
       </div>
     </div>
   );

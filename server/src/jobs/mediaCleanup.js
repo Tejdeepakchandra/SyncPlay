@@ -6,7 +6,6 @@ function startMediaCleanupJob() {
     try {
       const result = await mediaCleanupService.runDueBatch(20);
       if (result.processed > 0) {
-        console.log(`[MEDIA-CLEANUP] processed=${result.processed} deleted=${result.deleted} retried=${result.retried} skipped=${result.skipped}`);
       }
     } catch (error) {
       console.error('[MEDIA-CLEANUP] job error:', error.message);

@@ -63,4 +63,30 @@ router.post('/read-all', ensureAuth, async (req, res, next) => {
   }
 });
 
+// Delete a single notification
+router.delete('/:notificationId', ensureAuth, async (req, res, next) => {
+  try {
+    const result = await Notification.findOneAndDelete({
+      _id: req.params.notificationId,
+      userId: req.userId,
+    });
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Clear all notifications
+router.delete('/', ensureAuth, async (req, res, next) => {
+  try {
+    await Notification.deleteMany({ userId: req.userId });
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

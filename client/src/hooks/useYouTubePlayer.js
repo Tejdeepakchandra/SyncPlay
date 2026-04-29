@@ -6,6 +6,27 @@ import { useEffect, useRef, useCallback, useState } from "react";
  * Integrates with sync engine for play/pause/seek
  */
 
+// Suppress YouTube IFrame API console noise (errors from www-embed-player.js, etc.)
+// Uses a version number so HMR re-applies the updated filter.
+const _YT_FILTER_VERSION = 3;
+if (typeof window !== "undefined" && window.__ytConsoleFilterVersion !== _YT_FILTER_VERSION) {
+  // Restore original console methods if previously patched, then re-patch
+  const origError = window.__ytOrigConsoleError || console.error;
+  const origWarn = window.__ytOrigConsoleWarn || console.warn;
+  window.__ytOrigConsoleError = origError;
+  window.__ytOrigConsoleWarn = origWarn;
+  window.__ytConsoleFilterVersion = _YT_FILTER_VERSION;
+  const ytNoise = /(?:www-embed-player|youtube\.com\/embed|Failed to execute 'postMessage'|blocked a frame|embed\?enablejsapi|Encountered two children with the same key)/i;
+  console.error = (...args) => {
+    if (args.some(a => typeof a === "string" && ytNoise.test(a))) return;
+    origError.apply(console, args);
+  };
+  console.warn = (...args) => {
+    if (args.some(a => typeof a === "string" && ytNoise.test(a))) return;
+    origWarn.apply(console, args);
+  };
+}
+
 let apiLoaded = false;
 let apiReady = false;
 const readyCallbacks = [];
@@ -155,6 +176,17 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
       target.style.height = "100%";
       wrapperRef.current.appendChild(target);
 
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          mutation.addedNodes.forEach((node) => {
+            if (node.tagName === 'IFRAME') {
+              node.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+            }
+          });
+        });
+      });
+      observer.observe(wrapperRef.current, { childList: true });
+
       try {
         playerRef.current = new window.YT.Player(target, {
           videoId,
@@ -215,6 +247,8 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
         });
       } catch (err) {
         console.error("Failed to create YouTube player:", err);
+      } finally {
+        setTimeout(() => observer.disconnect(), 5000);
       }
     };
 
@@ -236,7 +270,7 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
       if (playerRef.current?.getCurrentTime) {
         try {
           const time = playerRef.current.getCurrentTime();
-          if (Math.abs(time - lastTimeRef.current) >= 0.5) {
+          if (Math.abs(time - lastTimeRef.current) >= 0.1) {
             lastTimeRef.current = time;
             setCurrentTime(time);
           }
@@ -262,7 +296,7 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
           }
         } catch { /* player not ready */ }
       }
-    }, 1000);
+    }, 250);
 
     return () => {
       if (timeIntervalRef.current) {
@@ -296,8 +330,18 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
     suppressSyncRef.current = true;
     setTimeout(() => {
       suppressSyncRef.current = false;
-    }, 500);
+    }, 300);
   }, [withReadyPlayer]);
+
+  // Direct API read for drift checks — avoids stale React state
+  const getRealtimePosition = useCallback(() => {
+    try {
+      if (playerRef.current?.getCurrentTime) {
+        return playerRef.current.getCurrentTime();
+      }
+    } catch { /* player not ready */ }
+    return currentTime;
+  }, [currentTime]);
 
   const seekToPercent = useCallback((pct) => {
     if (duration > 0) {
@@ -334,6 +378,7 @@ export const useYouTubePlayer = ({ videoId, controlsEnabled = true, onStateChang
     setPlaybackRate,
     mute,
     unmute,
+    getRealtimePosition,
     duration,
     currentTime,
     progressPercent,

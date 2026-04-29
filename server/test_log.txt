@@ -1,0 +1,8 @@
+[SYNC] Executing media-change for room V94W4E: {"type":"youtube","videoId":"dQw4w9WgXcQ","title":"Rick Astley"}
+[SYNC] Room.findOneAndUpdate complete for V94W4E
+[SYNC] queueEvent result: {"success":true,"state":{"version":35,"isPlaying":false,"baseTimestamp":0,"currentTime":0,"startAt":null,"playbackRate":1,"lastUpdated":1777060476949,"updatedBy":"guest-adc84648","eventId":"1777060476909-095bed60"}}
+[SYNC] emitting sync:update for media-change {"media":{"type":"youtube","videoId":"dQw4w9WgXcQ","title":"Rick Astley"},"isPlaying":false,"time":0,"playbackRate":1,"version":35,"startAt":null,"updatedAt":1777060476949}
+[SYNC] Executing media-change for room V94W4E: {"type":"youtube","videoId":"3tHlSNnGs6A","title":"Rambai Neemeedha Naku Video Song | Raju Weds Rambai | A ETV win Original production | NOV 21"}
+[SYNC] Room.findOneAndUpdate complete for V94W4E
+[SYNC] queueEvent result: {"success":true,"state":{"version":36,"isPlaying":false,"baseTimestamp":0,"currentTime":0,"startAt":null,"playbackRate":1,"lastUpdated":1777060660090,"updatedBy":"user_3CcFewUIZMW4fwAXPsXYJ9Sy8uy","eventId":"1777060660050-2301986d"}}
+[SYNC] emitting sync:update for media-change {"media":{"type":"youtube","videoId":"3tHlSNnGs6A","title":"Rambai Neemeedha Naku Video Song | Raju Weds Rambai | A ETV win Original production | NOV 21"},"isPlaying":false,"time":0,"playbackRate":1,"version":36,"startAt":null,"updatedAt":1777060660090}

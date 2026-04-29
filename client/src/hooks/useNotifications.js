@@ -126,5 +126,24 @@ export function useNotifications() {
     }
   }, []);
 
-  return { notifications, unreadCount, markAllRead, markRead };
+  const deleteNotification = useCallback(async (id) => {
+    if (!id) return;
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await api.delete(`/notifications/${id}`);
+    } catch {
+      // Non-blocking
+    }
+  }, []);
+
+  const clearAll = useCallback(async () => {
+    setNotifications([]);
+    try {
+      await api.delete('/notifications');
+    } catch {
+      // Non-blocking
+    }
+  }, []);
+
+  return { notifications, unreadCount, markAllRead, markRead, deleteNotification, clearAll };
 }

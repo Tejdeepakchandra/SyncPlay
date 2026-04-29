@@ -18,19 +18,16 @@ const connectDB = async () => {
 
         await Promise.race([connectPromise, timeoutPromise]);
         
-        console.log('✅ MongoDB connected successfully');
         
         mongoose.connection.on('error', (err) => {
             console.error('❌ MongoDB connection error:', err.message);
         });
 
         mongoose.connection.on('disconnected', () => {
-            console.log('⚠️ MongoDB disconnected');
         });
 
         process.on('SIGINT', async () => {
             await mongoose.connection.close();
-            console.log('MongoDB connection closed');
             process.exit(0);
         });
     } catch (error) {

@@ -6,6 +6,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
+const mongoSanitize = require('express-mongo-sanitize');
+const rateLimit = require('express-rate-limit');
 
 // Load environment variables BEFORE any config that reads process.env
 dotenv.config();
@@ -20,6 +22,7 @@ const { authMiddleware } = require('./middleware/auth');
 const { rateLimiter } = require('./middleware/rateLimiter');
 const { startPresenceCleanup } = require('./jobs/presenceCleanup');
 const { startMediaCleanupJob } = require('./jobs/mediaCleanup');
+const { startRoomExpirationJob } = require('./jobs/roomExpirationJob');
 const { clerkWebhook } = require('./controllers/authController');
 
 // Initialize Express
@@ -86,6 +89,8 @@ const io = new Server(server, {
 
 app.set('io', io);
 
+// Start room expiration job which needs the io instance
+startRoomExpirationJob(io);
 
 // MIDDLEWARE
 
@@ -98,7 +103,6 @@ app.use((req, res, next) => {
     const path = req.path;
     const isAuth = req.headers.authorization ? '🔐' : '🔓';
     
-    console.log(`${timestamp} ${isAuth} ${method.padEnd(6)} ${path}`);
   }
   
   next();
@@ -114,6 +118,15 @@ app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Sanitize req.body and req.params to prevent NoSQL injection
+// (req.query is read-only in Express 5, so we sanitize it manually)
+app.use((req, _res, next) => {
+  if (req.body) req.body = mongoSanitize.sanitize(req.body);
+  if (req.params) req.params = mongoSanitize.sanitize(req.params);
+  next();
+});
+
 app.use('/uploads', express.static(path.resolve(__dirname, '../../uploads')));
 
 // HEALTH CHECK ENDPOINT (before auth middleware)
@@ -133,9 +146,16 @@ app.get('/api/health', (req, res) => {
 // Apply auth middleware to all routes
 app.use(authMiddleware);
 
-// Apply rate limiting to all routes
-// TODO: Fix rateLimiter usage - currently broken, needs proper limitType parameter
-// app.use(rateLimiter);
+// Global rate limiter (simple, doesn't need Redis)
+const globalLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '60000', 10),
+  max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+  skip: (req) => req.path === '/api/health',
+});
+app.use(globalLimiter);
 
 
 // ROUTES
@@ -173,24 +193,23 @@ setupSocketHandlers(io);
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err.message || err);
   
-  // Try to log to PostgreSQL (but don't fail if table doesn't exist)
+  // Log to PostgreSQL in production (non-blocking)
   if (pgPool && process.env.NODE_ENV === 'production') {
     pgPool.query(
       `INSERT INTO error_logs (error, path, method, user_id, timestamp) 
        VALUES ($1, $2, $3, $4, NOW())`,
       [err.message || 'Unknown error', req.path, req.method, req.userId || 'anonymous']
-    ).catch(e => {
-      // Silently fail - table might not exist in development
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[INFO] PostgreSQL logging skipped (table may not exist)');
-      }
-    });
+    ).catch(() => {});
   }
 
-  res.status(err.status || 500).json({
+  const statusCode = err.status || 500;
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err : {}
+    message: isProduction && statusCode === 500
+      ? 'Internal server error'
+      : (err.message || 'Internal server error'),
   });
 });
 
@@ -215,26 +234,18 @@ async function startServer() {
     }
 
     // Connect to MongoDB
-    console.log('⏳ Connecting to MongoDB...');
     await connectDB();
-    console.log('✅ MongoDB connected');
     
     // Connect to Redis (optional, will continue if fails)
-    console.log('⏳ Connecting to Redis...');
     try {
       await redisClient.connect();
       console.log('✅ Redis connected');
     } catch (redisErr) {
-      console.warn('⚠️ Redis connection failed (optional):', redisErr.message);
+      console.error('⚠️ Redis connection failed:', redisErr.message, '— sync will fall back to MongoDB (slower)');
     }
     
     // Now start listening
     server.listen(PORT, () => {
-      console.log('\n=================================');
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📡 WebSocket server ready`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-      console.log('=================================\n');
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
@@ -246,12 +257,10 @@ startServer();
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Closing connections...');
   await mongoose.connection.close();
   await redisClient.quit();
   await pgPool.end();
   server.close(() => {
-    console.log('Server closed');
     process.exit(0);
   });
 });

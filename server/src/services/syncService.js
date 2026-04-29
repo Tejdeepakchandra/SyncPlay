@@ -7,16 +7,17 @@ const SYNC_CONTRACT = require('../utils/syncContract');
 
 class SyncService {
   constructor() {
-    this.eventQueues = new Map(); // For single-server, will move to Redis later
+    this.eventQueues = new Map();
+    this.stateCache = new Map(); // In-memory cache for instant reads
     this.driftTelemetry = new Map();
     this.controlTelemetry = new Map();
     this.TELEMETRY_WINDOW_MS = 10 * 60 * 1000;
     this.TELEMETRY_MAX_SAMPLES = 5000;
     this.CONTROL_COOLDOWN_MS = {
-      play: 220,
-      pause: 220,
-      seek: 120,
-      rate_change: 250,
+      play: 100,
+      pause: 100,
+      seek: 60,
+      rate_change: 120,
     };
   }
 
@@ -181,10 +182,15 @@ class SyncService {
     return { roomCode, clearedSamples };
   }
 
-  
-   //Get authoritative sync state
-   
+
+  //Get authoritative sync state
+
   async getSyncState(roomCode) {
+    // 1. Check in-memory cache first (instant, 0ms)
+    const memCached = this.stateCache.get(roomCode);
+    if (memCached) return memCached;
+
+    // 2. Check Redis
     const redisKey = createRedisKey(REDIS_KEYS.SYNC_STATE, roomCode);
     let cached = null;
     try {
@@ -192,9 +198,11 @@ class SyncService {
     } catch (error) {
       console.error('[SYNC] Redis get failed, falling back to Mongo state:', error.message);
     }
-    
+
     if (cached) {
-      return JSON.parse(cached);
+      const parsed = JSON.parse(cached);
+      this.stateCache.set(roomCode, parsed);
+      return parsed;
     }
 
     // Fallback to MongoDB
@@ -216,6 +224,7 @@ class SyncService {
         eventId: room.syncState.eventId || null,
       };
 
+      this.stateCache.set(roomCode, normalizedSyncState);
       // Cache in Redis
       try {
         await redisClient.set(redisKey, JSON.stringify(normalizedSyncState), {
@@ -240,9 +249,9 @@ class SyncService {
     };
   }
 
-  
+
   // Process sync event with proper timing
-  
+
   async processSyncEvent(roomCode, event) {
     const { type, data, userId, eventId } = event;
     const now = Date.now();
@@ -262,7 +271,7 @@ class SyncService {
         // When playing: set startAt to future for synchronized start
         const latency = data.latency || 100;
         const buffer = SYNC_CONTRACT.adaptiveBuffer(latency);
-        
+
         newState.isPlaying = true;
         newState.baseTimestamp = data.timestamp;
         newState.startAt = now + buffer;
@@ -281,7 +290,7 @@ class SyncService {
       case SYNC_ACTIONS.SEEK: {
         // When seeking, set new base timestamp
         newState.baseTimestamp = data.newTime;
-        
+
         // If playing, resume from a short future server time so clients can align together.
         if (newState.isPlaying) {
           const latency = data.latency || 100;
@@ -300,29 +309,35 @@ class SyncService {
         }
         break;
       }
+
+      case 'EXEC_CALLBACK': {
+        if (typeof data.callback === 'function') {
+          await data.callback(newState, now);
+        }
+        break;
+      }
     }
 
-    // Store in Redis
+    // 1. Write to in-memory cache FIRST (instant, 0ms)
     const redisKey = createRedisKey(REDIS_KEYS.SYNC_STATE, roomCode);
     newState.currentTime = Number.isFinite(newState.baseTimestamp) ? newState.baseTimestamp : 0;
-    try {
-      await redisClient.set(redisKey, JSON.stringify(newState), {
-        EX: CACHE_TTL.SYNC_STATE
-      });
-    } catch (error) {
-      console.error('[SYNC] Redis set failed while persisting state:', error.message);
-    }
+    this.stateCache.set(roomCode, newState);
 
-    // Store for deduplication (using the SAME eventId)
-    try {
-      await redisClient.set(
-        createRedisKey(REDIS_KEYS.EVENT_PROCESSED, eventId),
-        '1',
-        { EX: CACHE_TTL.EVENT_DEDUP }
-      );
-    } catch (error) {
+    // 2. Persist to Redis (fire-and-forget, don't block the response)
+    redisClient.set(redisKey, JSON.stringify(newState), {
+      EX: CACHE_TTL.SYNC_STATE
+    }).catch(error => {
+      console.error('[SYNC] Redis set failed while persisting state:', error.message);
+    });
+
+    // 3. Store deduplication marker (fire-and-forget)
+    redisClient.set(
+      createRedisKey(REDIS_KEYS.EVENT_PROCESSED, eventId),
+      '1',
+      { EX: CACHE_TTL.EVENT_DEDUP }
+    ).catch(error => {
       console.error('[SYNC] Redis set failed for dedupe marker:', error.message);
-    }
+    });
 
     // Async update to MongoDB
     Room.findOneAndUpdate(
@@ -333,14 +348,14 @@ class SyncService {
     return newState;
   }
 
-  
-   // Queue event for sequential processing
-   
+
+  // Queue event for sequential processing
+
   async queueEvent(roomCode, event) {
     return new Promise((resolve, reject) => {
       // Use caller eventId for idempotency across retries; fallback to generated ID.
       const eventId = event.clientEventId || generateEventId();
-      
+
       if (!this.eventQueues.has(roomCode)) {
         this.eventQueues.set(roomCode, []);
         setImmediate(() => this.processQueue(roomCode));
@@ -355,9 +370,9 @@ class SyncService {
     });
   }
 
-  
-   // Process queue sequentially
-   
+
+  // Process queue sequentially
+
   async processQueue(roomCode) {
     const queue = this.eventQueues.get(roomCode);
     if (!queue || queue.length === 0) {
@@ -366,7 +381,7 @@ class SyncService {
     }
 
     const event = queue.shift();
-    
+
     try {
       // Check for duplicate using the eventId
       let processed = null;
@@ -377,7 +392,7 @@ class SyncService {
       } catch (error) {
         console.error('[SYNC] Redis get failed for dedupe marker:', error.message);
       }
-      
+
       if (processed) {
         this.getSyncState(roomCode)
           .then((state) => event.resolve({ success: true, state, duplicate: true }))
@@ -398,68 +413,68 @@ class SyncService {
     }
   }
 
- /**
- * Calculate client drift using authoritative server time — FIXED
- * @param {Object} syncState - Current sync state
- * @param {number} clientPosition - video.currentTime in seconds
- * @param {number} clientNow - Date.now() from client
- * @param {number} clientOffset - Clock offset from sync
- */
-calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roomCode = null) {
-  if (!syncState.isPlaying || !syncState.startAt) {
-    this.recordDriftTelemetry(roomCode, 0, 'none');
-    return {
-      drift: 0,
-      correction: null,
-      expectedPosition: syncState.baseTimestamp
-    };
+  /**
+  * Calculate client drift using authoritative server time — FIXED
+  * @param {Object} syncState - Current sync state
+  * @param {number} clientPosition - video.currentTime in seconds
+  * @param {number} clientNow - Date.now() from client
+  * @param {number} clientOffset - Clock offset from sync
+  */
+  calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roomCode = null) {
+    if (!syncState.isPlaying || !syncState.startAt) {
+      this.recordDriftTelemetry(roomCode, 0, 'none');
+      return {
+        drift: 0,
+        correction: null,
+        expectedPosition: syncState.baseTimestamp
+      };
+    }
+
+    // Client's estimate of server time
+    const estimatedServerTime = clientNow + clientOffset;
+
+    // Expected position based on server authority
+    const elapsed = Math.max(0, (estimatedServerTime - syncState.startAt) / 1000);
+    const expectedPosition = syncState.baseTimestamp + (elapsed * syncState.playbackRate);
+
+    // Drift = client position vs expected position
+    const drift = clientPosition - expectedPosition;
+    const absDrift = Math.abs(drift);
+
+    let correction = null;
+
+
+    if (absDrift > SYNC_CONTRACT.driftThresholds.hardSeek) {
+      correction = {
+        action: 'hardSeek',
+        targetPosition: expectedPosition,
+        reason: 'large_drift'
+      };
+    } else if (absDrift > SYNC_CONTRACT.driftThresholds.gradual) {
+      correction = {
+        action: 'gradual',
+        steps: Math.ceil(absDrift * 2),
+        targetPosition: expectedPosition,
+        reason: 'gradual_correction'
+      };
+    } else if (absDrift > SYNC_CONTRACT.driftThresholds.smooth) {
+      const rate = drift > 0 ? 0.98 : 1.02;
+      correction = {
+        action: 'rateAdjust',
+        rate,
+        targetPosition: expectedPosition,
+        reason: 'smooth_correction'
+      };
+    }
+
+    this.recordDriftTelemetry(roomCode, drift, correction?.action || 'none');
+
+    return { drift, correction, expectedPosition };
   }
 
-  // Client's estimate of server time
-  const estimatedServerTime = clientNow + clientOffset;
-  
-  // Expected position based on server authority
-  const elapsed = Math.max(0, (estimatedServerTime - syncState.startAt) / 1000);
-  const expectedPosition = syncState.baseTimestamp + (elapsed * syncState.playbackRate);
-  
-  // Drift = client position vs expected position
-  const drift = clientPosition - expectedPosition;
-  const absDrift = Math.abs(drift);
 
-  let correction = null;
-  
+  // Handle play event
 
-  if (absDrift > SYNC_CONTRACT.driftThresholds.hardSeek) {
-    correction = {
-      action: 'hardSeek',
-      targetPosition: expectedPosition,
-      reason: 'large_drift'
-    };
-  } else if (absDrift > SYNC_CONTRACT.driftThresholds.gradual) {
-    correction = {
-      action: 'gradual',
-      steps: Math.ceil(absDrift * 2),
-      targetPosition: expectedPosition,
-      reason: 'gradual_correction'
-    };
-  } else if (absDrift > SYNC_CONTRACT.driftThresholds.smooth) {
-    const rate = drift > 0 ? 0.98 : 1.02;
-    correction = {
-      action: 'rateAdjust',
-      rate,
-      targetPosition: expectedPosition,
-      reason: 'smooth_correction'
-    };
-  }
-
-  this.recordDriftTelemetry(roomCode, drift, correction?.action || 'none');
-
-  return { drift, correction, expectedPosition };
-}
-
-  
-   // Handle play event
-   
   async handlePlay(roomCode, userId, timestamp, latency = 100, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.PLAY,
@@ -469,9 +484,9 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
     });
   }
 
-  
-   // Handle pause event
-   
+
+  // Handle pause event
+
   async handlePause(roomCode, userId, timestamp, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.PAUSE,
@@ -481,9 +496,9 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
     });
   }
 
-  
-   // Handle seek event
-   
+
+  // Handle seek event
+
   async handleSeek(roomCode, userId, newTime, duration, clientEventId = null) {
     // Validate timestamp
     if (duration && (newTime < 0 || newTime > duration)) {
@@ -498,9 +513,9 @@ calculateClientDrift(syncState, clientPosition, clientNow, clientOffset = 0, roo
     });
   }
 
-  
-   // Handle rate change
-   
+
+  // Handle rate change
+
   async handleRateChange(roomCode, userId, rate, clientEventId = null) {
     return this.queueEvent(roomCode, {
       type: SYNC_ACTIONS.RATE_CHANGE,

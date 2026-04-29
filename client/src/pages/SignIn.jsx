@@ -27,12 +27,6 @@ export default function SignInPage() {
           path="/sign-in"
           signUpUrl="/sign-up"
           fallbackRedirectUrl="/"
-          appearance={{
-            elements: {
-              rootBox: "mx-auto",
-              card: "bg-card border border-border shadow-xl rounded-2xl",
-            },
-          }}
         />
       </div>
     </main>

@@ -104,7 +104,6 @@ class PresenceService {
         }
       );
 
-      console.log(`Batch updated ${onlineUsers.length} online users`);
 
     } catch (error) {
       console.error('Batch update presence error:', error);

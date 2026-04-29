@@ -8,6 +8,7 @@ const Friendship = require('../models/mongodb/Friendship');
 const cloudinary = require('../utils/cloudinary');
 const { validateRoomCreation } = require('../middleware/validation');
 const notificationService = require('../services/notificationService');
+const emailService = require('../services/emailService');
 const router = express.Router();
 
 const upload = multer({
@@ -164,25 +165,18 @@ const scoreRoom = ({ room, friendHostIds, preferredGenres, preferredLanguages, i
  */
 router.post('/', validateRoomCreation, async (req, res, next) => {
   const startTime = Date.now();
-  console.log(`[ROOMS] 🚀 POST /rooms START - userId: ${req.userId}`);
   
   try {
-    console.log(`[ROOMS] 📥 Request body:`, { 
-      name: req.body.name, 
-      type: req.body.type 
-    });
     
     const hostId = req.userId; // From auth middleware
     
     if (!hostId) {
-      console.log(`[ROOMS] ❌ No userId in request`);
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
       });
     }
     
-    console.log(`[ROOMS] 🔄 Calling roomService.createRoom...`);
     const room = await roomService.createRoom(req.body, hostId);
 
     const invitedUserIds = (room.invitedUsers || [])
@@ -207,9 +201,36 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
           path: roomPath,
         },
       });
+
+      // Email offline invited users (async)
+      if (emailService.isConfigured()) {
+        (async () => {
+          try {
+            const invitedUsers = await User.find({ clerkId: { $in: invitedUserIds } })
+              .select('clerkId email displayName isOnline')
+              .lean();
+
+            const inviterName = inviterUser?.displayName || inviterUser?.username || 'A friend';
+
+            for (const user of invitedUsers) {
+              if (user.isOnline) continue;
+              if (!user.email || user.email.endsWith('@syncplay.local')) continue;
+
+              emailService.sendRoomInviteEmail({
+                to: user.email,
+                inviterName,
+                roomName: room.name,
+                roomCode: room.roomCode,
+                roomType: room.type,
+              }).catch(() => {});
+            }
+          } catch (_err) {
+            // Email failures shouldn't break room creation
+          }
+        })();
+      }
     }
     
-    console.log(`[ROOMS] ✅ Room created: ${room.roomCode} in ${Date.now() - startTime}ms`);
     const io = req.app.get('io');
     if (io) {
       io.emit('discovery:rooms-updated', {
@@ -231,7 +252,6 @@ router.post('/', validateRoomCreation, async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.log(`[ROOMS] ❌ Error after ${Date.now() - startTime}ms:`, error.message);
     next(error);
   }
 });
@@ -613,6 +633,19 @@ router.post('/:roomCode/media/upload', upload.single('video'), async (req, res, 
       updatedBy: req.userId,
     };
 
+    // Track this upload for cleanup when room ends
+    if (!room.uploadedAssets) room.uploadedAssets = [];
+    const alreadyTracked = room.uploadedAssets.some(a => a.publicId === mediaPublicId);
+    if (!alreadyTracked) {
+      room.uploadedAssets.push({
+        publicId: mediaPublicId,
+        resourceType: 'video',
+        url: mediaUrl,
+        uploadedBy: req.userId,
+        uploadedAt: now,
+      });
+    }
+
     await room.save();
 
     const io = req.app.get('io');
@@ -736,6 +769,37 @@ router.post('/:roomCode/invite', async (req, res, next) => {
         path: roomPath,
       },
     });
+
+    // Send email invites to offline users (async, don't block response)
+    if (newlyInvited.length > 0 && emailService.isConfigured()) {
+      (async () => {
+        try {
+          const invitedUsers = await User.find({ clerkId: { $in: newlyInvited } })
+            .select('clerkId email displayName username isOnline')
+            .lean();
+
+          const inviterDisplayName = inviterUser?.displayName || inviterUser?.username || 'A friend';
+
+          for (const invitedUser of invitedUsers) {
+            // Only email offline users — online users already get real-time notification
+            if (invitedUser.isOnline) continue;
+            if (!invitedUser.email || invitedUser.email.endsWith('@syncplay.local')) continue;
+
+            emailService.sendRoomInviteEmail({
+              to: invitedUser.email,
+              inviterName: inviterDisplayName,
+              roomName: room.name,
+              roomCode: room.roomCode,
+              roomType: room.type,
+            }).catch((err) => {
+              console.error(`[INVITE-EMAIL] Failed for ${invitedUser.email}:`, err.message);
+            });
+          }
+        } catch (emailErr) {
+          console.error('[INVITE-EMAIL] Batch error:', emailErr.message);
+        }
+      })();
+    }
 
     res.json({
       success: true,

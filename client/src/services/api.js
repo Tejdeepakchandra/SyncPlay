@@ -14,7 +14,6 @@ const api = axios.create({
 api.interceptors.request.use(
   (config) => {
     const method = config.method?.toUpperCase() || 'GET';
-    console.log(`[API] 📤 ${method} ${config.url}`);
     return config;
   },
   (error) => {
@@ -25,19 +24,21 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   (response) => {
-    console.log(`[API] ✅ ${response.status} ${response.config.url}`);
     return response;
   },
   (error) => {
     const url = error.config?.url || 'unknown';
     const method = error.config?.method?.toUpperCase() || 'unknown';
+    const status = error.response?.status;
     
     if (error.code === 'ECONNABORTED') {
       console.error(`[API] ⏱️ TIMEOUT on ${method} ${url} (${error.message})`);
     } else if (!error.response) {
       console.error(`[API] 🌐 No response from server on ${method} ${url}`);
+    } else if (status === 401) {
+      // Silently ignore 401s — expected during auth bootstrap (Clerk loading)
     } else {
-      console.error(`[API] ❌ ${error.response.status} ${method} ${url}: ${error.response.data?.message || error.message}`);
+      console.error(`[API] ❌ ${status} ${method} ${url}: ${error.response.data?.message || error.message}`);
     }
     
     return Promise.reject(error);

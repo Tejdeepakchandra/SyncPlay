@@ -13,19 +13,19 @@ export const useRoom = (roomCode) => {
   const [joinStatus, setJoinStatus] = useState(null); // "waiting_for_approval", "joined", null
   const [joinRequests, setJoinRequests] = useState([]); // For host
   const [waitingUsers, setWaitingUsers] = useState([]); // For host to see who's waiting
-  const [guestName, setGuestName] = useState(null); // Store guest name for re-join after approval
+  const [guestName, setGuestName] = useState(() => {
+    // Restore guest name from session storage for page refresh
+    if (typeof window !== 'undefined') {
+      const stored = sessionStorage.getItem(`syncplay:guest:${String(roomCode || '').trim().toUpperCase()}`);
+      return stored || null;
+    }
+    return null;
+  });
   const [currentUserId, setCurrentUserId] = useState(null); // Track current user ID (Clerk ID or guest ID)
 
   useEffect(() => {
     if (!normalizedRoomCode) return;
 
-    console.log('📍 [ROOM INIT] Starting room initialization:', {
-      normalizedRoomCode,
-      hasUser: !!user,
-      userClerkId: user?.clerkId,
-      socketConnected: socket.connected,
-      socketUserId: socket.userId,
-    });
 
     const initializeRoom = async () => {
       try {
@@ -48,11 +48,9 @@ export const useRoom = (roomCode) => {
           }
         }
 
-        console.log('✅ Socket connected, fetching room state...', normalizedRoomCode);
 
         // Request room state and try to join
         socket.emit("room:get-state", { roomCode: normalizedRoomCode }, (response) => {
-          console.log('📨 Received room state response:', response);
           if (!response || !response.success) {
             console.error('Failed to get room state:', response?.error || 'No response');
             setAccessStatus("not_found");
@@ -62,7 +60,6 @@ export const useRoom = (roomCode) => {
           // Set current user ID from response
           if (response.userId) {
             setCurrentUserId(response.userId);
-            console.log('🔐 [ROOM] Set currentUserId from room:get-state:', response.userId);
           }
 
           setRoom(response.room);
@@ -78,17 +75,14 @@ export const useRoom = (roomCode) => {
           // AUTO-JOIN for authenticated users (host, signed-in users)
           // Guests need to see the GuestNameDialog first (handled in MovieRoom.jsx)
           if (user) {
-            console.log('📨 Auto-joining authenticated user...');
             // Get display name from user object or Clerk profile
             const displayName = user?.display_name || 
               (clerkUser ? `${clerkUser.firstName || ''} ${clerkUser.lastName || ''}`.trim() : null) ||
               user?.username || "User";
             socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: displayName }, (joinResponse) => {
-              console.log('📨 Received room join response (auto-join):', joinResponse);
               if (joinResponse && joinResponse.success) {
                 if (joinResponse.userId) {
                   setCurrentUserId(joinResponse.userId);
-                  console.log('🔐 [ROOM] Set currentUserId from room:join:', joinResponse.userId);
                 }
 
                 if (joinResponse.status === "waiting_for_approval") {
@@ -107,6 +101,24 @@ export const useRoom = (roomCode) => {
                 console.error('Failed to auto-join room:', joinResponse?.error || 'No response');
               }
             });
+          } else if (guestName) {
+            // Auto-rejoin as guest on page refresh (we have stored guest name)
+            socket.emit("room:join", { roomCode: normalizedRoomCode, guestName }, (joinResponse) => {
+              if (joinResponse && joinResponse.success) {
+                if (joinResponse.userId) setCurrentUserId(joinResponse.userId);
+                if (joinResponse.status === "waiting_for_approval") {
+                  setJoinStatus("waiting_for_approval");
+                  setRoom(joinResponse.room || response.room || null);
+                  setParticipants([]);
+                  setIsHost(false);
+                  return;
+                }
+                setJoinStatus("joined");
+                setRoom(joinResponse.room || response.room || null);
+                setParticipants(joinResponse.participants || []);
+                setIsHost(!!joinResponse.isHost);
+              }
+            });
           }
         });
       } catch (error) {
@@ -119,13 +131,7 @@ export const useRoom = (roomCode) => {
 
     // Listen for socket identification info (tells us the server-assigned userId)
     const handleSocketIdentify = (data) => {
-      console.log('🔐 [SOCKET] Received socket identity:', {
-        userId: data.userId,
-        isGuest: data.isGuest,
-        userRole: data.userRole
-      });
       setCurrentUserId(data.userId);
-      console.log('🔐 [SOCKET] Set currentUserId to:', data.userId);
     };
 
     socket.on('socket:identify', handleSocketIdentify);
@@ -133,7 +139,6 @@ export const useRoom = (roomCode) => {
     // Register socket reconnection handler
     // When socket reconnects, re-register all listeners
     const handleSocketReconnect = () => {
-      console.log('🔌 [GUEST] Socket reconnected, re-registering listeners...');
       // The listeners will be registered in the separate effect below
       // Just need to ensure they're available
     };
@@ -259,7 +264,6 @@ export const useRoom = (roomCode) => {
   }, []);
 
   const handleJoinRequest = useCallback((data) => {
-    console.log('📥 New join request:', data);
     setJoinRequests((prev) => [
       ...prev,
       {
@@ -281,45 +285,30 @@ export const useRoom = (roomCode) => {
   }, []);
 
   const handleJoinAccepted = useCallback((data) => {
-    console.log('📥 [GUEST] Received room:join-accepted event:', {
-      eventRoomCode: data.roomCode,
-      currentRoomCode: normalizedRoomCode,
-      eventUserId: data.userId,
-      currentUserId: currentUserId,
-      guestNameStored: guestName,
-      message: data.message
-    });
     
     // Check if this acceptance is for the current room
     if (String(data.roomCode || '').toUpperCase() !== normalizedRoomCode) {
-      console.log('❌ [GUEST] Wrong room, ignoring acceptance');
       return;
     }
     
     // Check if this acceptance is for the current socket user
     if (data.userId !== currentUserId) {
-      console.log(`❌ [GUEST] Wrong user (event: ${data.userId}, current: ${currentUserId}), ignoring`);
       return;
     }
     
-    console.log('✅ [GUEST] Join request accepted! Now auto-joining room...', data);
     setJoinStatus("joined");
     
     // Emit join after approval, using the guest name they entered
     const joinName = guestName || "Guest";
-    console.log(`📤 [GUEST] Emitting room:join with guestName: "${joinName}"`);
     // For authenticated users, use their display name instead of guest name
     const finalName = user ? (user?.display_name || 
       (clerkUser ? `${clerkUser.firstName || ''} ${clerkUser.lastName || ''}`.trim() : null) ||
       user?.username || "User") : joinName;
     socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: finalName }, (response) => {
-      console.log('📨 [GUEST] Auto-join response after acceptance:', response);
       if (response?.success) {
         if (response.userId) {
           setCurrentUserId(response.userId);
-          console.log('🔐 [ROOM] Set currentUserId from room:join (after approval):', response.userId);
         }
-        console.log('✅ [GUEST] Successfully joined room after approval');
         const participants = response.participants || [];
         setParticipants(participants);
         // Update room participant count
@@ -350,13 +339,11 @@ export const useRoom = (roomCode) => {
       return;
     }
     
-    console.log('❌ Join request rejected:', data);
     setAccessStatus("rejected");
     setJoinStatus(null);
   }, [normalizedRoomCode, currentUserId]);
 
   const handleParticipantPermissionsUpdated = useCallback((data) => {
-    console.log('🔐 Participant permissions updated:', data);
     const targetUserId = data.targetUserId || data.userId;
 
     // Keep local participant state aligned for all UI sections.
@@ -384,7 +371,6 @@ export const useRoom = (roomCode) => {
   }, []);
 
   const handleRoleUpdated = useCallback((data) => {
-    console.log('👑 User role updated:', data);
     const targetUserId = data.targetUserId || data.userId;
 
     // Update participants list to reflect role change
@@ -427,7 +413,6 @@ export const useRoom = (roomCode) => {
   }, []);
 
   const handleForceLeave = useCallback((data) => {
-    console.warn('🚪 Forced to leave room:', data);
     setJoinStatus(null);
     setAccessStatus('not_found');
     setRoom(null);
@@ -435,11 +420,24 @@ export const useRoom = (roomCode) => {
     setJoinRequests([]);
     setWaitingUsers([]);
     setGuestName(null);
+    sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
     setIsHost(false);
-  }, []);
+  }, [normalizedRoomCode]);
 
   const handleRoomEnded = useCallback((data) => {
-    console.warn('🛑 Room ended:', data);
+    if (data?.reason === 'auto_expired') {
+      toast("Room Expired", {
+        description: "You have completed 5 hrs in the room so the room ended automatically. Please create another room.",
+        duration: 10000,
+        icon: "🕒"
+      });
+    } else {
+      toast("Room ended", {
+        description: "The host has ended this room.",
+        duration: 4000,
+      });
+    }
+    
     setJoinStatus(null);
     setAccessStatus('not_found');
     setRoom(null);
@@ -447,17 +445,16 @@ export const useRoom = (roomCode) => {
     setJoinRequests([]);
     setWaitingUsers([]);
     setGuestName(null);
+    sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
     setIsHost(false);
-  }, []);
+  }, [normalizedRoomCode]);
 
   // Register socket event listeners - this runs whenever handlers change (which happens when dependencies change)
   useEffect(() => {
     if (!socket.connected) {
-      console.log('📡 [LISTENERS] Socket not connected yet, skipping listener registration');
       return;
     }
 
-    console.log('📡 [LISTENERS] Registering socket event listeners...');
 
     socket.on("room:user-joined", handleParticipantJoined);
     socket.on("room:user-left", handleParticipantLeft);
@@ -473,7 +470,6 @@ export const useRoom = (roomCode) => {
     socket.on("room:force-leave", handleForceLeave);
 
     return () => {
-      console.log('📡 [LISTENERS] Unregistering socket event listeners...');
       socket.off("room:user-joined", handleParticipantJoined);
       socket.off("room:user-left", handleParticipantLeft);
       socket.off("room:new-host", handleNewHost);
@@ -492,11 +488,11 @@ export const useRoom = (roomCode) => {
   // Function to join room with guest name
   const joinAsGuest = (guestNameInput) => {
     return new Promise((resolve, reject) => {
-      // Store the guest name for use if they're approved later and need to re-join
       setGuestName(guestNameInput);
+      // Persist guest name for page refresh
+      sessionStorage.setItem(`syncplay:guest:${normalizedRoomCode}`, guestNameInput);
       
       socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: guestNameInput }, (response) => {
-        console.log('📨 Join response:', response);
         
         if (!response.success) {
           reject(new Error(response.error || "Failed to join room"));
@@ -505,7 +501,6 @@ export const useRoom = (roomCode) => {
 
         if (response.userId) {
           setCurrentUserId(response.userId);
-          console.log('🔐 [ROOM] Set currentUserId from joinAsGuest:', response.userId);
         }
 
         if (response.status === "waiting_for_approval") {
@@ -565,6 +560,7 @@ export const useRoom = (roomCode) => {
           setJoinRequests([]);
           setWaitingUsers([]);
           setGuestName(null);
+          sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
           setRoom(null);
           setIsHost(false);
           setAccessStatus('loading');
@@ -585,6 +581,7 @@ export const useRoom = (roomCode) => {
           setJoinRequests([]);
           setWaitingUsers([]);
           setGuestName(null);
+          sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
           setRoom(null);
           setIsHost(false);
           setAccessStatus('loading');

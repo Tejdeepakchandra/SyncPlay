@@ -26,9 +26,7 @@ function generateUniqueGuestId() {
     
     guestId = `guest-${randomHex}`;
     sessionStorage.setItem(storageKey, guestId);
-    console.log(`🔐 Generated new guest ID: ${guestId}`);
   } else {
-    console.log(`🔐 Using existing guest ID: ${guestId}`);
   }
   
   return guestId;
@@ -68,30 +66,25 @@ export function connectSocket(token) {
     // But allow guest→user or user→guest transitions
     if (socket.auth?.token === token) {
       // Same token/mode - skip
-      console.log('🔌 Socket connection already initiated with same auth state, skipping duplicate');
       return socket;
     }
     // Different token - need to reconnect for transition
-    console.log('🔌 Auth state changed, reconnecting socket...');
     socket.disconnect();
     connectionInitiated = false;
   }
   
   // Also check if already connected with same auth
   if (socket.connected && socket.auth?.token === token) {
-    console.log('🔌 Socket already connected with same auth');
     return socket;
   }
   
   // Update auth (or set to guest mode if null)
   if (token) {
     socket.auth = { token };
-    console.log('🔌 Initiating authenticated socket connection...');
   } else {
     // For guest mode, include unique guest ID
     const guestId = generateUniqueGuestId();
     socket.auth = { guestId }; // Send unique guest ID to server
-    console.log('🔌 Initiating guest socket connection with guestId:', guestId);
   }
   
   connectionInitiated = true;
@@ -105,7 +98,6 @@ export function connectSocket(token) {
  */
 export function disconnectSocket() {
   if (socketInstance?.connected) {
-    console.log('🔌 Disconnecting socket...');
     connectionInitiated = false; // ✅ Reset so new connection can be made
     socketInstance.disconnect();
   } else if (socketInstance) {
