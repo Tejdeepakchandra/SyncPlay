@@ -1,5 +1,47 @@
+# Dependencies
 node_modules/
+
+# Environment files (VERY IMPORTANT)
 .env
+.env.*
+server/.env
+client/.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build / production
 dist/
 build/
+out/
+
+# Vite
 .vite/
+
+# Next.js (if used later)
+.next/
+
+# Coverage
+coverage/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Cache
+.cache/
+.temp/
+
+# Uploads (if storing locally before cloudinary)
+uploads/
+
+# Misc
+*.local
