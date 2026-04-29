@@ -102,23 +102,32 @@ module.exports = (socket, io) => {
   // The client-side version guards + nativeBridgeMuted prevent the sender
   // from double-processing its own broadcasts.
   const emitToRoom = (roomCode, event, payload) => {
-    const room = io.sockets.adapter.rooms.get(roomCode);
-    const socketsInRoom = room ? room.size : 0;
-    console.log(`[SYNC:BROADCAST] event=${event} room=${roomCode} socketsInRoom=${socketsInRoom}`);
     io.to(roomCode).emit(event, payload);
   };
 
+  // In-memory media cache — media only changes on sync:media-change events
+  const mediaCache = new Map();
+
   const buildCurrentPlayback = async (roomCode, syncStateOverride = null, mediaOverride = undefined) => {
     const syncState = syncStateOverride || await syncService.getSyncState(roomCode);
-    const roomQuery = Room.findOne({ roomCode });
-    let roomDoc = null;
-    if (roomQuery && typeof roomQuery.select === 'function') {
-      const selected = roomQuery.select('media.current');
-      roomDoc = selected && typeof selected.lean === 'function' ? await selected.lean() : await selected;
+    
+    let runtimeMedia;
+    if (mediaOverride !== undefined) {
+      runtimeMedia = mediaOverride;
     } else {
-      roomDoc = await roomQuery;
+      // Try in-memory media cache first (0ms)
+      const nrc = normalizeRoomCode(roomCode);
+      const cached = mediaCache.get(nrc);
+      if (cached !== undefined) {
+        runtimeMedia = cached;
+      } else {
+        // Fallback: query DB once and cache
+        const roomDoc = await Room.findOne({ roomCode: nrc }).select('media.current').lean();
+        runtimeMedia = mapRoomMediaToRuntimeMedia(roomDoc?.media?.current);
+        mediaCache.set(nrc, runtimeMedia);
+      }
     }
-    const runtimeMedia = mediaOverride === undefined ? mapRoomMediaToRuntimeMedia(roomDoc?.media?.current) : mediaOverride;
+    
     return {
       media: runtimeMedia,
       isPlaying: !!syncState.isPlaying,
@@ -218,8 +227,10 @@ module.exports = (socket, io) => {
         },
       }).catch(err => console.error('[SYNC] Media change DB update failed:', err.message));
 
-      // Invalidate the room doc cache so permission checks get fresh data
+      // Invalidate caches so permission checks and media lookups get fresh data
       roomDocCache.delete(roomCode);
+      const runtimeMediaForCache = mapRoomMediaToRuntimeMedia(mapRuntimeMediaToRoomMedia(media)) || media;
+      mediaCache.set(normalizeRoomCode(roomCode), runtimeMediaForCache);
 
       // Build currentPlayback from known data (don't re-query DB)
       const runtimeMedia = mapRoomMediaToRuntimeMedia(mapRuntimeMediaToRoomMedia(media)) || media;
@@ -290,8 +301,7 @@ module.exports = (socket, io) => {
           console.log(`[SYNC:PLAY] ✅ Accepted room=${roomCode} version=${result.state.version} startAt=${result.state.startAt}`);
           syncService.recordControlTelemetry(roomCode, 'play', 'accepted');
           const currentPlayback = await buildCurrentPlayback(roomCode, result.state);
-          emitToRoom(roomCode, 'sync:state-update', { state: result.state, media: currentPlayback.media, userId: socket.userId, action: 'play' });
-          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'play', currentPlayback });
+          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'play', currentPlayback, userId: socket.userId });
         }
         callback(result);
         // Analytics — fire-and-forget after response
@@ -327,8 +337,7 @@ module.exports = (socket, io) => {
           console.log(`[SYNC:PAUSE] ✅ Accepted room=${roomCode} version=${result.state.version}`);
           syncService.recordControlTelemetry(roomCode, 'pause', 'accepted');
           const currentPlayback = await buildCurrentPlayback(roomCode, result.state);
-          emitToRoom(roomCode, 'sync:state-update', { state: result.state, media: currentPlayback.media, userId: socket.userId });
-          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'pause', currentPlayback });
+          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'pause', currentPlayback, userId: socket.userId });
         }
         callback(result);
         if (result.success) {
@@ -361,8 +370,7 @@ module.exports = (socket, io) => {
         if (result.success && result.state) {
           syncService.recordControlTelemetry(roomCode, 'seek', 'accepted');
           const currentPlayback = await buildCurrentPlayback(roomCode, result.state);
-          emitToRoom(roomCode, 'sync:state-update', { state: result.state, media: currentPlayback.media, userId: socket.userId });
-          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'seek', currentPlayback });
+          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), action: 'seek', currentPlayback, userId: socket.userId });
         }
         callback(result);
         if (result.success) {
@@ -391,8 +399,7 @@ module.exports = (socket, io) => {
         const result = await syncService.handleRateChange(roomCode, socket.userId, rate, clientEventId || null);
         if (result.success && result.state) {
           const currentPlayback = await buildCurrentPlayback(roomCode, result.state);
-          emitToRoom(roomCode, 'sync:state-update', { state: result.state, media: currentPlayback.media, userId: socket.userId });
-          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), currentPlayback });
+          emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), currentPlayback, userId: socket.userId });
         }
         callback(result);
       } catch (error) { callback({ success: false, error: error.message }); }

@@ -756,7 +756,7 @@ const MovieRoom = () => {
       if (mediaSource === "youtube") {
         const hasPlayer = !!ytPlayer.player?.current;
         const canApplyImmediately = hasPlayer && ["playing", "paused", "cued", "unstarted"].includes(ytPlayer.playerState);
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        nativeBridgeMutedUntilRef.current = Date.now() + 1500;
         if (canApplyImmediately) {
           if (Number.isFinite(timeSec)) {
             ytPlayer.seekTo(timeSec, true);
@@ -771,12 +771,12 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 1200);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
         const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         const canApplyImmediately = !!video && video.readyState >= 2;
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        nativeBridgeMutedUntilRef.current = Date.now() + 600;
         if (canApplyImmediately) {
           pendingRemoteActionRef.current = null;
           if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
@@ -812,7 +812,7 @@ const MovieRoom = () => {
       if (mediaSource === "youtube") {
         const hasPlayer = !!ytPlayer.player?.current;
         const canApplyImmediately = hasPlayer && ["playing", "paused", "cued", "unstarted"].includes(ytPlayer.playerState);
-        nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+        nativeBridgeMutedUntilRef.current = Date.now() + 1500;
         if (canApplyImmediately) {
           if (Number.isFinite(timeSec)) {
             ytPlayer.seekTo(timeSec, true);
@@ -827,12 +827,12 @@ const MovieRoom = () => {
           };
           pendingRemoteActionSetAtRef.current = Date.now();
         }
-        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 400);
+        setTimeout(() => { suppressRemoteSyncRef.current = false; }, 1200);
       } else if (mediaSource === "upload") {
         const mediaKey = getUploadMediaKey();
         const video = backgroundUploadAudioRef.current || uploadVideoRef.current;
         if (video) {
-          nativeBridgeMutedUntilRef.current = Date.now() + 1200;
+          nativeBridgeMutedUntilRef.current = Date.now() + 600;
           pendingRemoteActionRef.current = null;
           if (Number.isFinite(timeSec) && Number.isFinite(video.duration) && video.duration > 0) {
             video.currentTime = Math.max(0, Math.min(video.duration, timeSec));

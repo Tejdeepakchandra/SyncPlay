@@ -140,9 +140,9 @@ export const useRoomSync = ({
           lastAppliedRef.current.time = projectedTime;
           lastAppliedRef.current.isPlaying = true;
         }, msUntilStart);
-      } else if (force || playback.isPlaying !== lastAppliedRef.current.isPlaying) {
-        // Immediate play or pause
-        if (playback.isPlaying) {
+      } else if (playback.isPlaying) {
+        // Immediate play — only trigger on genuine state transition
+        if (force || playback.isPlaying !== lastAppliedRef.current.isPlaying) {
           if (pendingPlayTimeoutRef.current) {
             clearTimeout(pendingPlayTimeoutRef.current);
             pendingPlayTimeoutRef.current = null;
@@ -152,15 +152,19 @@ export const useRoomSync = ({
           handlersRef.current.onPlay?.(projectedTime);
           if (hasStartAt) scheduleStartupConvergence(baseTime, playback.startAt, playback.playbackRate || 1);
           lastAppliedRef.current.time = projectedTime;
-        } else {
+          lastAppliedRef.current.isPlaying = true;
+        }
+      } else {
+        // Pause
+        if (force || playback.isPlaying !== lastAppliedRef.current.isPlaying) {
           if (pendingPlayTimeoutRef.current) {
             clearTimeout(pendingPlayTimeoutRef.current);
             pendingPlayTimeoutRef.current = null;
           }
           clearStartupConvergence();
           handlersRef.current.onPause?.(baseTime);
+          lastAppliedRef.current.isPlaying = false;
         }
-        lastAppliedRef.current.isPlaying = playback.isPlaying;
       }
     }
 
@@ -193,8 +197,8 @@ export const useRoomSync = ({
 
   const markControlPending = useCallback((eventName) => {
     setControlPending(eventName);
-    const pendingMs = eventName === "seek" ? 360 : 420;
-    const suppressMs = eventName === "seek" ? 260 : 280;
+    const pendingMs = eventName === "seek" ? 200 : 250;
+    const suppressMs = eventName === "seek" ? 150 : 180;
     if (pendingControlTimeoutRef.current) clearTimeout(pendingControlTimeoutRef.current);
     pendingControlTimeoutRef.current = setTimeout(() => {
       setControlPending(null);
@@ -229,12 +233,26 @@ export const useRoomSync = ({
     if (response.success) {
       if (Number.isFinite(response?.state?.version)) {
         latestVersionRef.current = response.state.version;
+        lastAppliedRef.current.version = response.state.version;
       }
 
       // For seek, let the broadcast apply uniformly
       if (eventName === "seek") return;
 
-      // Keep initiator aligned with the same authoritative timeline as everyone else.
+      // For play/pause: the initiator already applied the action locally.
+      // Do NOT force-reapply — it causes a visible bounce-back (seek to
+      // server-computed position, then play again). Just update tracking.
+      if (eventName === "play" || eventName === "pause") {
+        if (response?.state) {
+          lastAppliedRef.current.isPlaying = !!response.state.isPlaying;
+          if (Number.isFinite(response.state.baseTimestamp)) {
+            lastAppliedRef.current.time = response.state.baseTimestamp;
+          }
+        }
+        return;
+      }
+
+      // For other events, apply the authoritative state
       if (response?.state) {
         const playback = toPlaybackFromState(response.state);
         if (playback) {
@@ -325,7 +343,7 @@ export const useRoomSync = ({
       const handleStateUpdate = (data) => {
         const state = data?.state;
         if (!state) return;
-        driftSuppressUntilRef.current = Date.now() + 850;
+        driftSuppressUntilRef.current = Date.now() + 400;
         const playback = { ...toPlaybackFromState(state), media: data?.media || lastMediaRef.current };
         applyPlaybackState(playback, { forceSeek: data?.action === "seek" });
       };

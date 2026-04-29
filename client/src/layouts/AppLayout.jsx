@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
 import { getSocket } from '@/services/socket'
 import api from '@/services/api'
+import { isApiAuthReady } from '@/services/useApiAuth'
 import { toast } from 'sonner'
 
 export function AppLayout() {
@@ -29,6 +30,9 @@ export function AppLayout() {
       setUnreadDmCount(0)
       return
     }
+
+    // Wait for auth interceptor to be attached
+    if (!isApiAuthReady()) return
 
     try {
       const res = await api.get('/dm/conversations')

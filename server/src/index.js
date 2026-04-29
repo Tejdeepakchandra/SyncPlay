@@ -6,6 +6,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
+const mongoSanitize = require('express-mongo-sanitize');
+const rateLimit = require('express-rate-limit');
 
 // Load environment variables BEFORE any config that reads process.env
 dotenv.config();
@@ -116,6 +118,15 @@ app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Sanitize req.body and req.params to prevent NoSQL injection
+// (req.query is read-only in Express 5, so we sanitize it manually)
+app.use((req, _res, next) => {
+  if (req.body) req.body = mongoSanitize.sanitize(req.body);
+  if (req.params) req.params = mongoSanitize.sanitize(req.params);
+  next();
+});
+
 app.use('/uploads', express.static(path.resolve(__dirname, '../../uploads')));
 
 // HEALTH CHECK ENDPOINT (before auth middleware)
@@ -135,9 +146,16 @@ app.get('/api/health', (req, res) => {
 // Apply auth middleware to all routes
 app.use(authMiddleware);
 
-// Apply rate limiting to all routes
-// TODO: Fix rateLimiter usage - currently broken, needs proper limitType parameter
-// app.use(rateLimiter);
+// Global rate limiter (simple, doesn't need Redis)
+const globalLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '60000', 10),
+  max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+  skip: (req) => req.path === '/api/health',
+});
+app.use(globalLimiter);
 
 
 // ROUTES
@@ -175,23 +193,23 @@ setupSocketHandlers(io);
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err.message || err);
   
-  // Try to log to PostgreSQL (but don't fail if table doesn't exist)
+  // Log to PostgreSQL in production (non-blocking)
   if (pgPool && process.env.NODE_ENV === 'production') {
     pgPool.query(
       `INSERT INTO error_logs (error, path, method, user_id, timestamp) 
        VALUES ($1, $2, $3, $4, NOW())`,
       [err.message || 'Unknown error', req.path, req.method, req.userId || 'anonymous']
-    ).catch(e => {
-      // Silently fail - table might not exist in development
-      if (process.env.NODE_ENV === 'development') {
-      }
-    });
+    ).catch(() => {});
   }
 
-  res.status(err.status || 500).json({
+  const statusCode = err.status || 500;
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err : {}
+    message: isProduction && statusCode === 500
+      ? 'Internal server error'
+      : (err.message || 'Internal server error'),
   });
 });
 

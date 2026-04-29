@@ -1,6 +1,8 @@
 const express = require('express');
 const friendService = require('../services/friendService');
 const User = require('../models/mongodb/User');
+const emailService = require('../services/emailService');
+const notificationService = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -74,6 +76,39 @@ router.post('/requests', ensureAuthenticated, async (req, res, next) => {
       addresseeId: friendship.addresseeId,
       status: friendship.status,
     });
+
+    // Send in-app notification + email to the target user if offline
+    if (friendship.status === 'pending') {
+      const [requesterDoc, addresseeDoc] = await Promise.all([
+        User.findOne({ clerkId: req.userId }).select('displayName username').lean(),
+        User.findOne({ clerkId: targetUserId }).select('displayName username email isOnline').lean(),
+      ]);
+
+      const requesterName = requesterDoc?.displayName || requesterDoc?.username || 'Someone';
+
+      // In-app notification
+      const io = req.app.get('io');
+      notificationService.createNotification({
+        io,
+        userId: targetUserId,
+        actorId: req.userId,
+        type: 'friend_request',
+        title: `${requesterName} sent you a friend request`,
+        body: 'Accept to start watching together!',
+        metadata: { path: '/friends' },
+      }).catch(() => {});
+
+      // Email for offline users
+      if (addresseeDoc && !addresseeDoc.isOnline && addresseeDoc.email && !addresseeDoc.email.endsWith('@syncplay.local')) {
+        emailService.sendFriendRequestEmail({
+          to: addresseeDoc.email,
+          fromName: requesterName,
+          toName: addresseeDoc.displayName || addresseeDoc.username || 'there',
+        }).catch((err) => {
+          console.error('[FRIEND-EMAIL] Error:', err.message);
+        });
+      }
+    }
 
     res.status(201).json({ success: true, data: { friendshipId: friendship._id.toString(), status: friendship.status } });
   } catch (error) {

@@ -1,5 +1,6 @@
 const { Webhook } = require('svix');
 const User = require('../models/mongodb/User');
+const emailService = require('../services/emailService');
 
 /**
  * Clerk Webhook Handler
@@ -39,13 +40,42 @@ const clerkWebhook = async (req, res) => {
 
 
     switch (eventType) {
-      case 'user.created':
-        await syncUser(data);
+      case 'user.created': {
+        const savedUser = await syncUser(data);
+        // Send welcome email (async, don't block webhook response)
+        const email = data.email_addresses?.[0]?.email_address;
+        if (email) {
+          const name = data.first_name
+            ? `${data.first_name} ${data.last_name || ''}`.trim()
+            : data.username || 'there';
+          emailService.sendWelcomeEmail({ to: email, name }).catch((err) => {
+            console.error('[WEBHOOK] Welcome email error:', err.message);
+          });
+        }
         break;
+      }
       
       case 'user.updated':
         await syncUser(data);
         break;
+      
+      case 'session.created': {
+        // Sign-in notification email
+        const sessionUser = data?.user || data;
+        const signInEmail = sessionUser?.email_addresses?.[0]?.email_address;
+        if (signInEmail) {
+          const signInName = sessionUser?.first_name
+            ? `${sessionUser.first_name} ${sessionUser.last_name || ''}`.trim()
+            : sessionUser?.username || 'there';
+          emailService.sendSignInEmail({
+            to: signInEmail,
+            name: signInName,
+          }).catch((err) => {
+            console.error('[WEBHOOK] Sign-in email error:', err.message);
+          });
+        }
+        break;
+      }
       
       case 'user.deleted':
         await deleteUser(data.id);

@@ -43,10 +43,10 @@ const SYNC_CONTRACT = {
   adaptiveBuffer: (latencyMs) => {
     // Buffer must exceed typical broadcast round-trip so all clients
     // receive the state before startAt arrives, enabling simultaneous playback.
-    // YouTube typically needs ~400-800ms to pre-buffer after a seek command.
-    if (latencyMs < 120) return 600;     // Low latency: reasonable buffer
-    if (latencyMs < 260) return 850;     // Medium: allow for network jitter
-    return 1200;                         // High latency: generous buffer
+    // Reduced for lower latency — YouTube pre-buffers in ~200-400ms.
+    if (latencyMs < 120) return 350;     // Low latency: fast but reliable
+    if (latencyMs < 260) return 400;     // Medium: slight headroom
+    return 600;                          // High latency: reasonable buffer
   }
 };
 

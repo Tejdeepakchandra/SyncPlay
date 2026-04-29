@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings,
@@ -28,6 +28,9 @@ import { toast } from "sonner";
 import { useThemeStore, themes } from "@/stores/themeStore";
 import { useAuth } from "@/hooks/useAuth";
 import api from "@/services/api";
+import { isApiAuthReady } from "@/services/useApiAuth";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { getSocket } from "@/services/socket";
 
 const EMOJI_OPTIONS = ["😎", "🧑", "👩", "🦊", "🐱", "🎮", "🎵", "🎬", "🚀", "⭐", "🔥", "💎", "🌈", "🎯", "🦄", "🐼"];
 
@@ -99,8 +102,118 @@ export default function Profile() {
 
   const [notificationOverrides, setNotificationOverrides] = useState({});
   const [privacyOverrides, setPrivacyOverrides] = useState({});
-  const [friendCount, setFriendCount] = useState(null);
-  const [profileCounts, setProfileCounts] = useState({ activity: 0, achievements: 0, favorites: 0, moments: 0 });
+
+  const queryClient = useQueryClient();
+  const queryEnabled = Boolean(clerkLoaded && sessionLoaded && isAuthenticated);
+
+  // ── Cached queries (survive navigation, instant on re-visit) ──
+
+  const { data: friendSummary } = useQuery({
+    queryKey: ['profile', 'friendsSummary'],
+    queryFn: async () => {
+      if (!isApiAuthReady()) throw new Error('auth-not-ready');
+      const res = await api.get('/friends/summary');
+      return res?.data?.data || {};
+    },
+    enabled: queryEnabled,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    retry: (count, error) => error?.message === 'auth-not-ready' ? count < 3 : false,
+    retryDelay: 400,
+    placeholderData: (prev) => prev,
+  });
+
+  const { data: activityData } = useQuery({
+    queryKey: ['profile', 'activity'],
+    queryFn: async () => {
+      if (!isApiAuthReady()) throw new Error('auth-not-ready');
+      const res = await api.get('/users/me/activity', { params: { page: 1, limit: 1, category: 'all' } });
+      return res?.data?.data || {};
+    },
+    enabled: queryEnabled,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    retry: (count, error) => error?.message === 'auth-not-ready' ? count < 3 : false,
+    retryDelay: 400,
+    placeholderData: (prev) => prev,
+  });
+
+  const { data: achievementsData } = useQuery({
+    queryKey: ['profile', 'achievements'],
+    queryFn: async () => {
+      if (!isApiAuthReady()) throw new Error('auth-not-ready');
+      const res = await api.get('/users/me/achievements');
+      return res?.data?.data || {};
+    },
+    enabled: queryEnabled,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    retry: (count, error) => error?.message === 'auth-not-ready' ? count < 3 : false,
+    retryDelay: 400,
+    placeholderData: (prev) => prev,
+  });
+
+  const { data: favoritesData } = useQuery({
+    queryKey: ['profile', 'favorites'],
+    queryFn: async () => {
+      if (!isApiAuthReady()) throw new Error('auth-not-ready');
+      const res = await api.get('/users/me/favorites');
+      const favorites = res?.data?.data?.favorites || { rooms: [], moments: [], activities: [] };
+      return favorites;
+    },
+    enabled: queryEnabled,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    retry: (count, error) => error?.message === 'auth-not-ready' ? count < 3 : false,
+    retryDelay: 400,
+    placeholderData: (prev) => prev,
+  });
+
+  const { data: momentsData } = useQuery({
+    queryKey: ['profile', 'moments'],
+    queryFn: async () => {
+      if (!isApiAuthReady()) throw new Error('auth-not-ready');
+      const res = await api.get('/moments/profile/moments');
+      return res?.data?.data || {};
+    },
+    enabled: queryEnabled,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    retry: (count, error) => error?.message === 'auth-not-ready' ? count < 3 : false,
+    retryDelay: 400,
+    placeholderData: (prev) => prev,
+  });
+
+  // Derive counts from cached query data
+  const friendCount = friendSummary?.friendsCount ?? null;
+  const profileCounts = useMemo(() => ({
+    activity: activityData?.summary?.total ?? 0,
+    achievements: achievementsData?.summary?.unlocked ?? 0,
+    favorites: (favoritesData?.rooms?.length || 0) + (favoritesData?.moments?.length || 0) + (favoritesData?.activities?.length || 0),
+    moments: momentsData?.total ?? (Array.isArray(momentsData) ? momentsData.length : 0),
+  }), [activityData, achievementsData, favoritesData, momentsData]);
+
+  // Auto-invalidate caches on relevant socket events
+  useEffect(() => {
+    if (!queryEnabled) return;
+    const socket = getSocket();
+
+    const onFriendsChanged = () => queryClient.invalidateQueries({ queryKey: ['profile', 'friendsSummary'] });
+    const onRoomEnded = () => {
+      queryClient.invalidateQueries({ queryKey: ['profile', 'activity'] });
+      queryClient.invalidateQueries({ queryKey: ['profile', 'moments'] });
+    };
+
+    socket.on('friends:changed', onFriendsChanged);
+    socket.on('room:ended', onRoomEnded);
+    socket.on('notification:new', onFriendsChanged); // friend requests update count
+
+    return () => {
+      socket.off('friends:changed', onFriendsChanged);
+      socket.off('room:ended', onRoomEnded);
+      socket.off('notification:new', onFriendsChanged);
+    };
+  }, [queryEnabled, queryClient]);
 
   const notifications = useMemo(
     () => ({
@@ -185,50 +298,7 @@ export default function Profile() {
     [user?.stats?.roomsCreated, user?.stats?.watchTimeMinutes, friendCount, user?.stats?.watchedStreakDays]
   );
 
-  useEffect(() => {
-    if (!clerkLoaded || !sessionLoaded || !isAuthenticated) return;
 
-    let cancelled = false;
-
-    const loadProfileCounts = async (isRetry = false) => {
-      try {
-        const [summaryRes, activityRes, achievementsRes, favoritesRes, momentsRes] = await Promise.all([
-          api.get("/friends/summary"),
-          api.get("/users/me/activity", { params: { page: 1, limit: 1, category: "all" } }),
-          api.get("/users/me/achievements"),
-          api.get("/users/me/favorites"),
-          api.get("/moments/profile/moments").catch(() => ({ data: { data: { total: 0 } } })),
-        ]);
-
-        if (cancelled) return;
-
-        const friends = summaryRes?.data?.data?.friendsCount;
-        setFriendCount(Number.isFinite(friends) ? friends : null);
-
-        const favorites = favoritesRes?.data?.data?.favorites || { rooms: [], moments: [], activities: [] };
-        const momentsData = momentsRes?.data?.data;
-        const momentsCount = momentsData?.total ?? (Array.isArray(momentsData) ? momentsData.length : 0);
-        setProfileCounts({
-          activity: activityRes?.data?.data?.summary?.total ?? 0,
-          achievements: achievementsRes?.data?.data?.summary?.unlocked ?? 0,
-          favorites: (favorites.rooms?.length || 0) + (favorites.moments?.length || 0) + (favorites.activities?.length || 0),
-          moments: momentsCount,
-        });
-      } catch {
-        if (!isRetry && !cancelled) {
-          window.setTimeout(() => {
-            loadProfileCounts(true).catch(() => null);
-          }, 350);
-        }
-      }
-    };
-
-    loadProfileCounts(false).catch(() => null);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [clerkLoaded, sessionLoaded, isAuthenticated]);
 
   const openEdit = () => {
     setEditName(currentProfile.display_name);
