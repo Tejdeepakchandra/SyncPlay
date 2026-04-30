@@ -566,7 +566,16 @@ const MovieRoom = () => {
               if (Number.isFinite(pending.time) && Math.abs((ytPlayer.currentTime || 0) - pending.time) > 1.5) {
                 ytPlayer.seekTo(pending.time, true);
               }
-              ytPlayer.play();
+              // Mobile autoplay: mute→play→unmute
+              const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+                || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+              if (isMobile) {
+                ytPlayer.mute();
+                ytPlayer.play();
+                setTimeout(() => { ytPlayer.unmute(); }, 800);
+              } else {
+                ytPlayer.play();
+              }
             } else if (pending.type === "pause" && state !== "paused") {
               if (Number.isFinite(pending.time) && Math.abs((ytPlayer.currentTime || 0) - pending.time) > 1.5) {
                 ytPlayer.seekTo(pending.time, true);
@@ -641,7 +650,16 @@ const MovieRoom = () => {
           ytPlayer.seekTo(pending.time, true);
         }
         nativeBridgeMutedUntilRef.current = Date.now() + 800;
-        ytPlayer.play();
+        // Mobile autoplay: mute→play→unmute
+        const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+          || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+        if (isMobile) {
+          ytPlayer.mute();
+          ytPlayer.play();
+          setTimeout(() => { ytPlayer.unmute(); }, 800);
+        } else {
+          ytPlayer.play();
+        }
         pendingRemoteActionRef.current = null;
       } else if (pending?.type === "pause") {
         if (Number.isFinite(pending.time)) {
@@ -653,7 +671,16 @@ const MovieRoom = () => {
       }
 
       if (!canControl && mediaSource === "youtube" && isPlaying) {
-        ytPlayer.play();
+        // Mobile autoplay for non-controller sync join
+        const isMobile2 = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+          || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+        if (isMobile2) {
+          ytPlayer.mute();
+          ytPlayer.play();
+          setTimeout(() => { ytPlayer.unmute(); }, 800);
+        } else {
+          ytPlayer.play();
+        }
       }
     },
     onVideoChange: (newVideoId) => {
@@ -710,6 +737,10 @@ const MovieRoom = () => {
       const mediaType = media?.type || "none";
       const resolvedYoutubeId = resolveYoutubeVideoId(media);
 
+      // Always reset pending actions and progress on ANY media change
+      pendingRemoteActionRef.current = null;
+      pendingRemoteActionSetAtRef.current = 0;
+
       if (mediaType === "youtube" && resolvedYoutubeId) {
         // Skip if we're already showing this exact video (prevents flicker from own broadcast)
         if (resolvedYoutubeId === youtubeVideoId && mediaSource === "youtube") {
@@ -720,7 +751,10 @@ const MovieRoom = () => {
         nativeBridgeMutedUntilRef.current = Date.now() + 3000;
         suppressRemoteSyncRef.current = true;
         setTimeout(() => { suppressRemoteSyncRef.current = false; }, 2500);
-        pendingRemoteActionRef.current = null;
+        // CLEAR upload state to prevent ghost playback (Fix #5)
+        setUploadedVideoUrl(null);
+        setIsUploadMediaReady(false);
+        // Set YouTube state
         setYoutubeVideoId(resolvedYoutubeId);
         setFallbackYoutubeVideoId(resolvedYoutubeId);
         setMediaSource("youtube");
@@ -728,15 +762,21 @@ const MovieRoom = () => {
         setProgress(0);
         desiredPlayingRef.current = false;
       } else if (mediaType === "upload" && media?.videoUrl) {
-        setUploadedVideoUrl(media.videoUrl);
+        // CLEAR YouTube state to prevent fallback to old video (Fix #5)
+        setYoutubeVideoId(null);
         setFallbackYoutubeVideoId(null);
+        // Set upload state
+        setUploadedVideoUrl(media.videoUrl);
         setMediaSource("upload");
         setIsUploadMediaReady(false);
         uploadReadyToastRef.current = false;
         setIsPlaying(false);
+        setProgress(0);
         desiredPlayingRef.current = false;
       } else if (mediaType === "screen") {
         setFallbackYoutubeVideoId(null);
+        setYoutubeVideoId(null);
+        setUploadedVideoUrl(null);
         setMediaSource("screen");
         setIsPlaying(true);
       } else if (mediaType === "none") {
@@ -745,8 +785,8 @@ const MovieRoom = () => {
         setFallbackYoutubeVideoId(null);
         setUploadedVideoUrl(null);
         setIsPlaying(false);
+        setProgress(0);
         desiredPlayingRef.current = false;
-        pendingRemoteActionRef.current = null;
       }
     },
     onPlay: (timeSec = 0) => {
@@ -761,7 +801,18 @@ const MovieRoom = () => {
           if (Number.isFinite(timeSec)) {
             ytPlayer.seekTo(timeSec, true);
           }
-          ytPlayer.play();
+          // Mobile autoplay fix: mute first, play, then unmute after playback starts
+          // YouTube IFrame API allows muted autoplay on all mobile browsers
+          const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+            || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+          if (isMobileDevice) {
+            ytPlayer.mute();
+            ytPlayer.play();
+            // Unmute after YouTube transitions from buffering→playing
+            setTimeout(() => { ytPlayer.unmute(); }, 800);
+          } else {
+            ytPlayer.play();
+          }
           pendingRemoteActionRef.current = null;
         } else {
           pendingRemoteActionRef.current = {
@@ -784,7 +835,24 @@ const MovieRoom = () => {
           }
           desiredPlayingRef.current = true;
           setIsPlaying(true);
-          video.play().catch(() => { setIsPlaying(false); });
+          // Try unmuted play first, fall back to muted play for mobile autoplay policy
+          video.play().catch((playErr) => {
+            if (playErr?.name === "NotAllowedError") {
+              // Mobile autoplay blocked — try muted autoplay
+              console.warn("[MovieRoom] Autoplay blocked, trying muted play...");
+              video.muted = true;
+              video.play().then(() => {
+                // Unmute after a short delay once playback has started
+                setTimeout(() => { video.muted = false; }, 300);
+              }).catch(() => {
+                setIsPlaying(false);
+                desiredPlayingRef.current = false;
+              });
+            } else {
+              setIsPlaying(false);
+              desiredPlayingRef.current = false;
+            }
+          });
         } else {
           pendingRemoteActionRef.current = {
             type: "play",
@@ -2713,6 +2781,8 @@ const MovieRoom = () => {
                 ref={uploadVideoRef}
                 src={uploadedVideoUrl}
                 playsInline
+                preload="auto"
+                crossOrigin="anonymous"
                 className="w-full h-full object-contain"
                 onLoadedData={() => {
                   setIsUploadMediaReady(true);
@@ -2730,8 +2800,21 @@ const MovieRoom = () => {
                         desiredPlayingRef.current = true;
                         video.play().then(() => {
                           setIsPlaying(true);
-                        }).catch(() => {
-                          setIsPlaying(false);
+                        }).catch((playErr) => {
+                          if (playErr?.name === "NotAllowedError") {
+                            // Mobile autoplay blocked — try muted
+                            video.muted = true;
+                            video.play().then(() => {
+                              setIsPlaying(true);
+                              setTimeout(() => { video.muted = false; }, 300);
+                            }).catch(() => {
+                              setIsPlaying(false);
+                              desiredPlayingRef.current = false;
+                            });
+                          } else {
+                            setIsPlaying(false);
+                            desiredPlayingRef.current = false;
+                          }
                         });
                       } else {
                         desiredPlayingRef.current = false;

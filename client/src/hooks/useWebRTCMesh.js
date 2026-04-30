@@ -9,30 +9,34 @@ import { socket } from "@/services/socket";
 
 const ICE_SERVERS = {
   iceServers: [
-    // STUN servers (free, for direct P2P when possible)
+    // STUN servers (free — for direct P2P when both clients have simple NAT)
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:stun3.l.google.com:19302" },
-    { urls: "stun:stun4.l.google.com:19302" },
-    // Free TURN servers (relay for clients behind symmetric NAT)
+    { urls: "stun:stun.relay.metered.ca:80" },
+    // TURN servers (relay — required when clients are behind symmetric NAT)
+    // Metered.ca free-tier TURN servers (reliable, global PoPs)
     {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:80",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
     {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:80?transport=tcp",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
     {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:443",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
+    },
+    {
+      urls: "turns:global.relay.metered.ca:443?transport=tcp",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
   ],
-  iceCandidatePoolSize: 4,
+  iceCandidatePoolSize: 6,
 };
 
 export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, userId, isHost = false }) => {
@@ -184,10 +188,21 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     };
 
     // Handle negotiation needed (e.g. when track is added dynamically)
+    // Use rollback to prevent m-line ordering errors on renegotiation
+    let negotiating = false;
     pc.onnegotiationneeded = async () => {
       try {
-        if (pc.signalingState !== "stable") return;
+        if (negotiating) return;
+        negotiating = true;
+        // Rollback if in unstable state to prevent m-line ordering error
+        if (pc.signalingState !== "stable") {
+          await pc.setLocalDescription({ type: "rollback" });
+        }
         const offer = await pc.createOffer();
+        if (pc.signalingState !== "stable") {
+          negotiating = false;
+          return;
+        }
         await pc.setLocalDescription(offer);
         if (pc.localDescription) {
           socket.emit("webrtc-mesh:offer", {
@@ -199,6 +214,8 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
         }
       } catch (err) {
         console.error("[WebRTC Mesh] ❌ Negotiation error:", err);
+      } finally {
+        negotiating = false;
       }
     };
 

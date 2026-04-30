@@ -6,6 +6,14 @@ import { useState, useCallback, useRef, useEffect } from "react";
  * Returns streams and controls for media devices
  */
 
+// Detect mobile/tablet (screen share not supported on these)
+const isMobileOrTablet = () => {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua)
+    || (navigator.maxTouchPoints > 0 && /Macintosh/.test(ua)); // iPad pretends to be Mac
+};
+
 export const useWebRTC = () => {
   const [state, setState] = useState({
     stream: null,
@@ -29,8 +37,21 @@ export const useWebRTC = () => {
     const requestVideo = video;
 
     const constraints = {
-      video: requestVideo ? true : false,
-      audio: requestAudio ? true : false,
+      video: requestVideo ? {
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+        facingMode: "user",
+      } : false,
+      audio: requestAudio ? {
+        // Prevent OS from treating WebRTC audio as a phone call
+        // This fixes audio ducking on mobile (Issue #3)
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        // These hints help prevent volume ducking on iOS/Android
+        channelCount: 1,
+        sampleRate: 48000,
+      } : false,
     };
 
     let stream = null;
@@ -99,7 +120,9 @@ export const useWebRTC = () => {
       // If we only have an audio stream from a previous fallback, request video now
       try {
         setState(prev => ({ ...prev, isInitializing: true }));
-        const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        });
         const newVideoTrack = videoStream.getVideoTracks()[0];
         stream.addTrack(newVideoTrack);
         setState(prev => ({ ...prev, videoEnabled: true, error: null, isInitializing: false }));
@@ -139,8 +162,32 @@ export const useWebRTC = () => {
     setState(prev => ({ ...prev, audioEnabled: enabled }));
   }, []);
 
+  // Check if screen sharing is supported on this device
+  const isScreenShareSupported = useCallback(() => {
+    // Mobile browsers don't support getDisplayMedia
+    if (isMobileOrTablet()) return false;
+    return !!navigator.mediaDevices?.getDisplayMedia;
+  }, []);
+
   // Start screen sharing
   const startScreenShare = useCallback(async () => {
+    // Check mobile/tablet support first
+    if (isMobileOrTablet()) {
+      setState(prev => ({
+        ...prev,
+        error: "Screen sharing is not supported on mobile/tablet devices",
+      }));
+      return null;
+    }
+
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setState(prev => ({
+        ...prev,
+        error: "Screen sharing is not supported in this browser",
+      }));
+      return null;
+    }
+
     try {
       const screen = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -177,6 +224,8 @@ export const useWebRTC = () => {
         errorMsg = "Screen share permission denied";
       } else if (err.name === "AbortError") {
         errorMsg = "Screen sharing cancelled";
+      } else if (err.name === "NotSupportedError") {
+        errorMsg = "Screen sharing is not supported on this device";
       }
 
       setState(prev => ({ ...prev, error: errorMsg }));
@@ -241,5 +290,7 @@ export const useWebRTC = () => {
     startScreenShare,
     stopScreenShare,
     stopMedia,
+    isScreenShareSupported,
+    isMobile: isMobileOrTablet(),
   };
 };
