@@ -2,6 +2,7 @@ const redisClient = require('../../config/redis');
 const { createRedisKey } = require('../../utils/helpers');
 const { SOCKET_RATE_LIMITS, REDIS_KEYS } = require('../../utils/constants');
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const socketRateLimiter = (eventName) => {
   return async (socket, next) => {
@@ -32,7 +33,12 @@ const socketRateLimiter = (eventName) => {
       });
 
       if (count > limit.limit) {
-        const error = new Error(`Rate limit exceeded for ${eventName}`);
+        // Don't leak internal event names in production
+        const error = new Error(
+          IS_PRODUCTION
+            ? 'Rate limit exceeded. Please slow down.'
+            : `Rate limit exceeded for ${eventName}`
+        );
         error.data = { retryAfter: limit.window };
         return next(error);
       }
@@ -40,8 +46,8 @@ const socketRateLimiter = (eventName) => {
       next();
 
     } catch (error) {
-      console.error('Socket rate limiter error:', error);
-      next(); // Fail open
+      if (!IS_PRODUCTION) console.error('Socket rate limiter error:', error.message);
+      next(); // Fail open — don't block sync if Redis hiccups
     }
   };
 };

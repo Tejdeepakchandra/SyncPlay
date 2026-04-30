@@ -55,40 +55,54 @@ const SYNC_ACTIONS = {
   RATE_CHANGE: 'rate_change'
 };
 
-// Rate limits (requests per window)
+// Rate limits (requests per window) — HTTP API endpoints
 const RATE_LIMITS = {
-  JOIN_ROOM: { limit: 10, window: 60 },      // 10 per minute
-  REACTION: { limit: 3, window: 5 },          // 3 per 5 seconds
-  SEEK: { limit: 5, window: 3 },               // 5 per 3 seconds
-  CHAT: { limit: 20, window: 10 },             // 20 per 10 seconds
-  CREATE_ROOM: { limit: 5, window: 3600 },     // 5 per hour
-  moments: { limit: 30, window: 60 },          // 30 per minute (API endpoints)
-  BOOKMARK: { limit: 1, window: 5 },           // 1 per 5 seconds
-  DEFAULT: { limit: 30, window: 60 }           // Default 30 per minute
+  JOIN_ROOM: { limit: 15, window: 60 },        // 15 per minute
+  REACTION: { limit: 5, window: 5 },            // 5 per 5 seconds
+  SEEK: { limit: 10, window: 3 },               // 10 per 3 seconds (real-time sync)
+  CHAT: { limit: 30, window: 10 },              // 30 per 10 seconds
+  CREATE_ROOM: { limit: 10, window: 3600 },     // 10 per hour
+  moments: { limit: 50, window: 60 },            // 50 per minute (API endpoints)
+  BOOKMARK: { limit: 2, window: 5 },             // 2 per 5 seconds
+  DEFAULT: { limit: 60, window: 60 }             // Default 60 per minute
 };
 
-// Socket rate limits — generous for sync events to prevent dropped actions
+// Socket rate limits — generous for sync events (real-time system needs headroom)
+// These limits are per-user, enforced via Redis sorted sets
 const SOCKET_RATE_LIMITS = {
-  'sync:play': { limit: 60, window: 10 },
-  'sync:pause': { limit: 60, window: 10 },
-  'sync:seek': { limit: 120, window: 10 },
-  'sync:rate-change': { limit: 10, window: 60 },
-  'sync:check-position': { limit: 120, window: 10 },
-  'sync:clock-sync': { limit: 30, window: 60 },
-  'sync:request-state': { limit: 30, window: 10 },
-  'sync:media-change': { limit: 20, window: 10 },
-  'room:join': { limit: 10, window: 60 },
-  'room:leave': { limit: 10, window: 60 },
-  'webrtc-mesh:join': { limit: 20, window: 60 },
-  'webrtc-mesh:offer': { limit: 60, window: 60 },
-  'webrtc-mesh:answer': { limit: 60, window: 60 },
-  'webrtc-mesh:ice-candidate': { limit: 200, window: 60 },
-  'audio:state-change': { limit: 60, window: 10 },
-  'audio:activity-level': { limit: 300, window: 10 },
-  'moment:reaction': { limit: 5, window: 5 },
-  'moment:comment': { limit: 3, window: 5 },
-  'moment:bookmark': { limit: 1, window: 5 },
-  DEFAULT: { limit: 60, window: 60 }
+  // Sync events — HIGH limits (core real-time functionality)
+  'sync:play':            { limit: 80, window: 10 },   // Rapid play/pause toggling
+  'sync:pause':           { limit: 80, window: 10 },
+  'sync:seek':            { limit: 150, window: 10 },   // Scrubbing through timeline
+  'sync:rate-change':     { limit: 15, window: 60 },
+  'sync:check-position':  { limit: 150, window: 10 },   // Drift correction polling
+  'sync:clock-sync':      { limit: 40, window: 60 },    // NTP-style clock sync
+  'sync:request-state':   { limit: 40, window: 10 },    // State recovery on reconnect
+  'sync:media-change':    { limit: 25, window: 10 },    // Media switching
+
+  // Room events
+  'room:join':            { limit: 15, window: 60 },
+  'room:leave':           { limit: 15, window: 60 },
+
+  // WebRTC signaling — needs high limits for mesh topology
+  'webrtc-mesh:join':     { limit: 25, window: 60 },
+  'webrtc-mesh:offer':    { limit: 80, window: 60 },
+  'webrtc-mesh:answer':   { limit: 80, window: 60 },
+  'webrtc-mesh:ice-candidate': { limit: 300, window: 60 },  // ICE can be chatty
+
+  // Audio/voice chat
+  'audio:state-change':   { limit: 80, window: 10 },
+  'audio:activity-level':  { limit: 400, window: 10 },  // Voice activity detection
+
+  // Chat
+  'chat:message':         { limit: 30, window: 10 },     // 3 messages/sec max
+
+  // Moments
+  'moment:reaction':      { limit: 8, window: 5 },
+  'moment:comment':       { limit: 5, window: 5 },
+  'moment:bookmark':      { limit: 2, window: 5 },
+
+  DEFAULT:                { limit: 80, window: 60 }
 };
 
 // Redis key prefixes

@@ -4,6 +4,11 @@ const analyticsService = require('../../services/analyticsService');
 const Room = require('../../models/mongodb/Room');
 const { socketRateLimiter } = require('../middleware/rateLimiter');
 
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+// Never leak internal error messages to clients in production
+const safeError = (error) => IS_PRODUCTION ? 'Internal error' : (error?.message || 'Unknown error');
+
 const recentMediaChangeByRoom = new Map();
 const pendingSeekByRoom = new Map();
 
@@ -275,7 +280,7 @@ module.exports = (socket, io) => {
       if (!roomCode) return callback({ success: false, error: 'Missing roomCode' });
       const state = await syncService.getSyncState(roomCode);
       callback({ success: true, state });
-    } catch (error) { callback({ success: false, error: error.message }); }
+    } catch (error) { callback({ success: false, error: safeError(error) }); }
   });
 
   // ═══ PLAY ═══
@@ -310,7 +315,7 @@ module.exports = (socket, io) => {
             if (room?._id) analyticsService.incrementSyncAction(room._id.toString(), 'play').catch(() => {});
           }).catch(() => {});
         }
-      } catch (error) { callback({ success: false, error: error.message }); }
+      } catch (error) { callback({ success: false, error: safeError(error) }); }
     });
   });
 
@@ -345,7 +350,7 @@ module.exports = (socket, io) => {
             if (room?._id) analyticsService.incrementSyncAction(room._id.toString(), 'pause').catch(() => {});
           }).catch(() => {});
         }
-      } catch (error) { callback({ success: false, error: error.message }); }
+      } catch (error) { callback({ success: false, error: safeError(error) }); }
     });
   });
 
@@ -378,7 +383,7 @@ module.exports = (socket, io) => {
             if (room?._id) analyticsService.incrementSyncAction(room._id.toString(), 'seek').catch(() => {});
           }).catch(() => {});
         }
-      } catch (error) { callback({ success: false, error: error.message }); }
+      } catch (error) { callback({ success: false, error: safeError(error) }); }
     });
   });
 
@@ -402,7 +407,7 @@ module.exports = (socket, io) => {
           emitToRoom(roomCode, 'sync:update', { timestamp: Date.now(), currentPlayback, userId: socket.userId });
         }
         callback(result);
-      } catch (error) { callback({ success: false, error: error.message }); }
+      } catch (error) { callback({ success: false, error: safeError(error) }); }
     });
   });
 
@@ -417,7 +422,7 @@ module.exports = (socket, io) => {
         success: true, ...driftData,
         syncState: { version: state.version, isPlaying: state.isPlaying, playbackRate: state.playbackRate, baseTimestamp: state.baseTimestamp, startAt: state.startAt },
       });
-    } catch (error) { callback({ success: false, error: error.message }); }
+    } catch (error) { callback({ success: false, error: safeError(error) }); }
   });
 
   socket.on('sync:get-telemetry', async ({ roomCode }, callback = () => {}) => {
@@ -425,7 +430,7 @@ module.exports = (socket, io) => {
       roomCode = normalizeRoomCode(roomCode);
       if (!roomCode) return callback({ success: false, error: 'Missing roomCode' });
       callback({ success: true, telemetry: syncService.getDriftTelemetry(roomCode), controlTelemetry: syncService.getControlTelemetry(roomCode) });
-    } catch (error) { callback({ success: false, error: error.message }); }
+    } catch (error) { callback({ success: false, error: safeError(error) }); }
   });
 
   socket.on('sync:reset-telemetry', async ({ roomCode }, callback = () => {}) => {
@@ -437,6 +442,6 @@ module.exports = (socket, io) => {
       const isMod = room?.hostId?.toString() === socket.userId.toString() || participant?.role === 'host' || participant?.role === 'co-host' || participant?.role === 'cohost';
       if (!isMod) return callback({ success: false, error: 'Permission denied' });
       callback({ success: true, reset: syncService.resetDriftTelemetry(roomCode), controlReset: syncService.resetControlTelemetry(roomCode) });
-    } catch (error) { callback({ success: false, error: error.message }); }
+    } catch (error) { callback({ success: false, error: safeError(error) }); }
   });
 };
