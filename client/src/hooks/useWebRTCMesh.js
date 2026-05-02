@@ -44,7 +44,7 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 6,
 };
 
-export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, userId, isHost = false }) => {
+export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, userId, isHost = false, streamVersion = 0 }) => {
   const peersRef = useRef(new Map());           // peerId -> RTCPeerConnection
   const makingOfferRef = useRef(new Set());     // peerIds currently creating offers
   const remoteMediaStreamsRef = useRef(new Map());
@@ -527,13 +527,13 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     socket.emit("webrtc-mesh:join", { roomCode, from: myId });
 
     // Initiate connections to existing participants
-    if (localStreamRef.current) {
-      (participantIdsRef.current || []).forEach((pid) => {
-        if (pid !== myId && shouldInitiateRef.current?.(myId, pid)) {
-          createAndSendOfferRef.current?.(pid);
-        }
-      });
-    }
+    // NOTE: We always try to connect even without a stream, because transceivers
+    // are pre-created with null tracks. replaceTrack will push real tracks later.
+    (participantIdsRef.current || []).forEach((pid) => {
+      if (pid !== myId && shouldInitiateRef.current?.(myId, pid)) {
+        createAndSendOfferRef.current?.(pid);
+      }
+    });
 
     return () => {
       socket.emit("webrtc-mesh:leave", { roomCode, from: myId });
@@ -552,9 +552,29 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     };
   }, [roomCode, userId, enabled]);
 
+  // ── Late-join: when stream becomes available after mesh is already running ──
+  // This handles the race condition where the user enables video chat (enabled=true)
+  // but getUserMedia hasn't resolved yet. Once localStream arrives, we need to
+  // connect to any participants we haven't connected to yet.
+  useEffect(() => {
+    if (!enabled || !localStream || !userId) return;
+
+    const myId = userId;
+    // Check if there are any participants we should be connected to but aren't
+    (participantIdsRef.current || []).forEach((pid) => {
+      if (pid === myId) return;
+      if (peersRef.current.has(pid)) return; // Already have a connection
+      if (shouldInitiateRef.current?.(myId, pid)) {
+        createAndSendOfferRef.current?.(pid);
+      }
+    });
+  }, [enabled, localStream, userId]);
+
   // ── Track updates: use replaceTrack (NEVER addTrack/removeTrack) ───
   // This is the critical fix for the m-line ordering error.
   // We pre-created transceivers in createPeer, so we just replace tracks on senders.
+  // streamVersion changes whenever useWebRTC toggles audio/video/adds tracks,
+  // ensuring this effect runs even if the stream reference stays the same.
 
   useEffect(() => {
     if (!enabled) return;
@@ -575,20 +595,18 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
             || (transceiver.mid === "0" ? "audio" : transceiver.mid === "1" ? "video" : null);
 
           if (kind === "audio") {
-            if (sender.track?.id !== localAudio?.id) {
-              sender.replaceTrack(localAudio);
-            }
+            // Always call replaceTrack — even if track IDs match, the track
+            // may have been disabled/re-enabled or swapped with same kind
+            sender.replaceTrack(localAudio).catch(() => {});
           } else if (kind === "video") {
-            if (sender.track?.id !== localVideo?.id) {
-              sender.replaceTrack(localVideo);
-            }
+            sender.replaceTrack(localVideo).catch(() => {});
           }
         } catch (err) {
           console.warn("[WebRTC Mesh] replaceTrack error:", err.message);
         }
       });
     });
-  }, [enabled, localStream]);
+  }, [enabled, localStream, streamVersion]);
 
   return {
     remoteStreams,

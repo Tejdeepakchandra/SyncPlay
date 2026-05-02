@@ -179,6 +179,7 @@ const MovieRoom = () => {
   const autoBackgroundDeafenRef = useRef(false);
   const previousDeafenStateRef = useRef(false);
   const lastBackgroundYoutubeToastAtRef = useRef(0);
+  const mediaChangeInProgressRef = useRef(false);
 
   const getYoutubeMediaKey = useCallback(() => {
     const activeYoutubeVideoId = youtubeVideoId || fallbackYoutubeVideoId;
@@ -457,6 +458,7 @@ const MovieRoom = () => {
     enabled: showVideoChat,
     userId: myUserId,
     isHost,
+    streamVersion: webrtc.streamVersion,
   });
 
   // User role
@@ -592,6 +594,7 @@ const MovieRoom = () => {
         setIsPlaying(true);
         desiredPlayingRef.current = true;
         setMobileNeedsGesture(false); // Successfully playing — clear gesture overlay
+        mediaChangeInProgressRef.current = false; // New video is loaded
       } else if (state === "paused") {
         // Only update UI state if we're NOT in a muted window.
         // During mute, YouTube may briefly pause while buffering after seekTo/play;
@@ -603,6 +606,8 @@ const MovieRoom = () => {
           desiredPlayingRef.current = false;
         }
       } else if (state === "unstarted" || state === "cued") {
+        // A new video has been loaded (cued) — clear the media change flag
+        mediaChangeInProgressRef.current = false;
         // On mobile, YouTube may stay stuck in unstarted/cued after playVideo()
         // because autoplay is blocked. If we wanted to play, show tap overlay.
         if (desiredPlayingRef.current) {
@@ -757,6 +762,8 @@ const MovieRoom = () => {
       // Always reset pending actions and progress on ANY media change
       pendingRemoteActionRef.current = null;
       pendingRemoteActionSetAtRef.current = 0;
+      // Mark that a media change is in progress to suppress stale overlays (e.g. "ended" from old video)
+      mediaChangeInProgressRef.current = true;
 
       if (mediaType === "youtube" && resolvedYoutubeId) {
         // Skip if we're already showing this exact video (prevents flicker from own broadcast)
@@ -1044,7 +1051,10 @@ const MovieRoom = () => {
     onSyncUpdate: ({ currentPlayback } = {}) => {
       const syncYoutubeId = resolveYoutubeVideoId(currentPlayback?.media);
       if (syncYoutubeId) {
-        setFallbackYoutubeVideoId(syncYoutubeId);
+        // Don't overwrite fallback during a media change — it would revert to old video
+        if (!mediaChangeInProgressRef.current) {
+          setFallbackYoutubeVideoId(syncYoutubeId);
+        }
         if (mediaSource === "youtube" && !youtubeVideoId) {
           setYoutubeVideoId(syncYoutubeId);
         }
@@ -2834,7 +2844,7 @@ const MovieRoom = () => {
                     draggable={false}
                   />
                 )}
-                {ytPlayer.playerState === "ended" && (
+                {ytPlayer.playerState === "ended" && !mediaChangeInProgressRef.current && (
                   <div className="absolute inset-0 z-10 cursor-pointer flex items-center justify-center bg-black/60" onClick={() => { ytPlayer.seekTo(0); ytPlayer.play(); }}>
                     <div className="text-center text-white space-y-3">
                       <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center mx-auto">

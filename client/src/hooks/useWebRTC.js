@@ -23,6 +23,8 @@ export const useWebRTC = () => {
     screenSharing: false,
     error: null,
     isInitializing: false,
+    // Incremented on every track change so downstream hooks know to re-check
+    streamVersion: 0,
   });
 
   const streamRef = useRef(null);
@@ -68,9 +70,7 @@ export const useWebRTC = () => {
     }
 
     try {
-      console.log(`[WebRTC] Attempting getUserMedia with constraints:`, constraints);
       stream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log(`[WebRTC] Success!`);
     } catch (err) {
       console.warn(`[WebRTC] getUserMedia failed:`, err.name, err.message);
       lastErr = err;
@@ -85,6 +85,7 @@ export const useWebRTC = () => {
         audioEnabled: stream.getAudioTracks().length > 0,
         error: null,
         isInitializing: false,
+        streamVersion: prev.streamVersion + 1,
       }));
       return stream;
     } else {
@@ -125,9 +126,14 @@ export const useWebRTC = () => {
         });
         const newVideoTrack = videoStream.getVideoTracks()[0];
         stream.addTrack(newVideoTrack);
-        setState(prev => ({ ...prev, videoEnabled: true, error: null, isInitializing: false }));
-        // Ensure signaling knows we added a track (may require renegotiation)
-        // Handled by the component noticing videoEnabled changed, usually
+        // Bump streamVersion so mesh hook picks up the new track
+        setState(prev => ({
+          ...prev,
+          videoEnabled: true,
+          error: null,
+          isInitializing: false,
+          streamVersion: prev.streamVersion + 1,
+        }));
       } catch (err) {
         let errorMsg = "Could not start camera";
         if (err.name === "NotAllowedError") errorMsg = "Camera permission denied";
@@ -141,11 +147,12 @@ export const useWebRTC = () => {
     const enabled = !videoTracks[0].enabled;
     videoTracks[0].enabled = enabled;
 
-    // If we disable, we could stop the track to turn off the hardware light, but
-    // then we'd have to re-request permission to turn it back on.
-    // For now, track.enabled = false just sends black frames.
-
-    setState(prev => ({ ...prev, videoEnabled: enabled }));
+    // Bump streamVersion so mesh hook picks up the enabled/disabled change
+    setState(prev => ({
+      ...prev,
+      videoEnabled: enabled,
+      streamVersion: prev.streamVersion + 1,
+    }));
   }, []);
 
   // Toggle audio track
@@ -159,7 +166,12 @@ export const useWebRTC = () => {
     const enabled = !audioTracks[0].enabled;
     audioTracks[0].enabled = enabled;
 
-    setState(prev => ({ ...prev, audioEnabled: enabled }));
+    // Bump streamVersion so mesh hook picks up the enabled/disabled change
+    setState(prev => ({
+      ...prev,
+      audioEnabled: enabled,
+      streamVersion: prev.streamVersion + 1,
+    }));
   }, []);
 
   // Check if screen sharing is supported on this device
@@ -267,6 +279,7 @@ export const useWebRTC = () => {
       screenSharing: false,
       error: null,
       isInitializing: false,
+      streamVersion: 0,
     });
   }, []);
 
