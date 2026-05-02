@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { socket } from "@/services/socket";
 
 export const useRoomChat = (roomCode) => {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [typingUsers, setTypingUsers] = useState({});
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatOpenRef = useRef(false);
 
   const normalizeMessage = useCallback((raw) => {
     if (!raw) return null;
@@ -71,6 +73,11 @@ export const useRoomChat = (roomCode) => {
         if (prev.some((m) => m.id === normalized.id)) return prev;
         return [...prev, normalized];
       });
+
+      // Increment unread count if chat is not currently open
+      if (!chatOpenRef.current) {
+        setUnreadCount((prev) => prev + 1);
+      }
     };
 
     // Listen for typing indicators
@@ -131,11 +138,25 @@ export const useRoomChat = (roomCode) => {
     socket.emit("chat:typing", { roomCode, isTyping });
   }, [roomCode]);
 
+  // Mark messages as read (call when chat panel opens)
+  const markAsRead = useCallback(() => {
+    setUnreadCount(0);
+    chatOpenRef.current = true;
+  }, []);
+
+  // Mark chat as closed (call when chat panel closes)
+  const markAsClosed = useCallback(() => {
+    chatOpenRef.current = false;
+  }, []);
+
   return {
     messages,
     isLoading,
     typingUsers,
     sendMessage,
     sendTypingIndicator,
+    unreadCount,
+    markAsRead,
+    markAsClosed,
   };
 };

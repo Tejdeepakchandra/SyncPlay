@@ -79,7 +79,7 @@ const MovieRoom = () => {
     leaveRoom,
     endRoom,
   } = useRoom(effectiveRoomId, "movie");
-  const { messages, sendMessage: sendChatMessage, userId } = useRoomChat(effectiveRoomId);
+  const { messages, sendMessage: sendChatMessage, userId, unreadCount, markAsRead: markChatAsRead, markAsClosed: markChatAsClosed } = useRoomChat(effectiveRoomId);
 
   // ═══════════════════════════════════════════════════════════════════════
   // LOCAL UI STATE
@@ -111,6 +111,7 @@ const MovieRoom = () => {
   const [uploadProgressPct, setUploadProgressPct] = useState(0);
   const [uploadStatusText, setUploadStatusText] = useState("Uploading media...");
   const [isUploadMediaReady, setIsUploadMediaReady] = useState(false);
+  const [mobileNeedsGesture, setMobileNeedsGesture] = useState(false);
 
   // Audio mixing state
   const [movieVolume, setMovieVolume] = useState(80);
@@ -590,6 +591,7 @@ const MovieRoom = () => {
       if (state === "playing") {
         setIsPlaying(true);
         desiredPlayingRef.current = true;
+        setMobileNeedsGesture(false); // Successfully playing — clear gesture overlay
       } else if (state === "paused") {
         // Only update UI state if we're NOT in a muted window.
         // During mute, YouTube may briefly pause while buffering after seekTo/play;
@@ -599,6 +601,21 @@ const MovieRoom = () => {
         if (!nativeBridgeMutedNow) {
           setIsPlaying(false);
           desiredPlayingRef.current = false;
+        }
+      } else if (state === "unstarted" || state === "cued") {
+        // On mobile, YouTube may stay stuck in unstarted/cued after playVideo()
+        // because autoplay is blocked. If we wanted to play, show tap overlay.
+        if (desiredPlayingRef.current) {
+          const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+            || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+          if (isMobileDevice) {
+            // Wait a moment to see if YouTube transitions on its own
+            setTimeout(() => {
+              if (desiredPlayingRef.current && ytPlayer.playerState !== "playing") {
+                setMobileNeedsGesture(true);
+              }
+            }, 1500);
+          }
         }
       } else if (state === "ended") {
         setIsPlaying(false);
@@ -836,15 +853,19 @@ const MovieRoom = () => {
           desiredPlayingRef.current = true;
           setIsPlaying(true);
           // Try unmuted play first, fall back to muted play for mobile autoplay policy
-          video.play().catch((playErr) => {
+          video.play().then(() => {
+            setMobileNeedsGesture(false);
+          }).catch((playErr) => {
             if (playErr?.name === "NotAllowedError") {
               // Mobile autoplay blocked — try muted autoplay
-              console.warn("[MovieRoom] Autoplay blocked, trying muted play...");
               video.muted = true;
               video.play().then(() => {
+                setMobileNeedsGesture(false);
                 // Unmute after a short delay once playback has started
                 setTimeout(() => { video.muted = false; }, 300);
               }).catch(() => {
+                // All autoplay attempts failed — show tap-to-play overlay
+                setMobileNeedsGesture(true);
                 setIsPlaying(false);
                 desiredPlayingRef.current = false;
               });
@@ -1330,6 +1351,15 @@ const MovieRoom = () => {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Track chat open/close for unread badge
+  useEffect(() => {
+    if (showChat) {
+      markChatAsRead();
+    } else {
+      markChatAsClosed();
+    }
+  }, [showChat, markChatAsRead, markChatAsClosed]);
 
   // Fullscreen detection
   useEffect(() => {
@@ -2641,7 +2671,14 @@ const MovieRoom = () => {
                   participantCount={uniqueParticipantCount}
                   isHost={isHost}
                 />
-                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={showChat ? "text-primary" : "text-muted-foreground"} title="Chat"><MessageSquare className="w-4 h-4" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={`relative ${showChat ? "text-primary" : "text-muted-foreground"}`} title="Chat">
+                  <MessageSquare className="w-4 h-4" />
+                  {unreadCount > 0 && !showChat && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full px-1">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </Button>
                 {user && (
                   <Button size="icon" variant="ghost" onClick={() => setShowInviteFriends(true)} className="text-muted-foreground hover:text-primary" title="Invite Friends"><UserPlus className="w-4 h-4" /></Button>
                 )}
@@ -2668,7 +2705,14 @@ const MovieRoom = () => {
                   isHost={isHost}
                 />
                 <Button size="icon" variant="ghost" onClick={() => setLightsOff(true)} className="text-muted-foreground h-8 w-8" title="Lights off"><Moon className="w-3.5 h-3.5" /></Button>
-                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={`h-8 w-8 ${showChat ? "text-primary" : "text-muted-foreground"}`} title="Chat"><MessageSquare className="w-3.5 h-3.5" /></Button>
+                <Button size="icon" variant="ghost" onClick={() => { if (showChat) { setShowChat(false); } else { closeAllPanels(); setShowChat(true); } }} className={`relative h-8 w-8 ${showChat ? "text-primary" : "text-muted-foreground"}`} title="Chat">
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  {unreadCount > 0 && !showChat && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full px-0.5">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </Button>
 
                 {/* ⋮ Dropdown menu */}
                 <div className="relative">
@@ -2743,6 +2787,38 @@ const MovieRoom = () => {
 
           {/* Main video display */}
           <div className="flex-1 bg-black flex items-center justify-center relative cursor-pointer group overflow-hidden">
+            {/* Mobile/Tablet "Tap to Play" overlay — shown when autoplay is blocked */}
+            {mobileNeedsGesture && (mediaSource === "youtube" || mediaSource === "upload") && (
+              <div
+                className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm cursor-pointer"
+                onClick={() => {
+                  setMobileNeedsGesture(false);
+                  if (mediaSource === "youtube") {
+                    ytPlayer.mute();
+                    ytPlayer.play();
+                    setTimeout(() => { ytPlayer.unmute(); }, 800);
+                    setIsPlaying(true);
+                    desiredPlayingRef.current = true;
+                  } else if (mediaSource === "upload") {
+                    const video = uploadVideoRef.current;
+                    if (video) {
+                      video.play().then(() => {
+                        setIsPlaying(true);
+                        desiredPlayingRef.current = true;
+                      }).catch(() => {});
+                    }
+                  }
+                }}
+              >
+                <div className="text-center text-white space-y-3 animate-pulse">
+                  <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center mx-auto">
+                    <Play className="w-10 h-10 text-white ml-1" />
+                  </div>
+                  <p className="text-base font-semibold">Tap to Play</p>
+                  <p className="text-xs text-white/60">Your browser requires a tap to start playback</p>
+                </div>
+              </div>
+            )}
             {mediaSource === "youtube" && activeYoutubeVideoId ? (
               <div className="w-full h-full relative">
                 <div ref={ytPlayer.wrapperRef} className="w-full h-full" />
@@ -3528,18 +3604,27 @@ const MovieRoom = () => {
                         
                         // Check actual remote stream state
                         const remoteStream = meshStreams.remoteStreams.get(p.userId);
-                        const remoteAudioEnabled = remoteStream ? remoteStream.getAudioTracks().some(t => t.enabled) : true;
-                        const remoteVideoEnabled = remoteStream ? remoteStream.getVideoTracks().some(t => t.enabled) : false;
+                        const hasRemoteStream = !!remoteStream;
+                        const remoteAudioEnabled = hasRemoteStream 
+                          ? remoteStream.getAudioTracks().some(t => t.enabled && t.readyState === "live") 
+                          : false;
+                        const remoteVideoEnabled = hasRemoteStream 
+                          ? remoteStream.getVideoTracks().some(t => t.enabled && t.readyState === "live") 
+                          : false;
                         
                         // Show status based on both host control AND remote state
                         const statusParts = [];
                         if (restrictedByHost.micDisabledByHost) statusParts.push("Mic blocked by host");
                         if (restrictedByHost.videoDisabledByHost) statusParts.push("Video blocked by host");
-                        if (!remoteAudioEnabled) statusParts.push("Audio off");
-                        if (!remoteVideoEnabled) statusParts.push("Video off");
-                        if (userMuted && remoteAudioEnabled) statusParts.push("Muted by you");
-                        if (videoDisabled && remoteVideoEnabled) statusParts.push("Video disabled by you");
-                        const status = statusParts.length > 0 ? statusParts.join(" • ") : "Active";
+                        if (!hasRemoteStream && showVideoChat) {
+                          statusParts.push("Connecting…");
+                        } else if (hasRemoteStream) {
+                          if (!remoteAudioEnabled && !restrictedByHost.micDisabledByHost) statusParts.push("Audio off");
+                          if (!remoteVideoEnabled && !restrictedByHost.videoDisabledByHost) statusParts.push("Video off");
+                        }
+                        if (userMuted && (remoteAudioEnabled || !hasRemoteStream)) statusParts.push("Muted by you");
+                        if (videoDisabled && (remoteVideoEnabled || !hasRemoteStream)) statusParts.push("Video hidden by you");
+                        const status = statusParts.length > 0 ? statusParts.join(" • ") : (showVideoChat ? "Active" : "Voice chat off");
                         
                         return (
                           <div key={p.userId} className="glass-panel p-3 space-y-2">

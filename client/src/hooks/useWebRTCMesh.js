@@ -557,25 +557,29 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
   // We pre-created transceivers in createPeer, so we just replace tracks on senders.
 
   useEffect(() => {
-    if (!enabled || !localStreamRef.current) return;
+    if (!enabled) return;
 
-    const localAudio = localStreamRef.current.getAudioTracks()[0] || null;
-    const localVideo = localStreamRef.current.getVideoTracks()[0] || null;
+    const localAudio = localStreamRef.current?.getAudioTracks()[0] || null;
+    const localVideo = localStreamRef.current?.getVideoTracks()[0] || null;
 
     peersRef.current.forEach((pc) => {
-      const senders = pc.getSenders();
-      senders.forEach((sender) => {
+      if (pc.connectionState === "closed") return;
+
+      const transceivers = pc.getTransceivers();
+      transceivers.forEach((transceiver) => {
         try {
-          if (sender.track?.kind === "audio" || (!sender.track && pc.getTransceivers().find(t => t.sender === sender)?.receiver?.track?.kind === "audio")) {
-            // Replace audio track
-            const currentTrack = sender.track;
-            if (currentTrack?.id !== localAudio?.id) {
+          const sender = transceiver.sender;
+          // Determine the media kind from the transceiver (mid or receiver track)
+          const kind = transceiver.receiver?.track?.kind
+            || sender?.track?.kind
+            || (transceiver.mid === "0" ? "audio" : transceiver.mid === "1" ? "video" : null);
+
+          if (kind === "audio") {
+            if (sender.track?.id !== localAudio?.id) {
               sender.replaceTrack(localAudio);
             }
-          } else if (sender.track?.kind === "video" || (!sender.track && pc.getTransceivers().find(t => t.sender === sender)?.receiver?.track?.kind === "video")) {
-            // Replace video track
-            const currentTrack = sender.track;
-            if (currentTrack?.id !== localVideo?.id) {
+          } else if (kind === "video") {
+            if (sender.track?.id !== localVideo?.id) {
               sender.replaceTrack(localVideo);
             }
           }

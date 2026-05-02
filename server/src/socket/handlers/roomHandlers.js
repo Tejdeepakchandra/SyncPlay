@@ -69,6 +69,22 @@ module.exports = (socket, io) => {
         // Store room mapping in socket data
         socket.roomCode = roomCode;
 
+        // Set display name on socket for guests (fixes chat showing "User")
+        if (socket.isGuest && guestName) {
+          socket.displayName = guestName;
+          socket.username = guestName;
+        }
+        // Also update from participant data if available
+        const participantData = result.room?.participants?.find(p => p.userId === socket.userId);
+        if (participantData) {
+          if (!socket.displayName || socket.displayName === 'Anonymous') {
+            socket.displayName = participantData.displayName || participantData.username || guestName || socket.displayName;
+          }
+          if (!socket.username || socket.username === 'Anonymous') {
+            socket.username = participantData.username || participantData.displayName || guestName || socket.username;
+          }
+        }
+
         // Update presence
         await presenceService.updatePresence(socket.userId, roomCode);
 
