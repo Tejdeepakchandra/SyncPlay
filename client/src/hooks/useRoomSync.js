@@ -298,7 +298,8 @@ export const useRoomSync = ({
         const action = data?.action;
         const incomingPlayback = data?.currentPlayback || null;
         const incomingMediaSig = getMediaSig(incomingPlayback?.media || null);
-        const mediaChanged = incomingMediaSig !== lastAppliedRef.current.mediaSig;
+        const currentMediaSig = lastAppliedRef.current.mediaSig;
+        const mediaChanged = incomingMediaSig !== currentMediaSig;
         const incomingVersion = Number.isFinite(incomingPlayback?.version) ? incomingPlayback.version : null;
         const versionAdvanced = Number.isFinite(incomingVersion) ? incomingVersion > latestVersionRef.current : false;
 
@@ -313,10 +314,20 @@ export const useRoomSync = ({
         ntpOffsetRef.current = offset;
         setNtpOffset(offset);
 
-        handlersRef.current.onSyncUpdate?.({ serverTime, clientTime, offset, currentPlayback: incomingPlayback });
+        // SAFETY: If a play/pause/seek update arrives with DIFFERENT media than
+        // what we currently have, the server's media cache was likely stale.
+        // Strip the stale media from the payload so we only apply the playback
+        // state (play/pause/time) without switching the video. Only an explicit
+        // sync:media-change event should change the active media.
+        let safePlayback = incomingPlayback;
+        if (mediaChanged && currentMediaSig && currentMediaSig !== "none" && (action === "play" || action === "pause" || action === "seek")) {
+          safePlayback = { ...incomingPlayback, media: lastMediaRef.current };
+        }
+
+        handlersRef.current.onSyncUpdate?.({ serverTime, clientTime, offset, currentPlayback: safePlayback });
 
         const hasAppliedState = lastAppliedRef.current.version >= 0;
-        applyPlaybackState(incomingPlayback, { force: !hasAppliedState, forceSeek: action === "seek" });
+        applyPlaybackState(safePlayback, { force: !hasAppliedState, forceSeek: action === "seek" });
 
         if (action === "seek") {
           if (postSeekDriftTimersRef.current?.length) {

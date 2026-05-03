@@ -11,6 +11,9 @@ const safeError = (error) => IS_PRODUCTION ? 'Internal error' : (error?.message 
 
 const recentMediaChangeByRoom = new Map();
 const pendingSeekByRoom = new Map();
+// Shared media cache — MUST be at module scope so all socket handlers share the same instance.
+// Previously this was per-socket, causing User B to miss User A's media changes.
+const mediaCache = new Map();
 
 // Short-lived room cache (2s) to avoid repeated MongoDB queries per event
 const roomDocCache = new Map();
@@ -110,8 +113,7 @@ module.exports = (socket, io) => {
     io.to(roomCode).emit(event, payload);
   };
 
-  // In-memory media cache — media only changes on sync:media-change events
-  const mediaCache = new Map();
+  // mediaCache is at module scope (shared across all socket connections)
 
   const buildCurrentPlayback = async (roomCode, syncStateOverride = null, mediaOverride = undefined) => {
     const syncState = syncStateOverride || await syncService.getSyncState(roomCode);

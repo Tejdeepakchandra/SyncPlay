@@ -11,26 +11,30 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:stun3.l.google.com:19302" },
-    { urls: "stun:stun4.l.google.com:19302" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+    // Metered.ca TURN servers (reliable, global) — same as mesh hook
     {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:80",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
     {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:80?transport=tcp",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
     {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject",
+      urls: "turn:global.relay.metered.ca:443",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
+    },
+    {
+      urls: "turns:global.relay.metered.ca:443?transport=tcp",
+      username: "cff36aa5a20e4ba148f3363f",
+      credential: "oa+YPfTh4Xhp2uJc",
     },
   ],
-  iceCandidatePoolSize: 4,
+  iceCandidatePoolSize: 6,
 };
 
 export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId }) => {
@@ -42,6 +46,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
   const participantIdsRef = useRef(participantIds);
   const userIdRef = useRef(userId || socket.userId || null);
   const hasRemoteStreamRef = useRef(false);
+  const iceCandidateQueueRef = useRef(new Map());
 
   useEffect(() => {
     isHostRef.current = isHost;
@@ -51,6 +56,13 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
 
   // Create peer for participant (host side)
   const createPeerForParticipant = useCallback((peerId, stream) => {
+    // Close existing peer if any (prevents duplicate connections)
+    const existing = peersRef.current.get(peerId);
+    if (existing) {
+      try { existing.close(); } catch {}
+      peersRef.current.delete(peerId);
+    }
+
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peersRef.current.set(peerId, pc);
 
@@ -88,6 +100,23 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       }
     };
 
+    // Connection state monitoring
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+        peersRef.current.delete(peerId);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "disconnected") {
+        setTimeout(() => {
+          if (pc.iceConnectionState === "disconnected" && pc.connectionState !== "closed") {
+            pc.restartIce();
+          }
+        }, 3000);
+      }
+    };
+
     return pc;
   }, [roomCode]);
 
@@ -119,6 +148,37 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
           from: myId,
           candidate: e.candidate.toJSON(),
         });
+      }
+    };
+
+    // Connection state monitoring — auto-recover on failure
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed") {
+        console.warn("[WebRTC Screen] Connection to host failed, requesting new stream...");
+        try { pc.close(); } catch {}
+        peersRef.current.delete(hostId);
+        setRemoteStream(null);
+        hasRemoteStreamRef.current = false;
+        // Re-request stream from host after short delay
+        const myId = userIdRef.current;
+        if (myId) {
+          setTimeout(() => {
+            socket.emit("webrtc:request-stream", { roomCode, from: myId });
+          }, 1000);
+        }
+      } else if (pc.connectionState === "closed") {
+        peersRef.current.delete(hostId);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "disconnected") {
+        setTimeout(() => {
+          if (pc.iceConnectionState === "disconnected" && pc.connectionState !== "closed") {
+            console.warn("[WebRTC Screen] ICE disconnected, restarting ICE...");
+            pc.restartIce();
+          }
+        }, 3000);
       }
     };
 
@@ -154,12 +214,23 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       }
     };
 
+    const flushIceCandidates = (peerId, pc) => {
+      if (iceCandidateQueueRef.current.has(peerId)) {
+        const queued = iceCandidateQueueRef.current.get(peerId);
+        iceCandidateQueueRef.current.delete(peerId);
+        queued.forEach((c) => {
+          try { pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+        });
+      }
+    };
+
     const handleOffer = async ({ from, sdp }) => {
       let pc = peersRef.current.get(from);
       if (!pc) pc = createPeerForHost(from);
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        flushIceCandidates(from, pc);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit("webrtc:answer", {
@@ -178,6 +249,7 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          flushIceCandidates(from, pc);
         } catch (err) {
           console.error("[WebRTC] Set remote description failed:", err);
         }
@@ -186,13 +258,17 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
 
     const handleIceCandidate = async ({ from, candidate }) => {
       const pc = peersRef.current.get(from);
-      if (pc) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch {
-          // Ignore - may arrive before remote description
+      if (!pc || !pc.remoteDescription) {
+        // Queue until peer/remote description is ready
+        if (!iceCandidateQueueRef.current.has(from)) {
+          iceCandidateQueueRef.current.set(from, []);
         }
+        iceCandidateQueueRef.current.get(from).push(candidate);
+        return;
       }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {}
     };
 
     const handleStreamStopped = ({ from }) => {
