@@ -29,7 +29,7 @@ const ScreenCaptureModal = ({ isVisible, onAllow, onLater, onDismiss }) => {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+        className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
         onClick={(e) => e.target === e.currentTarget && onDismiss?.()}
       >
         <motion.div
@@ -37,9 +37,10 @@ const ScreenCaptureModal = ({ isVisible, onAllow, onLater, onDismiss }) => {
           animate={{ scale: 1, opacity: 1, y: 0 }}
           exit={{ scale: 0.9, opacity: 0, y: 30 }}
           transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-          className="w-[95vw] max-w-md overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+          className="w-[95vw] max-w-md overflow-y-auto rounded-2xl border border-white/10 shadow-2xl"
           style={{
             background: 'linear-gradient(145deg, rgba(15,15,30,0.98), rgba(10,10,25,0.98))',
+            maxHeight: 'min(90vh, 90dvh)',
           }}
         >
           {/* Header glow */}

@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings,
@@ -604,15 +605,16 @@ export default function Profile() {
         </motion.div>
 
         <AnimatePresence>
-          {editOpen && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-4 pt-16 sm:pt-4 overflow-y-auto">
+          {editOpen && createPortal(
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setEditOpen(false)} />
 
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl my-auto sm:my-0"
+                className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl overflow-y-auto"
+                style={{ maxHeight: 'min(90vh, 90dvh)' }}
               >
                 <button onClick={() => setEditOpen(false)} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
                   <X className="w-5 h-5" />
@@ -653,7 +655,8 @@ export default function Profile() {
                   </Button>
                 </div>
               </motion.div>
-            </motion.div>
+            </motion.div>,
+            document.body
           )}
         </AnimatePresence>
       </div>

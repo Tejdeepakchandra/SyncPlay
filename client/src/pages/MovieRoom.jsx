@@ -2564,9 +2564,10 @@ const MovieRoom = () => {
   return (
     <div
       ref={containerRef}
-      className={`h-screen bg-background flex flex-col transition-colors duration-700 overflow-hidden ${
+      className={`bg-background flex flex-col transition-colors duration-700 overflow-hidden ${
         lightsOff ? "!bg-black" : ""
       }`}
+      style={{ height: '100dvh' }}
     >
       {/* Hidden file input */}
       <input

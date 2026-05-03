@@ -1397,7 +1397,7 @@ const MusicRoom = () => {
   }
 
   return (
-    <div ref={containerRef} className="h-screen bg-[radial-gradient(circle_at_12%_15%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_88%_80%,rgba(34,197,94,0.16),transparent_36%),hsl(224,40%,6%)] flex flex-col overflow-hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+    <div ref={containerRef} className="bg-[radial-gradient(circle_at_12%_15%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_88%_80%,rgba(34,197,94,0.16),transparent_36%),hsl(224,40%,6%)] flex flex-col overflow-hidden" style={{ height: '100dvh', paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       {/* Join Request Notifications for Host */}
       {isHost && joinRequests.length > 0 && (
         <JoinRequestNotification

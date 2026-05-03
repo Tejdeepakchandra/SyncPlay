@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -268,7 +269,7 @@ export default function ProfileMomentsPage() {
 
       {/* Full-screen player overlay */}
       <AnimatePresence>
-        {selectedItem && (
+        {selectedItem && createPortal(
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -282,10 +283,11 @@ export default function ProfileMomentsPage() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-              className="w-full max-w-4xl max-h-[90vh] flex flex-col"
+              className="w-full max-w-4xl flex flex-col"
+              style={{ maxHeight: 'min(90vh, 90dvh)' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col max-h-[90vh]">
+              <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col" style={{ maxHeight: 'min(90vh, 90dvh)' }}>
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
                   <div className="min-w-0 flex-1">
@@ -328,7 +330,8 @@ export default function ProfileMomentsPage() {
                   <video
                     key={selectedItem.videoUrl}
                     src={selectedItem.videoUrl}
-                    className="w-full h-full object-contain max-h-[calc(90vh-60px)]"
+                    className="w-full h-full object-contain"
+                    style={{ maxHeight: 'calc(min(90vh, 90dvh) - 60px)' }}
                     controls
                     autoPlay
                     playsInline
@@ -336,7 +339,8 @@ export default function ProfileMomentsPage() {
                 </div>
               </div>
             </motion.div>
-          </motion.div>
+          </motion.div>,
+          document.body
         )}
       </AnimatePresence>
     </main>

@@ -93,15 +93,18 @@ export default function NotificationDropdown({ variant = "desktop" }) {
             transition={{ duration: 0.15 }}
             className={`absolute z-50 rounded-2xl overflow-hidden ${
               isMobile
-                ? "bottom-full mb-2 right-0 w-80"
+                ? "bottom-full mb-2 right-0 w-[min(20rem,calc(100vw-2rem))]"
                 : isTopMobile
-                  ? "right-0 top-full mt-2 w-[min(22rem,calc(100vw-1rem))]"
-                : "right-0 top-full mt-2 w-[21rem]"
+                  ? "top-full mt-2 w-[min(22rem,calc(100vw-1rem))]"
+                : "right-0 top-full mt-2 w-[min(21rem,calc(100vw-2rem))]"
             }`}
             style={{
               background: "hsl(var(--card))",
               border: "1px solid hsl(var(--border))",
               boxShadow: "0 20px 60px -15px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03)",
+              ...(isTopMobile
+                ? { right: 0, left: 'auto', transform: 'none' }
+                : {}),
             }}
           >
             {/* Header */}
