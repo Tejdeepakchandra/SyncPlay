@@ -268,81 +268,83 @@ export default function ProfileMomentsPage() {
       </div>
 
       {/* Full-screen player overlay */}
-      <AnimatePresence>
-        {selectedItem && createPortal(
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-3 sm:p-6"
-            style={{ touchAction: 'none' }}
-            onClick={() => setSelectedItem(null)}
-          >
+      {createPortal(
+        <AnimatePresence>
+          {selectedItem && (
             <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-              className="w-full max-w-4xl flex flex-col"
-              style={{ maxHeight: 'min(90vh, 90dvh)' }}
-              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-3 sm:p-6"
+              style={{ touchAction: 'none' }}
+              onClick={() => setSelectedItem(null)}
             >
-              <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col" style={{ maxHeight: 'min(90vh, 90dvh)' }}>
-                {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-white truncate">
-                      {selectedItem.label || 'Captured Moment'}
-                    </h3>
-                    <div className="flex items-center gap-3 mt-0.5 text-[11px] text-gray-400">
-                      {selectedItem.roomCode && (
-                        <span className="text-purple-400">#{selectedItem.roomCode}</span>
-                      )}
-                      {selectedItem.clipCount && (
-                        <span>{selectedItem.clipCount} moments</span>
-                      )}
-                      <span>{formatDate(selectedItem.createdAt || selectedItem.addedAt)}</span>
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                className="w-full max-w-4xl flex flex-col"
+                style={{ maxHeight: 'min(90vh, 90dvh)' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col" style={{ maxHeight: 'min(90vh, 90dvh)' }}>
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold text-white truncate">
+                        {selectedItem.label || 'Captured Moment'}
+                      </h3>
+                      <div className="flex items-center gap-3 mt-0.5 text-[11px] text-gray-400">
+                        {selectedItem.roomCode && (
+                          <span className="text-purple-400">#{selectedItem.roomCode}</span>
+                        )}
+                        {selectedItem.clipCount && (
+                          <span>{selectedItem.clipCount} moments</span>
+                        )}
+                        <span>{formatDate(selectedItem.createdAt || selectedItem.addedAt)}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleDelete(selectedItem)}
+                        disabled={deleting === (selectedItem.activityId || selectedItem._id)}
+                        className="p-2 rounded-lg hover:bg-red-500/10 text-gray-400 hover:text-red-400 transition-colors"
+                      >
+                        {deleting === (selectedItem.activityId || selectedItem._id) ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setSelectedItem(null)}
+                        className="p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleDelete(selectedItem)}
-                      disabled={deleting === (selectedItem.activityId || selectedItem._id)}
-                      className="p-2 rounded-lg hover:bg-red-500/10 text-gray-400 hover:text-red-400 transition-colors"
-                    >
-                      {deleting === (selectedItem.activityId || selectedItem._id) ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setSelectedItem(null)}
-                      className="p-2 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+
+                  {/* Video — fills remaining space */}
+                  <div className="flex-1 min-h-0 bg-black flex items-center justify-center">
+                    <video
+                      key={selectedItem.videoUrl}
+                      src={selectedItem.videoUrl}
+                      className="w-full h-full object-contain"
+                      style={{ maxHeight: 'calc(min(90vh, 90dvh) - 60px)' }}
+                      controls
+                      autoPlay
+                      playsInline
+                    />
                   </div>
                 </div>
-
-                {/* Video — fills remaining space */}
-                <div className="flex-1 min-h-0 bg-black flex items-center justify-center">
-                  <video
-                    key={selectedItem.videoUrl}
-                    src={selectedItem.videoUrl}
-                    className="w-full h-full object-contain"
-                    style={{ maxHeight: 'calc(min(90vh, 90dvh) - 60px)' }}
-                    controls
-                    autoPlay
-                    playsInline
-                  />
-                </div>
-              </div>
+              </motion.div>
             </motion.div>
-          </motion.div>,
-          document.body
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </main>
   );
 }

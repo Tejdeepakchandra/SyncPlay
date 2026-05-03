@@ -369,22 +369,8 @@ export default function Profile() {
     toast.success("Profile link copied");
   };
 
-  if (!isLoading && !user && !clerkUser) {
-    return (
-      <main className="pb-12 flex items-center justify-center min-h-[60vh]">
-        <div className="text-center">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-            <Sparkles className="w-7 h-7 text-primary" />
-          </div>
-          <h2 className="font-display text-xl font-bold text-foreground mb-2">Sign in to view your profile</h2>
-          <p className="text-sm text-muted-foreground mb-6">Track your rooms, achievements, and favorites.</p>
-          <Button onClick={() => navigate("/sign-in")} className="bg-primary text-primary-foreground">Sign In</Button>
-        </div>
-      </main>
-    );
-  }
-
-  if (isLoading) {
+  // Show loading while auth is still initializing or DB profile is loading
+  if (isLoading || !clerkLoaded || (clerkUser && dbLoading)) {
     return (
       <main className="pb-12 flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
@@ -394,6 +380,21 @@ export default function Profile() {
             {!clerkLoaded && <div>Initializing auth...</div>}
             {clerkLoaded && dbLoading && <div>Fetching profile data...</div>}
           </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user && !clerkUser) {
+    return (
+      <main className="pb-12 flex items-center justify-center min-h-[60vh]">
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+            <Sparkles className="w-7 h-7 text-primary" />
+          </div>
+          <h2 className="font-display text-xl font-bold text-foreground mb-2">Sign in to view your profile</h2>
+          <p className="text-sm text-muted-foreground mb-6">Track your rooms, achievements, and favorites.</p>
+          <Button onClick={() => navigate("/sign-in")} className="bg-primary text-primary-foreground">Sign In</Button>
         </div>
       </main>
     );
@@ -604,61 +605,63 @@ export default function Profile() {
           </div>
         </motion.div>
 
-        <AnimatePresence>
-          {editOpen && createPortal(
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
-              <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setEditOpen(false)} />
+        {createPortal(
+          <AnimatePresence>
+            {editOpen && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setEditOpen(false)} />
 
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl overflow-y-auto"
-                style={{ maxHeight: 'min(90vh, 90dvh)' }}
-              >
-                <button onClick={() => setEditOpen(false)} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
-                  <X className="w-5 h-5" />
-                </button>
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl overflow-y-auto"
+                  style={{ maxHeight: 'min(90vh, 90dvh)' }}
+                >
+                  <button onClick={() => setEditOpen(false)} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
+                    <X className="w-5 h-5" />
+                  </button>
 
-                <h2 className="font-display text-lg font-bold text-foreground mb-5">Edit Profile</h2>
+                  <h2 className="font-display text-lg font-bold text-foreground mb-5">Edit Profile</h2>
 
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-sm font-medium text-foreground mb-2 block">Avatar</label>
-                    <div className="flex flex-wrap gap-2">
-                      {EMOJI_OPTIONS.map((emoji) => (
-                        <button
-                          key={emoji}
-                          onClick={() => setEditEmoji(emoji)}
-                          className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all ${
-                            editEmoji === emoji ? "bg-primary/20 border-2 border-primary scale-110" : "bg-muted/50 border border-border hover:bg-muted"
-                          }`}
-                        >
-                          {emoji}
-                        </button>
-                      ))}
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-2 block">Avatar</label>
+                      <div className="flex flex-wrap gap-2">
+                        {EMOJI_OPTIONS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            onClick={() => setEditEmoji(emoji)}
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all ${
+                              editEmoji === emoji ? "bg-primary/20 border-2 border-primary scale-110" : "bg-muted/50 border border-border hover:bg-muted"
+                            }`}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
 
-                  <div>
-                    <label className="text-sm font-medium text-foreground mb-1.5 block">Display Name</label>
-                    <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="bg-card/60 border-border" maxLength={50} />
-                  </div>
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-1.5 block">Display Name</label>
+                      <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="bg-card/60 border-border" maxLength={50} />
+                    </div>
 
-                  <div>
-                    <label className="text-sm font-medium text-foreground mb-1.5 block">Bio</label>
-                    <Input value={editBio} onChange={(e) => setEditBio(e.target.value)} className="bg-card/60 border-border" placeholder="Tell us about yourself..." maxLength={160} />
-                  </div>
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-1.5 block">Bio</label>
+                      <Input value={editBio} onChange={(e) => setEditBio(e.target.value)} className="bg-card/60 border-border" placeholder="Tell us about yourself..." maxLength={160} />
+                    </div>
 
-                  <Button onClick={handleSaveProfile} disabled={saving} className="w-full bg-primary text-primary-foreground font-semibold shadow-lg shadow-primary/20">
-                    {saving ? "Saving..." : <><Check className="w-4 h-4 mr-1" /> Save Changes</>}
-                  </Button>
-                </div>
+                    <Button onClick={handleSaveProfile} disabled={saving} className="w-full bg-primary text-primary-foreground font-semibold shadow-lg shadow-primary/20">
+                      {saving ? "Saving..." : <><Check className="w-4 h-4 mr-1" /> Save Changes</>}
+                    </Button>
+                  </div>
+                </motion.div>
               </motion.div>
-            </motion.div>,
-            document.body
-          )}
-        </AnimatePresence>
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
       </div>
     </main>
   );
