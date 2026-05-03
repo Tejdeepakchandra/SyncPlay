@@ -236,8 +236,21 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
     if (!roomCode || !myId) return;
 
     // Host: viewer requested the stream → create peer + send offer
+    // Guard: don't tear down a peer that is actively connecting or already connected.
+    // The viewer retries every 1.5s — without this guard, each retry destroys the
+    // in-progress connection, causing an infinite reconnect loop.
     const handleRequestStream = ({ from }) => {
       if (!isHostRef.current || !localStreamRef.current) return;
+
+      const existing = peersRef.current.get(from);
+      if (existing) {
+        const state = existing.connectionState;
+        if (state === "connecting" || state === "connected" || state === "new") {
+          // Peer is still viable — don't recreate
+          return;
+        }
+      }
+
       createAndOfferToViewer(from, localStreamRef.current);
     };
 
@@ -267,11 +280,9 @@ export const useWebRTCSignaling = ({ roomCode, isHost, participantIds, userId })
       const pc = peersRef.current.get(from);
       if (!pc) return;
 
-      // Only accept answer if we're waiting for one
-      if (pc.signalingState !== "have-local-offer") {
-        console.warn(`[WebRTC Screen] Ignoring answer from ${from} — state is ${pc.signalingState}`);
-        return;
-      }
+      // Accept answer if peer is waiting for one; silently ignore otherwise
+      // (stale answers from old offer cycles are harmless)
+      if (pc.signalingState !== "have-local-offer") return;
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));

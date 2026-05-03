@@ -181,7 +181,10 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     };
 
     // ── Perfect Negotiation: onnegotiationneeded ──
+    // This fires automatically when transceivers are added or tracks change.
+    // Guard: skip if createAndSendOffer is already making an offer for this peer.
     pc.onnegotiationneeded = async () => {
+      if (makingOfferRef.current.has(peerId)) return;
       try {
         makingOfferRef.current.add(peerId);
         await pc.setLocalDescription();
@@ -257,14 +260,17 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
   const createAndSendOffer = useCallback(async (peerId) => {
     const myId = userIdRef.current;
     if (!myId) return;
+    // For NEW peers: onnegotiationneeded fires automatically when addTransceiver
+    // runs in createPeer, so we don't need to create an explicit offer.
+    // For EXISTING peers: createPeer returns the existing PC. If it's stable and
+    // no offer is in progress, we need to trigger renegotiation explicitly.
+    const isExisting = peersRef.current.has(peerId);
 
     const pc = createPeer(peerId);
     if (!pc) return;
 
-    // The onnegotiationneeded handler will fire automatically
-    // because we added transceivers in createPeer.
-    // But if the peer already exists and is stable, we may need to trigger manually:
-    if (pc.signalingState === "stable" && !makingOfferRef.current.has(peerId)) {
+    // Only send explicit offer for existing peers that need renegotiation
+    if (isExisting && pc.signalingState === "stable" && !makingOfferRef.current.has(peerId)) {
       try {
         makingOfferRef.current.add(peerId);
         await pc.setLocalDescription();
@@ -282,6 +288,7 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
         makingOfferRef.current.delete(peerId);
       }
     }
+    // For new peers, onnegotiationneeded handles the offer automatically
   }, [roomCode, createPeer]);
 
   useEffect(() => {
