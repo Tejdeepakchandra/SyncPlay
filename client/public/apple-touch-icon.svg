@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="50%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="42" fill="url(#bg)"/>
+  <!-- Sync ring -->
+  <circle cx="96" cy="96" r="62" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="5" stroke-dasharray="30 15"/>
+  <!-- Play button -->
+  <path d="M 78 58 L 78 134 L 136 96 Z" fill="white"/>
+  <!-- User dots -->
+  <circle cx="96" cy="30" r="6" fill="rgba(255,255,255,0.8)"/>
+  <circle cx="156" cy="120" r="6" fill="rgba(255,255,255,0.8)"/>
+  <circle cx="36" cy="120" r="6" fill="rgba(255,255,255,0.8)"/>
+</svg>
