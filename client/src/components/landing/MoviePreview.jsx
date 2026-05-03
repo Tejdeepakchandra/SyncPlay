@@ -5,7 +5,7 @@ import { leftReveal, rightReveal, staggerContainer, bulletItem } from "@/lib/lan
 export default function MoviePreview() {
   const bulletPoints = [
     "Create a room in seconds",
-    "Invite via link — no login needed",
+    "Invite via link — guests join instantly",
     "Host controls playback for everyone",
     "Screen sharing for any streaming service",
   ];

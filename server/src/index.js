@@ -212,6 +212,41 @@ app.get('/api/health', (_req, res) => {
 
 
 // ═══════════════════════════════════════════════════
+// PUBLIC STATS ENDPOINT (before auth — must be public)
+// ═══════════════════════════════════════════════════
+
+app.get('/api/stats', async (_req, res) => {
+  try {
+    const Room = require('./models/mongodb/Room');
+    const User = require('./models/mongodb/User');
+
+    // Run all queries in parallel for speed
+    const [totalRooms, totalUsers, activeRooms] = await Promise.all([
+      Room.countDocuments(),
+      User.countDocuments(),
+      Room.countDocuments({ status: 'active' }),
+    ]);
+
+    // Cache for 5 minutes
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({
+      success: true,
+      data: {
+        totalRooms,
+        totalUsers,
+        activeRooms,
+      },
+    });
+  } catch (err) {
+    res.json({
+      success: true,
+      data: { totalRooms: 0, totalUsers: 0, activeRooms: 0 },
+    });
+  }
+});
+
+
+// ═══════════════════════════════════════════════════
 // AUTH MIDDLEWARE (applied to all subsequent routes)
 // ═══════════════════════════════════════════════════
 

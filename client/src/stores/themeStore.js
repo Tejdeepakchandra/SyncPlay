@@ -23,6 +23,20 @@ export const themes = [
     emoji: '❄️',
     preview: { bg: '#f0f4f8', primary: '#3b82f6', secondary: '#06b6d4', accent: '#8b5cf6' },
   },
+  {
+    id: 'neon-noir',
+    name: 'Neon Noir',
+    description: 'Dark charcoal with vivid pink and electric violet',
+    emoji: '🌃',
+    preview: { bg: '#0f0f14', primary: '#e040fb', secondary: '#00e5ff', accent: '#ff6d00' },
+  },
+  {
+    id: 'emerald-dusk',
+    name: 'Emerald Dusk',
+    description: 'Rich forest greens with gold and warm earth tones',
+    emoji: '🌿',
+    preview: { bg: '#0d120e', primary: '#34d399', secondary: '#fbbf24', accent: '#f472b6' },
+  },
 ];
 
 const applyThemeToRoot = (theme) => {

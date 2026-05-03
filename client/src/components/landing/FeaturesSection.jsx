@@ -5,8 +5,8 @@ import { sectionFade, staggerContainer, cardItem, cardHover } from "@/lib/landin
 const features = [
   {
     icon: UserX,
-    title: "No Login Required",
-    description: "Jump into any room instantly. Just click a link and start watching or listening with friends.",
+    title: "Guests Join Free",
+    description: "Friends join any room instantly — just click a link. Only room creators need to sign in.",
     color: "primary",
   },
   {
