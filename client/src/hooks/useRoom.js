@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { socket, connectSocket } from "@/services/socket";
+import { socket, connectSocket, getSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 
@@ -26,6 +26,7 @@ export const useRoom = (roomCode) => {
   useEffect(() => {
     if (!normalizedRoomCode) return;
 
+    let cancelled = false;
 
     const initializeRoom = async () => {
       try {
@@ -34,23 +35,53 @@ export const useRoom = (roomCode) => {
           const token = user ? await getToken() : null;
           connectSocket(token);
           
-          // Wait for socket to actually connect
-          let attempts = 0;
-          while (!socket.connected && attempts < 20) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            attempts++;
-          }
+          // Wait for socket to actually connect using event-based approach
+          // This handles slow connections (cold Render servers, mobile networks)
+          const connected = await new Promise((resolve) => {
+            // If it connected during the await above, resolve immediately
+            if (socket.connected) { resolve(true); return; }
+            
+            const timeout = setTimeout(() => {
+              resolve(false);
+            }, 15000); // 15 second timeout for cold server starts
+            
+            const onConnect = () => {
+              clearTimeout(timeout);
+              resolve(true);
+            };
+            
+            // Listen for the connect event on the raw socket
+            const rawSocket = getSocket();
+            rawSocket.once('connect', onConnect);
+            
+            // Also check periodically in case the event was missed
+            const checkInterval = setInterval(() => {
+              if (socket.connected) {
+                clearInterval(checkInterval);
+                clearTimeout(timeout);
+                rawSocket.off('connect', onConnect);
+                resolve(true);
+              }
+            }, 500);
+            
+            // Cleanup on timeout
+            setTimeout(() => clearInterval(checkInterval), 15500);
+          });
           
-          if (!socket.connected) {
-            console.error('❌ Socket failed to connect after waiting');
-            setAccessStatus("error");
+          if (!connected || cancelled) {
+            if (!cancelled) {
+              console.error('❌ Socket failed to connect after waiting');
+              setAccessStatus("error");
+            }
             return;
           }
         }
 
+        if (cancelled) return;
 
         // Request room state and try to join
         socket.emit("room:get-state", { roomCode: normalizedRoomCode }, (response) => {
+          if (cancelled) return;
           if (!response || !response.success) {
             console.error('Failed to get room state:', response?.error || 'No response');
             setAccessStatus("not_found");
@@ -80,6 +111,7 @@ export const useRoom = (roomCode) => {
               (clerkUser ? `${clerkUser.firstName || ''} ${clerkUser.lastName || ''}`.trim() : null) ||
               user?.username || "User";
             socket.emit("room:join", { roomCode: normalizedRoomCode, guestName: displayName }, (joinResponse) => {
+              if (cancelled) return;
               if (joinResponse && joinResponse.success) {
                 if (joinResponse.userId) {
                   setCurrentUserId(joinResponse.userId);
@@ -104,6 +136,7 @@ export const useRoom = (roomCode) => {
           } else if (guestName) {
             // Auto-rejoin as guest on page refresh (we have stored guest name)
             socket.emit("room:join", { roomCode: normalizedRoomCode, guestName }, (joinResponse) => {
+              if (cancelled) return;
               if (joinResponse && joinResponse.success) {
                 if (joinResponse.userId) setCurrentUserId(joinResponse.userId);
                 if (joinResponse.status === "waiting_for_approval") {
@@ -122,8 +155,10 @@ export const useRoom = (roomCode) => {
           }
         });
       } catch (error) {
-        console.error('Room initialization error:', error);
-        setAccessStatus("error");
+        if (!cancelled) {
+          console.error('Room initialization error:', error);
+          setAccessStatus("error");
+        }
       }
     };
 
@@ -146,6 +181,7 @@ export const useRoom = (roomCode) => {
     socket.on('connect', handleSocketReconnect);
 
     return () => {
+      cancelled = true;
       socket.off('socket:identify', handleSocketIdentify);
       socket.off('connect', handleSocketReconnect);
     };
@@ -451,9 +487,6 @@ export const useRoom = (roomCode) => {
 
   // Register socket event listeners - this runs whenever handlers change (which happens when dependencies change)
   useEffect(() => {
-    if (!socket.connected) {
-      return;
-    }
 
 
     socket.on("room:user-joined", handleParticipantJoined);

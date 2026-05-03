@@ -273,7 +273,8 @@ export default function ProfileMomentsPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center"
+            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-xl flex items-center justify-center p-3 sm:p-6"
+            style={{ touchAction: 'none' }}
             onClick={() => setSelectedItem(null)}
           >
             <motion.div
@@ -281,12 +282,12 @@ export default function ProfileMomentsPage() {
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-              className="w-[95vw] max-w-4xl"
+              className="w-full max-w-4xl max-h-[90vh] flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+              <div className="bg-gray-900/95 backdrop-blur-xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex flex-col max-h-[90vh]">
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
                   <div className="min-w-0 flex-1">
                     <h3 className="text-sm font-semibold text-white truncate">
                       {selectedItem.label || 'Captured Moment'}
@@ -322,12 +323,12 @@ export default function ProfileMomentsPage() {
                   </div>
                 </div>
 
-                {/* Video */}
-                <div className="aspect-video bg-black">
+                {/* Video — fills remaining space */}
+                <div className="flex-1 min-h-0 bg-black flex items-center justify-center">
                   <video
                     key={selectedItem.videoUrl}
                     src={selectedItem.videoUrl}
-                    className="w-full h-full object-contain"
+                    className="w-full h-full object-contain max-h-[calc(90vh-60px)]"
                     controls
                     autoPlay
                     playsInline

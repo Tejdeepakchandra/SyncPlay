@@ -605,14 +605,14 @@ export default function Profile() {
 
         <AnimatePresence>
           {editOpen && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-4 pt-16 sm:pt-4 overflow-y-auto">
               <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setEditOpen(false)} />
 
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl"
+                className="relative bg-card border border-border p-6 w-full max-w-sm z-10 rounded-2xl my-auto sm:my-0"
               >
                 <button onClick={() => setEditOpen(false)} className="absolute top-4 right-4 text-muted-foreground hover:text-foreground">
                   <X className="w-5 h-5" />
