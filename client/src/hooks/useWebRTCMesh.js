@@ -210,14 +210,9 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
       }
     };
 
-    // Flush queued ICE candidates
-    if (iceCandidateQueueRef.current.has(peerId)) {
-      const queued = iceCandidateQueueRef.current.get(peerId);
-      queued.forEach((c) => {
-        try { pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
-      });
-      iceCandidateQueueRef.current.delete(peerId);
-    }
+    // NOTE: Do NOT flush ICE candidates here — remote description hasn't been set
+    // yet. Candidates are flushed in handleMeshOffer/handleMeshAnswer after
+    // setRemoteDescription succeeds.
 
     // ── Connection state monitoring ──
     pc.onconnectionstatechange = () => {
@@ -379,6 +374,13 @@ export const useWebRTCMesh = ({ roomCode, participantIds, localStream, enabled, 
     }
 
     try {
+      // If polite peer and there's a collision, rollback our own offer first
+      // This is the critical step in Perfect Negotiation that allows the
+      // polite peer to accept the remote offer despite having sent its own.
+      if (offerCollision) {
+        await pc.setLocalDescription({ type: "rollback" });
+      }
+
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
       // Flush queued ICE candidates now that remote description is set
