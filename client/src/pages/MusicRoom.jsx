@@ -195,6 +195,7 @@ const MusicRoom = () => {
   const [_showAudioBubbles, _setShowAudioBubbles] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [isLeavingRoom, setIsLeavingRoom] = useState(false);
+  const [mobileNeedsGesture, setMobileNeedsGesture] = useState(false);
   const uniqueParticipantCount = useMemo(() => {
     if (!Array.isArray(participants) || participants.length === 0) {
       return Math.max(Number(room?.participantCount || 0), 1);
@@ -235,6 +236,7 @@ const MusicRoom = () => {
   const autoBackgroundDeafenRef = useRef(false);
   const previousDeafenStateRef = useRef(false);
   const lastBackgroundYoutubeToastAtRef = useRef(0);
+  const uploadAbortRef = useRef(null);
 
   const webrtc = useWebRTC();
   const myUserId = currentUserId || socket.userId || user?.id;
@@ -695,6 +697,12 @@ const MusicRoom = () => {
     } else if (pendingFresh && pending.type === "play") {
       audio.play().catch(() => {
         setIsPlaying(false);
+        // On mobile, autoplay is blocked — show tap-to-play overlay
+        const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+          || (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent));
+        if (isMobileDevice) {
+          setMobileNeedsGesture(true);
+        }
       });
     }
 
@@ -1150,11 +1158,15 @@ const MusicRoom = () => {
       formData.append("video", file);
       formData.append("title", file?.name || "Local Audio");
 
+      const abortController = new AbortController();
+      uploadAbortRef.current = abortController;
+
       const response = await api.post(`/rooms/${roomCode}/media/upload`, formData, {
         headers: {
           "Content-Type": "multipart/form-data",
         },
         timeout: 120000,
+        signal: abortController.signal,
         onUploadProgress: (evt) => {
           if (!evt?.total) {
             setUploadTrackProgress((prev) => Math.max(prev, 10));
@@ -1166,6 +1178,8 @@ const MusicRoom = () => {
           setUploadTrackStatus(pct >= 95 ? "Processing in cloud..." : "Uploading audio to room");
         },
       });
+
+      uploadAbortRef.current = null;
 
       const sharedMedia = response?.data?.data?.media;
       const sharedUrl = sharedMedia?.audioUrl || sharedMedia?.videoUrl;
@@ -1204,32 +1218,38 @@ const MusicRoom = () => {
         description: "Shared in paused state. Press play when everyone is ready.",
       });
     } catch (error) {
-      usedLocalFallback = true;
-      setUploadTrackStatus("Upload failed, using local-only playback");
-      const localUrl = audioUrl || URL.createObjectURL(file);
-      const nextTrack = {
-        title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
-        artist: "Uploaded",
-        thumbnail: null,
-        sourceType: "local",
-        audioUrl: localUrl,
-      };
+      uploadAbortRef.current = null;
 
-      setCurrentTrack(nextTrack);
-      pendingLocalControlRef.current = null;
-      setShowSourcePicker(false);
-      setTrackEnded(false);
-      setIsPlaying(false);
-      setQueue((prev) => [...prev, nextTrack]);
-
-      if (error?.code === "ECONNABORTED") {
-        toast.error("Upload is taking longer than expected", {
-          description: "Cloud processing timed out. Using local-only fallback for now.",
-        });
+      if (error?.name === "CanceledError" || error?.code === "ERR_CANCELED") {
+        toast("Upload cancelled", { icon: "🚫", duration: 1800 });
       } else {
-        toast("Upload failed, using local-only playback", {
-          description: error?.response?.data?.message || error?.message || "Only you can hear this file.",
-        });
+        usedLocalFallback = true;
+        setUploadTrackStatus("Upload failed, using local-only playback");
+        const localUrl = audioUrl || URL.createObjectURL(file);
+        const nextTrack = {
+          title: file?.name?.replace(/\.[^/.]+$/, "") || "Local Audio",
+          artist: "Uploaded",
+          thumbnail: null,
+          sourceType: "local",
+          audioUrl: localUrl,
+        };
+
+        setCurrentTrack(nextTrack);
+        pendingLocalControlRef.current = null;
+        setShowSourcePicker(false);
+        setTrackEnded(false);
+        setIsPlaying(false);
+        setQueue((prev) => [...prev, nextTrack]);
+
+        if (error?.code === "ECONNABORTED") {
+          toast.error("Upload is taking longer than expected", {
+            description: "Cloud processing timed out. Using local-only fallback for now.",
+          });
+        } else {
+          toast("Upload failed, using local-only playback", {
+            description: error?.response?.data?.message || error?.message || "Only you can hear this file.",
+          });
+        }
       }
     } finally {
       setIsUploadingTrack(false);
@@ -1242,6 +1262,13 @@ const MusicRoom = () => {
       }, 2200);
     }
   }, [canControl, roomCode, roomSync]);
+
+  const cancelUpload = useCallback(() => {
+    if (uploadAbortRef.current) {
+      uploadAbortRef.current.abort();
+      uploadAbortRef.current = null;
+    }
+  }, []);
 
   const closeAllPanels = useCallback(() => {
     setShowChat(false);
@@ -1529,6 +1556,7 @@ const MusicRoom = () => {
                 isUploading={isUploadingTrack}
                 uploadProgress={uploadTrackProgress}
                 uploadStatusText={uploadTrackStatus}
+                onCancelUpload={cancelUpload}
               />
             ) : (
               <div className="text-center p-8">
@@ -1542,6 +1570,37 @@ const MusicRoom = () => {
           ) : currentTrack ? (
             <div className={`flex-1 flex items-center justify-center relative w-full ${isMobile && isLandscape ? 'flex-row p-2 gap-4' : 'flex-col p-4 md:p-12'}`}>
               <div className={`absolute inset-0 bg-gradient-to-br ${albumGradient || "from-emerald-500 to-lime-400"} opacity-[0.08]`} />
+
+              {/* Mobile "Tap to Play" overlay — shown when autoplay is blocked */}
+              {mobileNeedsGesture && (
+                <div
+                  className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm cursor-pointer"
+                  onClick={() => {
+                    setMobileNeedsGesture(false);
+                    if (currentTrack.sourceType === "youtube" && ytPlayer) {
+                      ytPlayer.mute();
+                      ytPlayer.play();
+                      setTimeout(() => { ytPlayer.unmute(); }, 800);
+                      setIsPlaying(true);
+                    } else {
+                      const audio = localAudioRef.current;
+                      if (audio) {
+                        audio.play().then(() => {
+                          setIsPlaying(true);
+                        }).catch(() => {});
+                      }
+                    }
+                  }}
+                >
+                  <div className="text-center text-white space-y-3 animate-pulse">
+                    <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center mx-auto">
+                      <Play className="w-10 h-10 text-white ml-1" />
+                    </div>
+                    <p className="text-base font-semibold">Tap to Play</p>
+                    <p className="text-xs text-white/60">Your browser requires a tap to start playback</p>
+                  </div>
+                </div>
+              )}
 
               <AnimatePresence>
                 {audioActive && participants.map((p, i) => (

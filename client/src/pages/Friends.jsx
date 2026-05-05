@@ -15,6 +15,8 @@ import {
   ExternalLink,
   Sparkles,
   Globe,
+  Eye,
+  Clock,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -32,13 +34,13 @@ const TABS = ["friends", "requests", "discover"];
 const FRIENDS_CACHE_KEY = "syncplay:friends:overview:v1";
 
 const container = {
-  hidden: { opacity: 1 },
+  hidden: { opacity: 0 },
   show: { opacity: 1, transition: { staggerChildren: 0.05, delayChildren: 0.08 } },
 };
 
 const item = {
-  hidden: { opacity: 1, y: 0 },
-  show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 220, damping: 22 } },
+  hidden: { opacity: 0, y: 12, filter: "blur(4px)" },
+  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: { type: "spring", stiffness: 220, damping: 22 } },
 };
 
 function timeAgo(dateStr) {
@@ -763,6 +765,9 @@ export default function Friends() {
                                 <button onClick={() => handleInviteToRoom(friend)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
                                   <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" /> Invite to Room
                                 </button>
+                                <button onClick={() => navigate(`/profile/${friend.id}`)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <Eye className="w-3.5 h-3.5 text-muted-foreground" /> View Profile
+                                </button>
                                 <button onClick={handleCopyProfile} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
                                   <Copy className="w-3.5 h-3.5 text-muted-foreground" /> Copy Profile Link
                                 </button>
@@ -782,11 +787,52 @@ export default function Friends() {
                   {offlineFriends.map((friendRow) => {
                     const friend = friendRow.friendProfile;
                     return (
-                      <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 opacity-70 hover:opacity-85 transition-opacity">
-                        <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center text-2xl">{friend.avatar_emoji || "🧑"}</div>
+                      <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 hover:border-primary/30 transition-colors group">
+                        <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center text-2xl relative">
+                          {friend.avatar_emoji || "🧑"}
+                          <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-muted-foreground/40 border-2 border-card" />
+                        </div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-foreground text-sm truncate">{friend.display_name}</p>
-                          <p className="text-xs text-muted-foreground">{friend.status || "Offline"}</p>
+                          <p className="font-semibold text-foreground/80 text-sm truncate">{friend.display_name}</p>
+                          <p className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {friend.last_active ? timeAgo(friend.last_active) : "Offline"}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenDM(friend.id)} title="Message">
+                            <MessageCircle className="w-4 h-4" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(`/profile/${friend.id}`)} title="View Profile">
+                            <Eye className="w-4 h-4" />
+                          </Button>
+                        </div>
+                        <div className="relative" data-friend-menu-root="true">
+                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setMoreMenuOpen(moreMenuOpen === friendRow.id ? null : friendRow.id)}>
+                            <MoreHorizontal className="w-4 h-4" />
+                          </Button>
+                          <AnimatePresence>
+                            {moreMenuOpen === friendRow.id && (
+                              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl p-1 z-30" onMouseDown={(e) => e.stopPropagation()}>
+                                <button onClick={() => handleOpenDM(friend.id)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <MessageCircle className="w-3.5 h-3.5 text-muted-foreground" /> Message
+                                </button>
+                                <button onClick={() => navigate(`/profile/${friend.id}`)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <Eye className="w-3.5 h-3.5 text-muted-foreground" /> View Profile
+                                </button>
+                                <button onClick={() => handleInviteToRoom(friend)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" /> Invite to Room
+                                </button>
+                                <button onClick={handleCopyProfile} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                  <Copy className="w-3.5 h-3.5 text-muted-foreground" /> Copy Profile Link
+                                </button>
+                                <div className="my-1 h-px bg-border" />
+                                <button onClick={() => handleRemoveFriend(friendRow.id, friend.display_name)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg">
+                                  <UserMinus className="w-3.5 h-3.5" /> Remove Friend
+                                </button>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
                       </motion.div>
                     );
@@ -845,15 +891,21 @@ export default function Friends() {
                 <div className="grid sm:grid-cols-2 gap-3">
                   {suggestedUsers.map((suggested) => (
                     <motion.div key={suggested.id} variants={item} className="bg-[linear-gradient(180deg,hsl(var(--card)),hsl(var(--muted)/0.12))] border border-border/70 rounded-2xl p-5 flex flex-col items-center text-center hover:border-primary/35 transition-colors shadow-lg shadow-black/5">
-                      <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-3">{suggested.avatar_emoji || "🧑"}</div>
+                      <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center text-2xl mb-3 relative">
+                        {suggested.avatar_emoji || "🧑"}
+                        {suggested.is_online && <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-secondary border-2 border-card" />}
+                      </div>
                       <p className="font-semibold text-foreground text-sm">{suggested.display_name}</p>
-                      <p className="text-xs text-muted-foreground mb-3">@{suggested.username}</p>
+                      <p className="text-xs text-muted-foreground mb-1">@{suggested.username}</p>
+                      <p className="text-[10px] text-muted-foreground/70 mb-3">
+                        {suggested.is_online ? "🟢 Online now" : suggested.last_active ? `Last seen ${timeAgo(suggested.last_active)}` : "Offline"}
+                      </p>
                       {sentRequests.has(suggested.id) ? (
-                        <Button size="sm" variant="outline" className="w-full" onClick={() => handleUndoRequest(suggested.id)}>
-                          <Check className="w-3.5 h-3.5 mr-1" /> Request Sent
+                        <Button size="sm" variant="outline" className="w-full rounded-xl" onClick={() => handleUndoRequest(suggested.id)}>
+                          <Clock className="w-3.5 h-3.5 mr-1" /> Pending · Undo
                         </Button>
                       ) : (
-                        <Button size="sm" className="w-full bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAddFriend(suggested.id, suggested.display_name)}>
+                        <Button size="sm" className="w-full rounded-xl bg-[linear-gradient(90deg,hsl(var(--primary)),hsl(var(--secondary)))] text-primary-foreground" onClick={() => handleAddFriend(suggested.id, suggested.display_name)}>
                           <UserPlus className="w-3.5 h-3.5 mr-1" /> Add Friend
                         </Button>
                       )}

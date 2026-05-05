@@ -13,6 +13,7 @@ const MusicSourcePicker = ({
   isUploading = false,
   uploadProgress = 0,
   uploadStatusText = "",
+  onCancelUpload = null,
 }) => {
   const [mode, setMode] = useState("picker");
   const [searchQuery, setSearchQuery] = useState("");
@@ -181,7 +182,18 @@ const MusicSourcePicker = ({
             <div className="w-full max-w-2xl rounded-xl border border-emerald-300/30 bg-emerald-950/35 p-3">
               <div className="flex items-center justify-between text-xs text-emerald-100/90 mb-1">
                 <span>{uploadStatusText || "Uploading audio"}</span>
-                <span>{uploadProgress}%</span>
+                <div className="flex items-center gap-2">
+                  <span>{uploadProgress}%</span>
+                  {isUploading && onCancelUpload && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onCancelUpload(); }}
+                      className="w-5 h-5 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center hover:bg-red-500/40 transition-colors"
+                      title="Cancel upload"
+                    >
+                      <span className="text-red-400 text-[10px] font-bold leading-none">✕</span>
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="h-1.5 rounded-full bg-emerald-200/15 overflow-hidden">
                 <div className="h-full bg-gradient-to-r from-emerald-400 to-lime-400 transition-[width] duration-200" style={{ width: `${uploadProgress}%` }} />

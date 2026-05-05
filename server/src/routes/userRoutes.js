@@ -1157,8 +1157,12 @@ router.delete('/me/favorites/:bucket/:itemKey', authMiddleware, async (req, res,
  */
 router.get('/:username', async (req, res, next) => {
   try {
-    const user = await User.findOne({ username: req.params.username })
-      .select('username displayName avatar bio stats lastActive isOnline')
+    // Try lookup by clerkId first (if it looks like one), then by username
+    const param = String(req.params.username || '').trim();
+    const query = param.startsWith('user_') ? { clerkId: param } : { username: param };
+
+    const user = await User.findOne(query)
+      .select('clerkId username displayName avatar avatar_emoji bio stats lastActive isOnline')
       .lean();
 
     if (!user) {
@@ -1170,7 +1174,21 @@ router.get('/:username', async (req, res, next) => {
 
     res.json({
       success: true,
-      data: user
+      data: {
+        id: user.clerkId,
+        username: user.username,
+        display_name: user.displayName,
+        avatar: user.avatar,
+        avatar_emoji: user.avatar_emoji || '🧑',
+        bio: user.bio || '',
+        is_online: !!user.isOnline,
+        last_active: user.lastActive || null,
+        stats: {
+          roomsCreated: user.stats?.roomsCreated || 0,
+          roomsJoined: user.stats?.roomsJoined || 0,
+          watchTimeMinutes: user.stats?.watchTimeMinutes || 0,
+        },
+      }
     });
   } catch (error) {
     next(error);

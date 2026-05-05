@@ -25,6 +25,7 @@ import { getSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 import RoomFeedTicker from "@/components/discovery/RoomFeedTicker";
 import ThemeParticleBackground from "@/components/discovery/ThemeParticleBackground";
+import RecentRooms from "@/components/RecentRooms";
 
 const vibePills = [
   { icon: AudioWaveform, label: "Shared queue" },
@@ -376,6 +377,9 @@ export default function MusicPage() {
               <PreferenceChips title="Preferred languages" options={LANGUAGES} selected={languages} onToggle={toggleLanguage} tone="primary" />
             </div>
           </div>
+
+          {/* Recent Rooms — Recent Sessions */}
+          <RecentRooms type="music" />
 
           <div className="flex items-center justify-between gap-3 mb-4">
             <h2 className="font-display text-xl md:text-2xl font-bold text-foreground">Live Music Sessions</h2>

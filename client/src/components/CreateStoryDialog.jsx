@@ -3,7 +3,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ImageIcon, Type, Sparkles, UploadCloud, Palette } from "lucide-react";
+import { ImageIcon, Type, Sparkles, UploadCloud, Palette, AlertTriangle } from "lucide-react";
+import { toast } from "sonner";
+
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_VIDEO_SIZE = 60 * 1024 * 1024; // 60MB
+const SUPPORTED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska'];
 
 const STYLE_PRESETS = [
   { id: "midnight", name: "Midnight", value: "#111827", gradient: "linear-gradient(135deg, #111827 0%, #1f2937 100%)" },
@@ -119,7 +124,35 @@ export function CreateStoryDialog({ open, onClose, onSubmit, submitting }) {
     const nextFiles = Array.from(fileList || []).filter(Boolean);
     if (!nextFiles.length) return;
 
-    const mapped = nextFiles.map((f) => ({
+    // Validate files
+    const validFiles = [];
+    for (const f of nextFiles) {
+      const isVideo = f.type.startsWith("video/");
+      const isImage = f.type.startsWith("image/");
+
+      if (!isVideo && !isImage) {
+        toast.error(`Unsupported file: ${f.name}`, { description: "Only images and videos are allowed." });
+        continue;
+      }
+
+      if (isVideo && !SUPPORTED_VIDEO_TYPES.includes(f.type)) {
+        toast.error(`Unsupported video format`, { description: `${f.name} — try MP4, WebM, or MOV.` });
+        continue;
+      }
+
+      const maxSize = isVideo ? MAX_VIDEO_SIZE : MAX_IMAGE_SIZE;
+      if (f.size > maxSize) {
+        const limitMB = Math.round(maxSize / (1024 * 1024));
+        toast.error(`File too large: ${f.name}`, { description: `Max ${limitMB}MB for ${isVideo ? "videos" : "images"}.` });
+        continue;
+      }
+
+      validFiles.push(f);
+    }
+
+    if (!validFiles.length) return;
+
+    const mapped = validFiles.map((f) => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       file: f,
       url: URL.createObjectURL(f),

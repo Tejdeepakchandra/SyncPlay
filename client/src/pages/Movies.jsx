@@ -25,6 +25,7 @@ import { getSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 import RoomFeedTicker from "@/components/discovery/RoomFeedTicker";
 import ThemeParticleBackground from "@/components/discovery/ThemeParticleBackground";
+import RecentRooms from "@/components/RecentRooms";
 
 const featurePills = [
   { icon: Waves, label: "Frame-level sync" },
@@ -376,6 +377,9 @@ export default function Movies() {
               <PreferenceChips title="Preferred languages" options={LANGUAGES} selected={languages} onToggle={toggleLanguage} tone="secondary" />
             </div>
           </div>
+
+          {/* Recent Rooms — Continue Watching */}
+          <RecentRooms type="movie" />
 
           <div className="flex items-center justify-between gap-3 mb-4">
             <h2 className="font-display text-xl md:text-2xl font-bold text-foreground">Live Movie Rooms</h2>

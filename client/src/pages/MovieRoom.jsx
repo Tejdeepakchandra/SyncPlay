@@ -112,6 +112,7 @@ const MovieRoom = () => {
   const [uploadStatusText, setUploadStatusText] = useState("Uploading media...");
   const [isUploadMediaReady, setIsUploadMediaReady] = useState(false);
   const [mobileNeedsGesture, setMobileNeedsGesture] = useState(false);
+  const [mediaHistory, setMediaHistory] = useState([]); // Played media queue for replay
 
   // Audio mixing state
   const [movieVolume, setMovieVolume] = useState(80);
@@ -156,6 +157,7 @@ const MovieRoom = () => {
   const uploadVideoRef = useRef(null);
   const screenVideoRef = useRef(null);
   const fileInputRef = useRef(null);
+  const uploadAbortRef = useRef(null);
   const suppressRemoteSyncRef = useRef(false);
   const pendingRemoteActionRef = useRef(null);
   const pendingRemoteActionSetAtRef = useRef(0);
@@ -764,6 +766,20 @@ const MovieRoom = () => {
       pendingRemoteActionSetAtRef.current = 0;
       // Mark that a media change is in progress to suppress stale overlays (e.g. "ended" from old video)
       mediaChangeInProgressRef.current = true;
+
+      // ── Track media history for replay ──
+      // Save current media to history before switching
+      if (mediaSource === "youtube" && youtubeVideoId) {
+        setMediaHistory(prev => {
+          if (prev.some(h => h.type === "youtube" && h.videoId === youtubeVideoId)) return prev;
+          return [...prev, { type: "youtube", videoId: youtubeVideoId, title: media?.title || `YouTube ${youtubeVideoId}`, playedAt: Date.now() }].slice(-20);
+        });
+      } else if (mediaSource === "upload" && uploadedVideoUrl) {
+        setMediaHistory(prev => {
+          if (prev.some(h => h.type === "upload" && h.videoUrl === uploadedVideoUrl)) return prev;
+          return [...prev, { type: "upload", videoUrl: uploadedVideoUrl, title: media?.title || "Uploaded Video", playedAt: Date.now() }].slice(-20);
+        });
+      }
 
       if (mediaType === "youtube" && resolvedYoutubeId) {
         // Skip if we're already showing this exact video (prevents flicker from own broadcast)
@@ -1729,11 +1745,16 @@ const MovieRoom = () => {
       formData.append("video", file);
       formData.append("title", file.name);
 
+      // Create AbortController for cancellation
+      const abortController = new AbortController();
+      uploadAbortRef.current = abortController;
+
       const response = await api.post(`/rooms/${effectiveRoomId}/media/upload`, formData, {
         headers: {
           "Content-Type": "multipart/form-data",
         },
         timeout: 120000,
+        signal: abortController.signal,
         onUploadProgress: (evt) => {
           if (!evt?.total) {
             setUploadProgressPct((prev) => Math.max(prev, 10));
@@ -1745,6 +1766,8 @@ const MovieRoom = () => {
           setUploadStatusText(pct >= 95 ? "Processing in cloud..." : "Uploading media...");
         },
       });
+
+      uploadAbortRef.current = null;
 
       const uploadedMedia = response?.data?.data?.media;
       if (!uploadedMedia?.videoUrl) {
@@ -1768,7 +1791,10 @@ const MovieRoom = () => {
         duration: 2200,
       });
     } catch (error) {
-      if (error?.code === "ECONNABORTED") {
+      uploadAbortRef.current = null;
+      if (error?.name === "CanceledError" || error?.code === "ERR_CANCELED") {
+        toast("Upload cancelled", { icon: "🚫", duration: 1800 });
+      } else if (error?.code === "ECONNABORTED") {
         toast.error("Upload is taking longer than expected", {
           description: "Cloud processing timed out. Try a smaller file or retry once.",
         });
@@ -1785,6 +1811,13 @@ const MovieRoom = () => {
       }
     }
   }, [canControl, effectiveRoomId, uploadedVideoUrl, roomSync]);
+
+  const cancelUpload = useCallback(() => {
+    if (uploadAbortRef.current) {
+      uploadAbortRef.current.abort();
+      uploadAbortRef.current = null;
+    }
+  }, []);
 
   const handleYoutubeUrl = useCallback(() => {
     setShowYoutubeSearch(true);
@@ -3057,10 +3090,19 @@ const MovieRoom = () => {
             )}
 
             {isUploadingMedia && (
-              <div className="absolute top-3 right-3 z-20 rounded-lg border border-white/15 bg-black/60 backdrop-blur-sm px-3 py-2 min-w-[160px]">
+              <div className="absolute top-3 right-3 z-20 rounded-lg border border-white/15 bg-black/60 backdrop-blur-sm px-3 py-2 min-w-[180px]">
                 <div className="flex items-center justify-between text-[11px] text-white/85 mb-1">
                   <span>{uploadStatusText}</span>
-                  <span>{uploadProgressPct}%</span>
+                  <div className="flex items-center gap-2">
+                    <span>{uploadProgressPct}%</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); cancelUpload(); }}
+                      className="w-5 h-5 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center hover:bg-red-500/40 transition-colors"
+                      title="Cancel upload"
+                    >
+                      <span className="text-red-400 text-[10px] font-bold leading-none">✕</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="h-1.5 w-full rounded-full bg-white/20 overflow-hidden">
                   <div className="h-full bg-secondary transition-[width] duration-200" style={{ width: `${uploadProgressPct}%` }} />

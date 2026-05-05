@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { socket, connectSocket, getSocket } from "@/services/socket";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { saveRecentRoom, removeRecentRoom } from "@/utils/recentRooms";
 
 export const useRoom = (roomCode) => {
   const { getToken, user, clerkUser } = useAuth();
@@ -129,6 +130,20 @@ export const useRoom = (roomCode) => {
                 setRoom(joinResponse.room || response.room || null);
                 setParticipants(joinResponse.participants || []);
                 setIsHost(!!joinResponse.isHost);
+
+                // Save to recent rooms for quick rejoin
+                const r = joinResponse.room || response.room;
+                if (r) {
+                  saveRecentRoom({
+                    roomCode: normalizedRoomCode,
+                    name: r.name,
+                    type: r.type,
+                    hostName: r.host?.name || displayName,
+                    hostEmoji: r.host?.avatarEmoji || "🧑",
+                    role: joinResponse.isHost ? "host" : "participant",
+                    privacy: r.settings?.privacy || r.privacy || "public",
+                  });
+                }
               } else {
                 console.error('Failed to auto-join room:', joinResponse?.error || 'No response');
               }
@@ -458,6 +473,7 @@ export const useRoom = (roomCode) => {
     setGuestName(null);
     sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
     setIsHost(false);
+    removeRecentRoom(normalizedRoomCode);
   }, [normalizedRoomCode]);
 
   const handleRoomEnded = useCallback((data) => {
@@ -483,6 +499,7 @@ export const useRoom = (roomCode) => {
     setGuestName(null);
     sessionStorage.removeItem(`syncplay:guest:${normalizedRoomCode}`);
     setIsHost(false);
+    removeRecentRoom(normalizedRoomCode);
   }, [normalizedRoomCode]);
 
   // Register socket event listeners - this runs whenever handlers change (which happens when dependencies change)
@@ -545,6 +562,20 @@ export const useRoom = (roomCode) => {
           setRoom(response.room);
           setParticipants(response.participants || []);
           setIsHost(response.isHost);
+
+          // Save to recent rooms for quick rejoin
+          const r = response.room;
+          if (r) {
+            saveRecentRoom({
+              roomCode: normalizedRoomCode,
+              name: r.name,
+              type: r.type,
+              hostName: r.host?.name || "Host",
+              hostEmoji: r.host?.avatarEmoji || "🧑",
+              role: response.isHost ? "host" : "guest",
+              privacy: r.settings?.privacy || r.privacy || "public",
+            });
+          }
           
           resolve({ status: "joined" });
         }

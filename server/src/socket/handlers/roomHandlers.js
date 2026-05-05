@@ -33,6 +33,31 @@ module.exports = (socket, io) => {
         if (!roomCode) {
           return callback({ success: false, error: 'Missing room code' });
         }
+
+        // ── GHOST USER CLEANUP ──
+        // Before joining, remove stale participants who have no active socket
+        // in the socket.io room. This prevents "ghost" users from blocking rejoins.
+        try {
+          const room = await Room.findOne({ roomCode }).select('participants status');
+          if (room && room.status !== 'ended' && room.participants.length > 0) {
+            const connectedSockets = await io.in(roomCode).fetchSockets();
+            const connectedUserIds = new Set(connectedSockets.map(s => s.userId));
+
+            const ghostParticipants = room.participants.filter(
+              p => p.userId !== socket.userId && !connectedUserIds.has(p.userId)
+            );
+
+            if (ghostParticipants.length > 0) {
+              for (const ghost of ghostParticipants) {
+                await roomService.leaveRoom(roomCode, ghost.userId).catch(() => {});
+              }
+              console.log(`[ROOM] 🧹 Cleaned ${ghostParticipants.length} ghost participant(s) from ${roomCode}`);
+            }
+          }
+        } catch (cleanupErr) {
+          // Non-fatal — continue with join even if cleanup fails
+          console.warn('[ROOM] Ghost cleanup warning:', cleanupErr.message);
+        }
         
         const result = await roomService.joinRoom(
           roomCode,
