@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Pause, Play, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
+import { resolveMediaUrl } from "@/utils/mediaUrl";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -290,7 +291,7 @@ export function StoryViewer({ storiesByUser, startGroupIndex, currentUserId, onC
               <video
                 ref={videoRef}
                 key={currentStory.id}
-                src={currentStory.media_url}
+                src={resolveMediaUrl(currentStory.media_url)}
                 className="w-full h-full object-cover"
                 autoPlay={!paused}
                 muted={muted}
@@ -304,7 +305,7 @@ export function StoryViewer({ storiesByUser, startGroupIndex, currentUserId, onC
                 onEnded={nextStory}
               />
             ) : currentStory.type === "photo" && currentStory.media_url ? (
-              <img src={currentStory.media_url} alt="story" className="w-full h-full object-cover" />
+              <img src={resolveMediaUrl(currentStory.media_url)} alt="story" className="w-full h-full object-cover" />
             ) : (
               <div
                 className="w-full h-full flex items-center justify-center px-6 text-center relative overflow-hidden"

@@ -1,5 +1,6 @@
 import { Plus } from "lucide-react";
 import { motion } from "framer-motion";
+import { resolveMediaUrl } from "@/utils/mediaUrl";
 
 const stripVariants = {
   hidden: { opacity: 1 },
@@ -43,7 +44,7 @@ function StoryBubble({ group, onOpen, showAddBadge = false, onAddStory }) {
         <div className="w-full h-full rounded-full bg-card flex items-center justify-center overflow-hidden transition-transform duration-300 group-hover:scale-95 relative">
           {latest?.media_url && latest.type !== "text" ? (
             <img
-              src={latest.media_url}
+              src={resolveMediaUrl(latest.media_url)}
               alt={group.user.display_name}
               className="w-full h-full object-cover"
             />

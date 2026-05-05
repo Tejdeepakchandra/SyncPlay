@@ -787,7 +787,7 @@ export default function Friends() {
                   {offlineFriends.map((friendRow) => {
                     const friend = friendRow.friendProfile;
                     return (
-                      <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 hover:border-primary/30 transition-colors group">
+                      <motion.div key={friendRow.id} variants={item} className="bg-card/40 border border-border/60 rounded-2xl p-4 flex items-center gap-4 hover:border-primary/30 transition-colors">
                         <div className="w-12 h-12 rounded-xl bg-muted/60 flex items-center justify-center text-2xl relative">
                           {friend.avatar_emoji || "🧑"}
                           <span className="absolute -bottom-1 -right-1 h-3 w-3 rounded-full bg-muted-foreground/40 border-2 border-card" />
@@ -799,28 +799,23 @@ export default function Friends() {
                             {friend.last_active ? timeAgo(friend.last_active) : "Offline"}
                           </p>
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenDM(friend.id)} title="Message">
-                            <MessageCircle className="w-4 h-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(`/profile/${friend.id}`)} title="View Profile">
-                            <Eye className="w-4 h-4" />
-                          </Button>
-                        </div>
+                        <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => handleOpenDM(friend.id)} title="Message">
+                          <MessageCircle className="w-4 h-4" />
+                        </Button>
                         <div className="relative" data-friend-menu-root="true">
-                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setMoreMenuOpen(moreMenuOpen === friendRow.id ? null : friendRow.id)}>
+                          <Button size="icon" variant="ghost" className="h-9 w-9" onClick={() => setMoreMenuOpen(moreMenuOpen === friendRow.id ? null : friendRow.id)}>
                             <MoreHorizontal className="w-4 h-4" />
                           </Button>
                           <AnimatePresence>
                             {moreMenuOpen === friendRow.id && (
-                              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl p-1 z-30" onMouseDown={(e) => e.stopPropagation()}>
-                                <button onClick={() => handleOpenDM(friend.id)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="absolute right-0 top-full mt-2 w-48 bg-card border border-border rounded-xl p-1 z-30 shadow-xl" onMouseDown={(e) => e.stopPropagation()}>
+                                <button onClick={() => { handleOpenDM(friend.id); setMoreMenuOpen(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
                                   <MessageCircle className="w-3.5 h-3.5 text-muted-foreground" /> Message
                                 </button>
-                                <button onClick={() => navigate(`/profile/${friend.id}`)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                <button onClick={() => { navigate(`/profile/${friend.id}`); setMoreMenuOpen(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
                                   <Eye className="w-3.5 h-3.5 text-muted-foreground" /> View Profile
                                 </button>
-                                <button onClick={() => handleInviteToRoom(friend)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
+                                <button onClick={() => { handleInviteToRoom(friend); setMoreMenuOpen(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">
                                   <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" /> Invite to Room
                                 </button>
                                 <button onClick={handleCopyProfile} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-muted/50 rounded-lg">

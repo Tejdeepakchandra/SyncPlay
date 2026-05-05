@@ -6,11 +6,10 @@ import {
   Users,
   Clock,
   Film,
-  Music,
   MessageCircle,
-  UserPlus,
   ExternalLink,
   Sparkles,
+  UserCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import api from "@/services/api";
@@ -28,11 +27,12 @@ function formatWatchTime(minutes) {
 export default function UserProfile() {
   const { userId } = useParams();
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, clerkUser } = useAuth();
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [isFriend, setIsFriend] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -50,6 +50,26 @@ export default function UserProfile() {
       })
       .finally(() => setLoading(false));
   }, [userId]);
+
+  // Check friendship status
+  useEffect(() => {
+    if (!isAuthenticated || !userId || !clerkUser?.id) return;
+    if (userId === clerkUser.id) {
+      setIsFriend(false); // Can't be friends with yourself
+      return;
+    }
+
+    api
+      .get("/friends")
+      .then((res) => {
+        const friends = res?.data?.data?.friends || [];
+        const found = friends.some(
+          (f) => f?.friendProfile?.id === userId
+        );
+        setIsFriend(found);
+      })
+      .catch(() => setIsFriend(false));
+  }, [isAuthenticated, userId, clerkUser?.id]);
 
   const handleMessage = () => {
     if (!isAuthenticated) {
@@ -102,6 +122,8 @@ export default function UserProfile() {
     );
   }
 
+  const isOwnProfile = clerkUser?.id === userId;
+
   return (
     <div className="relative">
       {/* Background glow */}
@@ -144,6 +166,11 @@ export default function UserProfile() {
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-4">
               <span className={`h-2 w-2 rounded-full ${profile.is_online ? "bg-secondary" : "bg-muted-foreground/40"}`} />
               {profile.is_online ? "Online now" : "Offline"}
+              {isFriend && (
+                <span className="ml-2 inline-flex items-center gap-1 text-secondary">
+                  <UserCheck className="w-3 h-3" /> Friend
+                </span>
+              )}
             </div>
 
             {/* Bio */}
@@ -152,7 +179,7 @@ export default function UserProfile() {
             )}
 
             {/* Action buttons */}
-            {isAuthenticated && (
+            {isAuthenticated && !isOwnProfile && (
               <div className="flex items-center gap-3">
                 <Button
                   onClick={handleMessage}
@@ -206,19 +233,41 @@ export default function UserProfile() {
           </div>
         </motion.div>
 
-        {/* Info callout */}
+        {/* Info callout — context-aware */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
           className="rounded-2xl border border-border/60 bg-card/40 p-5 text-center"
         >
-          <Sparkles className="w-5 h-5 text-primary mx-auto mb-2" />
-          <p className="text-sm text-muted-foreground">
-            This is a limited public profile. Add{" "}
-            <span className="text-foreground font-medium">{profile.display_name}</span>{" "}
-            as a friend to see their stories and activity.
-          </p>
+          {isFriend ? (
+            <>
+              <UserCheck className="w-5 h-5 text-secondary mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">
+                You and{" "}
+                <span className="text-foreground font-medium">{profile.display_name}</span>{" "}
+                are friends! Check their stories on the{" "}
+                <button onClick={() => navigate("/friends")} className="text-primary hover:underline font-medium">Friends page</button>.
+              </p>
+            </>
+          ) : isOwnProfile ? (
+            <>
+              <Sparkles className="w-5 h-5 text-primary mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">
+                This is your profile.{" "}
+                <button onClick={() => navigate("/profile")} className="text-primary hover:underline font-medium">View full profile</button>
+              </p>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-5 h-5 text-primary mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">
+                This is a limited public profile. Add{" "}
+                <span className="text-foreground font-medium">{profile.display_name}</span>{" "}
+                as a friend to see their stories and activity.
+              </p>
+            </>
+          )}
         </motion.div>
       </div>
     </div>

@@ -8,7 +8,7 @@ import {
   Send, Smile, SkipForward, Settings,
   Wifi, WifiOff, Mic, MicOff, Video, VideoOff, Users, X,
   Headphones, Sliders, Film, UserMinus, Check, UserPlus,
-  MoreVertical, Camera
+  MoreVertical, Camera, History
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
@@ -113,6 +113,7 @@ const MovieRoom = () => {
   const [isUploadMediaReady, setIsUploadMediaReady] = useState(false);
   const [mobileNeedsGesture, setMobileNeedsGesture] = useState(false);
   const [mediaHistory, setMediaHistory] = useState([]); // Played media queue for replay
+  const [showHistory, setShowHistory] = useState(false);
 
   // Audio mixing state
   const [movieVolume, setMovieVolume] = useState(80);
@@ -2501,6 +2502,7 @@ const MovieRoom = () => {
     setShowHostControls(false);
     setShowMixer(false);
     setShowMobileMenu(false);
+    setShowHistory(false);
   };
 
   const handleRequestLeave = useCallback(() => {
@@ -2726,6 +2728,10 @@ const MovieRoom = () => {
                 {user && (
                   <Button size="icon" variant="ghost" onClick={() => setShowInviteFriends(true)} className="text-muted-foreground hover:text-primary" title="Invite Friends"><UserPlus className="w-4 h-4" /></Button>
                 )}
+                <Button size="icon" variant="ghost" onClick={() => { if (showHistory) { setShowHistory(false); } else { closeAllPanels(); setShowHistory(true); } }} className={`relative ${showHistory ? "text-primary" : "text-muted-foreground"}`} title="Media History">
+                  <History className="w-4 h-4" />
+                  {mediaHistory.length > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] flex items-center justify-center bg-primary/80 text-[9px] text-primary-foreground font-bold rounded-full">{mediaHistory.length}</span>}
+                </Button>
                 <Button size="icon" variant="ghost" onClick={() => { if (showMixer) { setShowMixer(false); } else { closeAllPanels(); setShowMixer(true); } }} className={showMixer ? "text-primary" : "text-muted-foreground"} title="Mixer"><Sliders className="w-4 h-4" /></Button>
                 {canOpenHostControls && (
                   <Button size="icon" variant="ghost" onClick={() => { if (showHostControls) { setShowHostControls(false); } else { closeAllPanels(); setShowHostControls(true); } }} className={showHostControls ? "text-primary" : "text-muted-foreground"} title="Host Controls"><Settings className="w-4 h-4" /></Button>
@@ -2788,6 +2794,10 @@ const MovieRoom = () => {
                             <button onClick={() => { setShowMobileMenu(false); if (showMixer) { setShowMixer(false); } else { closeAllPanels(); setShowMixer(true); } }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showMixer ? "text-primary bg-primary/10" : "text-foreground/80 hover:bg-muted/40"}`}>
                               <Sliders className="w-4 h-4" />
                               <span>Volume Mixer</span>
+                            </button>
+                            <button onClick={() => { setShowMobileMenu(false); if (showHistory) { setShowHistory(false); } else { closeAllPanels(); setShowHistory(true); } }} className={`flex items-center gap-3 w-full px-3 py-2.5 text-sm transition-colors ${showHistory ? "text-primary bg-primary/10" : "text-foreground/80 hover:bg-muted/40"}`}>
+                              <History className="w-4 h-4" />
+                              <span>History{mediaHistory.length > 0 ? ` (${mediaHistory.length})` : ''}</span>
                             </button>
                             {user && (
                               <button onClick={() => { setShowMobileMenu(false); setShowInviteFriends(true); }} className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-foreground/80 hover:bg-muted/40 transition-colors">
@@ -3513,6 +3523,79 @@ const MovieRoom = () => {
                   </Button>
                 </div>
               </div>
+            </motion.aside>
+          )}
+
+          {/* Media History Panel */}
+          {showHistory && !showChat && !showMixer && !lightsOff && (
+            <motion.aside
+              key="history"
+              initial={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              animate={{ x: 0, width: isCompactViewport ? "100%" : 300, opacity: 1 }}
+              exit={{ x: isCompactViewport ? "100%" : 0, width: isCompactViewport ? "100%" : 0, opacity: 0 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className={`border-l border-glass-border backdrop-blur-xl flex flex-col overflow-hidden flex-shrink-0 ${
+                isCompactViewport
+                  ? "absolute inset-0 z-30 border-l-0 bg-[#0b0f19]"
+                  : "bg-card/95"
+              }`}
+            >
+              <div className="p-3 border-b border-glass-border flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <History className="w-4 h-4 text-primary" />
+                  Media History
+                </h3>
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setShowHistory(false)}>
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {mediaHistory.length === 0 ? (
+                  <div className="text-center py-12">
+                    <Film className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+                    <p className="text-sm text-muted-foreground">No history yet</p>
+                    <p className="text-xs text-muted-foreground/70 mt-1">Videos you watch will appear here</p>
+                  </div>
+                ) : (
+                  mediaHistory.map((entry, idx) => (
+                    <div
+                      key={entry.id || idx}
+                      className="rounded-xl border border-border/60 bg-muted/20 p-3 hover:bg-muted/40 transition-colors"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          {entry.source === "youtube" ? (
+                            <Youtube className="w-4 h-4 text-red-500" />
+                          ) : entry.source === "upload" ? (
+                            <Upload className="w-4 h-4 text-primary" />
+                          ) : (
+                            <Film className="w-4 h-4 text-primary" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">
+                            {entry.title || entry.videoId || "Untitled Media"}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            {entry.source === "youtube" ? "YouTube" : entry.source === "upload" ? "Uploaded" : "Screen Share"}
+                            {entry.timestamp && (
+                              <> · {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+                            )}
+                          </p>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground/60 font-mono">#{mediaHistory.length - idx}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              {mediaHistory.length > 0 && (
+                <div className="p-3 border-t border-glass-border">
+                  <p className="text-[11px] text-muted-foreground text-center">
+                    {mediaHistory.length} item{mediaHistory.length !== 1 ? "s" : ""} played this session
+                  </p>
+                </div>
+              )}
             </motion.aside>
           )}
 
