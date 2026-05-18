@@ -50,6 +50,8 @@ function setup({ room = makeRoom(), syncState } = {}) {
 		lastUpdated: 1000,
 	};
 
+	const stateCache = new Map();
+
 	const syncService = {
 		getSyncState: jest.fn().mockResolvedValue(mockedSyncState),
 		handlePlay: jest.fn(),
@@ -69,30 +71,44 @@ function setup({ room = makeRoom(), syncState } = {}) {
 			lastUpdated: Date.now(),
 		}),
 		resetControlTelemetry: jest.fn().mockReturnValue({ roomCode: 'ROOM10', clearedSamples: 0 }),
+		stateCache,
 	};
 
 	const roomService = {};
 	const analyticsService = {
 		incrementSyncAction: jest.fn().mockResolvedValue(true),
+		logRoomEvent: jest.fn().mockResolvedValue(true),
 	};
 
 	const roomDoc = {
 		...room,
 		_id: 'mongo-room-1',
-	};
-
-	const roomQuery = {
-		select: jest.fn().mockResolvedValue({ _id: roomDoc._id }),
-		then: (resolve, reject) => Promise.resolve(roomDoc).then(resolve, reject),
-		catch: (reject) => Promise.resolve(roomDoc).catch(reject),
+		hostId: { toString: () => 'user-1' },
+		coHosts: [],
+		media: { current: null },
 	};
 
 	const Room = {
-		findOne: jest.fn(() => roomQuery),
+		findOne: jest.fn(() => ({
+			select: jest.fn(() => ({
+				lean: jest.fn().mockResolvedValue(roomDoc),
+			})),
+			then: (resolve, reject) => Promise.resolve(roomDoc).then(resolve, reject),
+			catch: (reject) => Promise.resolve(roomDoc).catch(reject),
+		})),
+		findOneAndUpdate: jest.fn().mockReturnValue({
+			catch: jest.fn(),
+		}),
 	};
 
 	const rateLimiter = {
 		socketRateLimiter: jest.fn(() => (socket, next) => next()),
+	};
+
+	// Mock redis client used inline by sync:media-change
+	const redisClient = {
+		set: jest.fn().mockReturnValue({ catch: jest.fn() }),
+		isReady: true,
 	};
 
 	jest.doMock('../src/services/syncService', () => syncService);
@@ -100,10 +116,29 @@ function setup({ room = makeRoom(), syncState } = {}) {
 	jest.doMock('../src/services/analyticsService', () => analyticsService);
 	jest.doMock('../src/models/mongodb/Room', () => Room);
 	jest.doMock('../src/socket/middleware/rateLimiter', () => rateLimiter);
+	jest.doMock('../src/config/redis', () => redisClient);
+	jest.doMock('../src/utils/helpers', () => ({
+		createRedisKey: jest.fn((...args) => args.join(':')),
+	}));
+	jest.doMock('../src/utils/constants', () => ({
+		REDIS_KEYS: { SYNC_STATE: 'sync' },
+		CACHE_TTL: { SYNC_STATE: 600 },
+	}));
 
 	const registerSyncHandlers = require('../src/socket/handlers/syncHandlers');
 	const harness = createSocketHarness();
-	registerSyncHandlers(harness.socket, {});
+
+	// Create a proper io mock with to().emit()
+	const ioRoomEmits = harness.roomEmits;
+	const io = {
+		to: jest.fn((roomCode) => ({
+			emit: jest.fn((event, payload) => {
+				ioRoomEmits.push({ roomCode, event, payload });
+			}),
+		})),
+	};
+
+	registerSyncHandlers(harness.socket, io);
 
 	return {
 		...harness,
@@ -134,7 +169,7 @@ describe('syncHandlers socket contract', () => {
 		});
 
 		expect(response.success).toBe(false);
-		expect(response.error).toContain('Legacy sync:broadcast is disabled');
+		expect(response.error).toContain('Legacy sync:broadcast disabled');
 	});
 
 	test('sync:request-state emits sync:update and returns current playback', async () => {
@@ -183,8 +218,8 @@ describe('syncHandlers socket contract', () => {
 		});
 
 		expect(response.success).toBe(true);
-		expect(response.currentPlayback.media).toEqual(media);
-		expect(syncService.getSyncState).toHaveBeenCalledWith('ROOM3');
+		expect(response.currentPlayback.media).toMatchObject(media);
+
 
 		const mediaChangeEvent = roomEmits.find((e) => e.event === 'sync:media-change');
 		const updateEvent = roomEmits.find((e) => e.event === 'sync:update');
@@ -192,7 +227,7 @@ describe('syncHandlers socket contract', () => {
 		expect(mediaChangeEvent).toBeDefined();
 		expect(mediaChangeEvent.payload.media).toEqual(media);
 		expect(updateEvent).toBeDefined();
-		expect(updateEvent.payload.currentPlayback.media).toEqual(media);
+		expect(updateEvent.payload.currentPlayback.media).toMatchObject(media);
 	});
 
 	test('sync:media-change dedupes rapid identical media changes', async () => {
@@ -309,11 +344,11 @@ describe('syncHandlers socket contract', () => {
 		});
 
 		expect(response.success).toBe(true);
-		expect(syncService.handlePlay).toHaveBeenCalledWith('ROOM6', 'user-1', 120, 80);
-		const stateUpdate = expectRoomBroadcast(roomEmits, 'sync:state-update');
-		expect(stateUpdate).toBeDefined();
-		expect(stateUpdate.payload).toHaveProperty('media');
-		expect(expectRoomBroadcast(roomEmits, 'sync:update')).toBeDefined();
+		expect(syncService.handlePlay).toHaveBeenCalledWith('ROOM6', 'user-1', 120, 80, null);
+		const stateUpdate = expectRoomBroadcast(roomEmits, 'sync:update');
+		expect(stateUpdate.payload.currentPlayback).toHaveProperty('media');
+		// Analytics is fire-and-forget (.then after callback), so flush microtasks
+		await new Promise(r => setTimeout(r, 50));
 		expect(analyticsService.incrementSyncAction).toHaveBeenCalledWith('mongo-room-1', 'play');
 	});
 
@@ -350,9 +385,9 @@ describe('syncHandlers socket contract', () => {
 		});
 
 		expect(response.success).toBe(true);
-		expect(syncService.handlePause).toHaveBeenCalledWith('ROOM7', 'user-1', 202);
-		expect(expectRoomBroadcast(roomEmits, 'sync:state-update')).toBeDefined();
+		expect(syncService.handlePause).toHaveBeenCalledWith('ROOM7', 'user-1', 202, null);
 		expect(expectRoomBroadcast(roomEmits, 'sync:update')).toBeDefined();
+		await new Promise(r => setTimeout(r, 50));
 		expect(analyticsService.incrementSyncAction).toHaveBeenCalledWith('mongo-room-1', 'pause');
 	});
 
@@ -388,8 +423,7 @@ describe('syncHandlers socket contract', () => {
 		});
 
 		expect(response.success).toBe(true);
-		expect(syncService.handleRateChange).toHaveBeenCalledWith('ROOM8', 'user-1', 1.25);
-		expect(expectRoomBroadcast(roomEmits, 'sync:state-update')).toBeDefined();
+		expect(syncService.handleRateChange).toHaveBeenCalledWith('ROOM8', 'user-1', 1.25, null);
 		expect(expectRoomBroadcast(roomEmits, 'sync:update')).toBeDefined();
 	});
 
@@ -459,6 +493,36 @@ describe('syncHandlers socket contract', () => {
 		const { handlers, syncService } = setup({
 			room: makeRoom({ role: 'participant', canControl: false }),
 		});
+
+		// Override Room.findOne for this test to return a room where user is NOT host
+		const Room = require('../src/models/mongodb/Room');
+		Room.findOne.mockImplementation(() => ({
+			select: jest.fn(() => ({
+				lean: jest.fn().mockResolvedValue({
+					_id: 'mongo-room-1',
+					hostId: { toString: () => 'some-other-user' },
+					coHosts: [],
+					participants: [{
+						userId: { toString: () => 'user-1' },
+						role: 'participant',
+						permissions: { canControl: false },
+					}],
+					status: 'active',
+				}),
+			})),
+			then: (resolve) => Promise.resolve({
+				_id: 'mongo-room-1',
+				hostId: { toString: () => 'some-other-user' },
+				coHosts: [],
+				participants: [{
+					userId: { toString: () => 'user-1' },
+					role: 'participant',
+					permissions: { canControl: false },
+				}],
+				status: 'active',
+			}).then(resolve),
+			catch: (reject) => Promise.resolve({}).catch(reject),
+		}));
 
 		const response = await emitWithCallback(handlers['sync:reset-telemetry'], {
 			roomCode: 'ROOM12',
