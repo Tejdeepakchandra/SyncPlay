@@ -1,0 +1,50 @@
+# ============================================
+# SyncPlay - Docker Compose
+# ============================================
+# This file tells Docker to run BOTH containers
+# (frontend + backend) together as one unit.
+#
+# HOW TO USE:
+#   Start:  docker-compose up -d
+#   Stop:   docker-compose down
+#   Logs:   docker-compose logs -f
+#   Rebuild: docker-compose up -d --build
+# ============================================
+
+services:
+  # ---- BACKEND (Node.js API + Socket.io) ----
+  server:
+    image: tejdeepakchandra/syncplay-server:latest
+    container_name: syncplay-server
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    volumes:
+      # Persist uploaded files (stories, media) across container restarts
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ---- FRONTEND (React served by Nginx) ----
+  client:
+    image: tejdeepakchandra/syncplay-client:latest
+    container_name: syncplay-client
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      server:
+        condition: service_healthy
+
+# Named volume to persist uploads
+volumes:
+  uploads_data:

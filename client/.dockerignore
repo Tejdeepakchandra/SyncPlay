@@ -1,0 +1,10 @@
+# Files to EXCLUDE from Docker image
+node_modules
+npm-debug.log
+.env
+.env.*
+.git
+.gitignore
+README.md
+dist
+coverage

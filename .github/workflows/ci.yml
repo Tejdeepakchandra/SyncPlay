@@ -1,0 +1,136 @@
+# ============================================
+# SyncPlay CI Pipeline - GitHub Actions
+# ============================================
+# This runs AUTOMATICALLY every time you push to 'main'.
+#
+# What it does:
+#   1. Tests the server code (jest)
+#   2. Builds the client (vite build)
+#   3. Builds Docker images for both client & server
+#   4. Pushes images to Docker Hub
+#   5. Triggers Jenkins for deployment (optional)
+#
+# WHERE THIS FILE LIVES: .github/workflows/ci.yml
+# ============================================
+
+name: SyncPlay CI Pipeline
+
+# WHEN does this run?
+on:
+  push:
+    branches: [main]       # Runs when code is pushed to main
+  pull_request:
+    branches: [main]       # Also runs on PRs to main (for checks)
+
+# WHAT does it do?
+jobs:
+
+  # ============================
+  # JOB 1: Test the Backend
+  # ============================
+  test-server:
+    name: 🧪 Test Server
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Download the code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Step 3: Install server dependencies
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm install
+
+      # Step 4: Run tests
+      - name: Run server tests
+        working-directory: ./server
+        run: npm test
+
+  # ============================
+  # JOB 2: Build the Frontend
+  # ============================
+  build-client:
+    name: 🔨 Build Client
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm install
+
+      - name: Build client
+        working-directory: ./client
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_SOCKET_URL: ${{ secrets.VITE_SOCKET_URL }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
+        run: npm run build
+
+  # ============================
+  # JOB 3: Build & Push Docker Images
+  # ============================
+  docker-build-push:
+    name: 🐳 Docker Build & Push
+    runs-on: ubuntu-latest
+
+    # Only runs AFTER tests and build pass
+    needs: [test-server, build-client]
+
+    # Only push Docker images on main branch (not on PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Login to Docker Hub using your saved secrets
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Build & push the SERVER image
+      - name: Build & Push Server Image
+        working-directory: ./server
+        run: |
+          # Tag with both the commit hash AND "latest"
+          docker build -t tejdeepakchandra/syncplay-server:${{ github.sha }} \
+                       -t tejdeepakchandra/syncplay-server:latest .
+          docker push tejdeepakchandra/syncplay-server:${{ github.sha }}
+          docker push tejdeepakchandra/syncplay-server:latest
+
+      # Build & push the CLIENT image
+      - name: Build & Push Client Image
+        working-directory: ./client
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=${{ secrets.VITE_API_URL }} \
+            --build-arg VITE_SOCKET_URL=${{ secrets.VITE_SOCKET_URL }} \
+            --build-arg VITE_CLERK_PUBLISHABLE_KEY=${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }} \
+            -t tejdeepakchandra/syncplay-client:${{ github.sha }} \
+            -t tejdeepakchandra/syncplay-client:latest .
+          docker push tejdeepakchandra/syncplay-client:${{ github.sha }}
+          docker push tejdeepakchandra/syncplay-client:latest
+
+      # Print success message with image info
+      - name: Summary
+        run: |
+          echo "✅ Docker images pushed successfully!"
+          echo "📦 Server: tejdeepakchandra/syncplay-server:${{ github.sha }}"
+          echo "📦 Client: tejdeepakchandra/syncplay-client:${{ github.sha }}"
