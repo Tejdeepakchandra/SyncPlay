@@ -85,7 +85,7 @@ const SOCKET_RATE_LIMITS = {
   'room:leave':           { limit: 15, window: 60 },
 
   // WebRTC signaling — needs high limits for mesh topology
-  'webrtc-mesh:join':     { limit: 25, window: 60 },
+  'webrtc-mesh:join':     { limit: 25, window: 70 },
   'webrtc-mesh:offer':    { limit: 80, window: 60 },
   'webrtc-mesh:answer':   { limit: 80, window: 60 },
   'webrtc-mesh:ice-candidate': { limit: 300, window: 60 },  // ICE can be chatty
